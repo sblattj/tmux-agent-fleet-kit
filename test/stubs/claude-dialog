@@ -1,0 +1,20 @@
+#!/usr/bin/env python3
+# stub CLI: show a startup dialog picked by the lane name (-n *TRUST* / *BYPASS* / *NOENV* / other), write no
+# transcript, stay alive. The name is used because a tmux window does not inherit the launcher's env.
+# Python, not bash: macOS `ps eww` hides the environment of /bin/bash, and fleet's proof reads it.
+import os, sys, time
+a = sys.argv[1:]
+name = a[a.index("-n") + 1] if "-n" in a else ""
+var = "CLAUDE_CODE_EVEN_MORE_DANGEROUSLY_SKIP_PERMISSIONS"
+if "NOENV" in name and var in os.environ:
+    # *NOENV*: re-exec without the skip var, so the launcher's env check must fail for real
+    env = {k: v for k, v in os.environ.items() if k != var}
+    os.execve(sys.executable, [sys.executable] + sys.argv, env)
+if "TRUST" in name:
+    print("Is this a project you created or one you trust?")
+elif "BYPASS" in name:
+    print("WARNING: Claude Code running in Bypass Permissions mode\n  No, exit\n  Yes, I accept")
+else:
+    print("idle")
+sys.stdout.flush()
+time.sleep(300)

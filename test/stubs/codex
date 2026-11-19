@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# stub CLI: record argv and env for the fleet tests, then stay alive
+printf '%s\n' "$@" > "${FLEET_STATE:?}/stub-codex.argv"
+env | sort > "$FLEET_STATE/stub-codex.env"
+sleep 300

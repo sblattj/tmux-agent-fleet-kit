@@ -1,0 +1,495 @@
+#!/usr/bin/env bash
+# fleet: launch and manage a fleet of coding-agent CLIs (claude, codex, opencode) as tmux windows/panes.
+#
+#   fleet launch [opts] <name> goal   <condition.txt>   first prompt is a /goal condition (living goal JSON)
+#   fleet launch [opts] <name> prompt <text|file>       plain first prompt
+#   fleet launch [opts] <name> desk   [text|file]       standing decisions desk (never a /goal)
+#   fleet launch [opts] <name> resume <session-id>      resume a saved session under the same name
+#   fleet ls                                            roster and liveness, one line per lane
+#   fleet attach                                        tmux attach to the fleet session
+#   fleet layout                                        print the tmux window/pane map
+#   fleet stop <name>                                   kill that lane's pane
+#   fleet send <to> <text>                              message a lane (reopens it if parked), sender is $FLEET_NAME
+#   fleet tick|park|reopen|cleanup|handoff ...          lifecycle, handled by bin/fleet-lifecycle
+#
+# launch opts:
+#   --cli claude|codex|opencode   which CLI (default claude)
+#   --model M                     model (claude default: opus; others: the CLI default)
+#   --dir D                       working dir (default $FLEET_DIR, else $PWD)
+#   --split-right-of NAME         open as a pane right of NAME's pane instead of a new window
+#   --role orchestrator|desk|listener|worker
+#                                 role context + deny list (default worker; desk mode defaults to desk)
+#   --dry-run                     print the window script, prompt and tmux command; touch nothing
+#   --no-proof                    skip the pid / goal / session waits (tests with stub CLIs); roster is still written
+#
+# goal condition lint: starts with "/goal ", <= 4000 chars, names a *.json goal file, contains "file wins"
+# and "stop after". desk text may not start with "/goal".
+#
+# env: FLEET_TMUX_SESSION (fleet)  FLEET_TMUX_SOCKET (-L socket)  FLEET_STATE (~/.local/state/fleet)
+#      FLEET_DIR  FLEET_HUMAN  FLEET_CLAUDE_BIN / FLEET_CODEX_BIN / FLEET_OPENCODE_BIN
+#      FLEET_PROOF_TIMEOUT (90 seconds; also bounds the codex UI wait at 30 and opencode session wait at 60)
+# Every lane runs in bypass/no-approval mode. Failure prints "FAIL <reason>" to stderr and exits 1.
+# ---
+set -euo pipefail
+
+SKIPVAR=CLAUDE_CODE_EVEN_MORE_DANGEROUSLY_SKIP_PERMISSIONS
+STRIP="CLAUDE_CODE_CHILD_SESSION CLAUDECODE CLAUDE_CODE_SESSION_ID CLAUDE_CODE_AGENT CLAUDE_CODE_MESSAGING_SOCKET CLAUDE_CODE_MESSAGING_TOKEN CLAUDE_JOB_DIR CLAUDE_PID CLAUDE_CODE_ENTRYPOINT CLAUDE_CODE_SESSION_ATTENDED CLAUDE_CODE_EXECPATH"
+
+SESSION=${FLEET_TMUX_SESSION:-fleet}
+SOCKET=${FLEET_TMUX_SOCKET:-}
+STATE=${FLEET_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet}
+HUMAN=${FLEET_HUMAN:-the human}
+PROOF_T=${FLEET_PROOF_TIMEOUT:-90}
+ROSTER=$STATE/roster.json
+SELF=$0
+while [ -L "$SELF" ]; do
+  _l=$(readlink "$SELF"); case $_l in /*) SELF=$_l ;; *) SELF=$(dirname "$SELF")/$_l ;; esac
+done
+BINDIR=$(cd "$(dirname "$SELF")" && pwd -P)
+ROOT=$(cd "$BINDIR/.." && pwd -P)
+
+usage() { sed -n '2,/^# ---$/{/^# ---$/d;s/^# \{0,1\}//;p;}' "$0"; exit 2; }
+die() { printf 'FAIL %s\n' "$*" >&2; exit 1; }
+now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+tm() { if [ -n "$SOCKET" ]; then tmux -L "$SOCKET" "$@"; else tmux "$@"; fi; }
+flog() { mkdir -p "$STATE/log"; printf '%s %s\n' "$(now)" "$*" >> "$STATE/log/fleet.log"; }
+role_guard() { # verb : only an unset FLEET_ROLE (the human) or the orchestrator may do lane lifecycle
+  case "${FLEET_ROLE:-}" in ""|orchestrator) ;; *) die "role $FLEET_ROLE can't $1" ;; esac
+}
+need() { command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1"; }
+
+pane_alive() {
+  local out
+  [ -n "${1:-}" ] || return 1
+  out=$(tm list-panes -a -F '#{pane_id}' 2>/dev/null || true)
+  printf '%s\n' "$out" | grep -qx -- "$1"
+}
+
+roster_get() { # name field -> value or empty
+  [ -s "$ROSTER" ] || return 0
+  jq -r --arg n "$1" --arg f "$2" '.[$n][$f] // empty' "$ROSTER" 2>/dev/null || true
+}
+
+roster_merge() { # name json-patch
+  local t
+  mkdir -p "$STATE"
+  [ -s "$ROSTER" ] || printf '{}\n' > "$ROSTER"
+  t=$(mktemp "$STATE/.roster.XXXXXX")
+  if jq --arg n "$1" --argjson p "$2" '.[$n] = ((.[$n] // {}) + $p)' "$ROSTER" > "$t"; then
+    mv "$t" "$ROSTER"
+  else
+    rm -f "$t"; die "could not update $ROSTER"
+  fi
+}
+
+new_uuid() {
+  if command -v uuidgen >/dev/null 2>&1; then uuidgen | tr 'A-Z' 'a-z'
+  elif [ -r /proc/sys/kernel/random/uuid ]; then cat /proc/sys/kernel/random/uuid
+  else python3 -c 'import uuid;print(uuid.uuid4())'; fi
+}
+
+free_port() { python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1])'; }
+
+read_arg() { if [ -f "$1" ]; then cat "$1"; else printf '%s' "$1"; fi; }
+
+# poll "<shell command>" seconds : run the command every second until it succeeds or time runs out
+poll() {
+  local cmd=$1 secs=$2 end
+  end=$(( $(date +%s) + secs ))
+  while :; do
+    if eval "$cmd"; then return 0; fi
+    [ "$(date +%s)" -lt "$end" ] || return 1
+    sleep 1
+  done
+}
+
+min() { if [ "$1" -lt "$2" ]; then echo "$1"; else echo "$2"; fi; }
+
+# ---------------------------------------------------------------- launch
+cmd_launch() {
+  local cli=claude model= dir= split= dry=0 noproof=0 role=
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --cli) [ $# -ge 2 ] || usage; cli=$2; shift 2 ;;
+      --model) [ $# -ge 2 ] || usage; model=$2; shift 2 ;;
+      --dir) [ $# -ge 2 ] || usage; dir=$2; shift 2 ;;
+      --split-right-of) [ $# -ge 2 ] || usage; split=$2; shift 2 ;;
+      --role) [ $# -ge 2 ] || usage; role=$2; shift 2 ;;
+      --dry-run) dry=1; shift ;;
+      --no-proof) noproof=1; shift ;;
+      -h|--help) usage ;;
+      -*) die "unknown flag $1" ;;
+      *) break ;;
+    esac
+  done
+  [ $# -ge 2 ] || usage
+  local name=$1 mode=$2 arg=${3:-}
+  printf '%s' "$name" | grep -Eq '^[A-Za-z0-9._-]+$' || die "name must match [A-Za-z0-9._-]+: $name"
+  case $cli in claude|codex|opencode) ;; *) die "unknown --cli $cli (claude|codex|opencode)" ;; esac
+  need jq
+  role_guard launch
+  if [ -z "$role" ]; then if [ "$mode" = desk ]; then role=desk; else role=worker; fi; fi
+  case $role in orchestrator|desk|listener|worker) ;; *) die "unknown --role $role (orchestrator|desk|listener|worker)" ;; esac
+
+  [ -n "$dir" ] || dir=${FLEET_DIR:-$PWD}
+  [ -d "$dir" ] || die "directory does not exist: $dir"
+  dir=$(cd "$dir" && pwd -P)
+  if [ -z "$model" ] && [ "$cli" = claude ]; then model=opus; fi
+
+  local sid= text= resume=0
+  case $mode in
+    goal)
+      [ -f "$arg" ] || die "goal mode needs a condition file"
+      text=$(cat "$arg")
+      case $text in "/goal "*) ;; *) die "condition must start with '/goal '" ;; esac
+      [ "${#text}" -le 4000 ] || die "condition is ${#text} chars, max 4000"
+      case $text in *.json*) ;; *) die "condition does not name a *.json goal file" ;; esac
+      case $text in *"file wins"*) ;; *) die "condition lacks 'file wins'" ;; esac
+      case $text in *"stop after"*) ;; *) die "condition has no turn bound ('or stop after N turns')" ;; esac ;;
+    prompt)
+      [ -n "$arg" ] || die "prompt mode needs text or a file"
+      text=$(read_arg "$arg") ;;
+    desk)
+      if [ -n "$arg" ]; then text=$(read_arg "$arg")
+      else text="You are $name, the standing decisions desk for $HUMAN. Load the running-the-decisions-desk skill and run it. Never set a /goal."; fi
+      case $text in "/goal"*) die "desk sessions never start with /goal (a standing desk cannot meet one)" ;; esac ;;
+    resume)
+      [ -n "$arg" ] || die "resume needs a session id"
+      if [ "$cli" = claude ]; then
+        printf '%s' "$arg" | grep -Eq '^[0-9a-f-]{36}$' || die "claude resume needs a session uuid"
+      else
+        printf '%s' "$arg" | grep -Eq '^[A-Za-z0-9_.-]+$' || die "bad session id: $arg"
+      fi
+      sid=$arg; resume=1 ;;
+    *) usage ;;
+  esac
+
+  # binary
+  local bin binvar
+  case $cli in
+    claude) binvar=${FLEET_CLAUDE_BIN:-claude} ;;
+    codex) binvar=${FLEET_CODEX_BIN:-codex} ;;
+    opencode) binvar=${FLEET_OPENCODE_BIN:-opencode} ;;
+  esac
+  bin=$(command -v "$binvar" 2>/dev/null || true)
+  if [ -z "$bin" ]; then
+    [ "$dry" = 1 ] || die "$cli binary not found: $binvar (set FLEET_$(printf '%s' "$cli" | tr a-z A-Z)_BIN)"
+    bin=$binvar
+  fi
+
+  # liveness: refuse a second live lane under the same name
+  if [ "$dry" = 0 ]; then
+    local oldpane
+    oldpane=$(roster_get "$name" pane)
+    if pane_alive "$oldpane"; then die "a lane named $name is already live (pane $oldpane); fleet stop $name first, or pick another name"; fi
+    if [ "$cli" = claude ] && [ "$noproof" = 0 ]; then
+      local lp
+      lp=$(pgrep -f -- "claude .*-n $name( |\$)" 2>/dev/null | head -1 || true)
+      [ -z "$lp" ] || die "a claude named $name is already live (pid $lp); stop it or pick another name"
+    fi
+  fi
+
+  [ "$resume" = 1 ] || { [ "$cli" != claude ] || sid=$(new_uuid); }
+  [ "$cli" != claude ] || [ -n "$sid" ] || sid=$(new_uuid)
+
+  local port=
+  if [ "$cli" = opencode ]; then need python3; port=$(free_port); fi
+
+  local ldir=$STATE/launch
+  local sh=$ldir/$name.sh txt=$ldir/$name.txt
+  local q_dir q_txt q_bin q_state q_session q_log q_logdir
+  q_dir=$(printf '%q' "$dir"); q_txt=$(printf '%q' "$txt"); q_bin=$(printf '%q' "$bin")
+  q_state=$(printf '%q' "$STATE"); q_session=$(printf '%q' "$SESSION")
+  q_log=$(printf '%q' "$STATE/log/fleet.log"); q_logdir=$(printf '%q' "$STATE/log")
+
+  local rdir=$ROOT/roles
+  [ -f "$rdir/$role.md" ] || die "role file missing: $rdir/$role.md"
+  local first= cmd= extra= exports= rflags=
+  case $cli in
+    claude)
+      [ -f "$rdir/$role.claude.json" ] || die "role file missing: $rdir/$role.claude.json"
+      rflags=" --settings $(printf '%q' "$rdir/$role.claude.json") --append-system-prompt-file $(printf '%q' "$rdir/$role.md")" ;;
+    codex)
+      if [ -f "${CODEX_HOME:-$HOME/.codex}/fleet-$role.config.toml" ]; then rflags=" -p fleet-$role"
+      else printf 'warn: codex profile fleet-%s not installed (%s/fleet-%s.config.toml); launching without role %s (run install/codex.sh)\n' "$role" "${CODEX_HOME:-$HOME/.codex}" "$role" "$role" >&2; fi ;;
+    opencode)
+      if jq -e --arg a "fleet-$role" '.agent[$a] != null' "${XDG_CONFIG_HOME:-$HOME/.config}/opencode/opencode.json" >/dev/null 2>&1; then rflags=" --agent fleet-$role"
+      else printf 'warn: opencode agent fleet-%s not installed (%s/opencode/opencode.json); launching without role %s (run install/opencode.sh)\n' "$role" "${XDG_CONFIG_HOME:-$HOME/.config}" "$role" >&2; fi ;;
+  esac
+  if [ "$resume" = 0 ]; then first=" \"\$(cat $q_txt)\""; fi
+  case $cli in
+    claude)
+      exports="export $SKIPVAR=1"
+      if [ "$resume" = 1 ]; then
+        cmd="$q_bin --dangerously-skip-permissions -n $name --model $model --disallowed-tools=AskUserQuestion$rflags --resume $sid"
+      else
+        cmd="$q_bin --dangerously-skip-permissions -n $name --model $model --disallowed-tools=AskUserQuestion$rflags --session-id $sid --$first"
+      fi ;;
+    codex)
+      cmd="$q_bin --dangerously-bypass-approvals-and-sandbox$rflags"
+      [ -z "$model" ] || cmd="$cmd -m $(printf '%q' "$model")"
+      cmd="$cmd -C $q_dir"
+      if [ "$resume" = 1 ]; then cmd="$cmd resume $sid"; else cmd="$cmd$first"; fi ;;
+    opencode)
+      cmd="$q_bin --port $port$rflags"
+      [ -z "$model" ] || cmd="$cmd -m $(printf '%q' "$model")"
+      if [ "$resume" = 1 ]; then cmd="$cmd -s $sid $q_dir"; else cmd="$cmd --prompt \"\$(cat $q_txt)\" $q_dir"; fi ;;
+  esac
+  [ -z "$SOCKET" ] || extra="$extra FLEET_TMUX_SOCKET=$(printf '%q' "$SOCKET")"
+  [ -z "${FLEET_CODEX_BIN:-}" ] || extra="$extra FLEET_CODEX_BIN=$(printf '%q' "$FLEET_CODEX_BIN")"
+
+  local body
+  body=$(cat <<EOF
+#!/usr/bin/env bash
+# written by fleet launch $(now): $name ($mode, $cli)
+cd $q_dir || exit 1
+unset $STRIP
+export FLEET_NAME=$name FLEET_ROLE=$role FLEET_STATE=$q_state FLEET_TMUX_SESSION=$q_session$extra
+$exports
+mkdir -p $q_logdir
+fl() { printf '%s %s\n' "\$(date -u +%Y-%m-%dT%H:%M:%SZ)" "\$*" >> $q_log; }
+fl "$name started cli=$cli mode=$mode role=$role session=${sid:-unknown}"
+$cmd
+rc=\$?
+fl "$name exited rc=\$rc"
+exit \$rc
+EOF
+)
+
+  local q_sh tmcmd tmprefix=tmux
+  q_sh=$(printf '%q' "$sh")
+  [ -z "$SOCKET" ] || tmprefix="tmux -L $SOCKET"
+  local splitpane=
+  if [ -n "$split" ]; then
+    splitpane=$(roster_get "$split" pane)
+    if [ "$dry" = 0 ]; then
+      pane_alive "$splitpane" || die "--split-right-of $split: no live pane for $split in the roster"
+    fi
+    tmcmd="$tmprefix split-window -d -h -P -F '#{pane_id}' -t ${splitpane:-<pane of $split>} -c $q_dir bash $q_sh"
+  else
+    tmcmd="$tmprefix new-window -d -P -F '#{pane_id}' -t =$SESSION: -n $name -c $q_dir bash $q_sh"
+  fi
+
+  if [ "$dry" = 1 ]; then
+    printf '## script %s\n%s\n' "$sh" "$body"
+    if [ -n "$text" ]; then printf '## prompt %s (%s chars)\n%s\n' "$txt" "${#text}" "$text"; fi
+    printf '## tmux %s\n' "$tmcmd"
+    return 0
+  fi
+
+  need tmux
+  mkdir -p "$ldir" "$STATE/log"
+  if [ -n "$text" ]; then printf '%s\n' "$text" > "$txt"; fi
+  printf '%s\n' "$body" > "$sh"; chmod +x "$sh"
+
+  local marker=
+  [ "$cli" != codex ] || marker=$(mktemp "$STATE/.marker.XXXXXX")
+
+  if ! tm has-session -t "=$SESSION" 2>/dev/null; then
+    tm new-session -d -s "$SESSION" -n home -c "$dir" || die "could not create tmux session $SESSION"
+  fi
+  local pane
+  if [ -n "$split" ]; then
+    pane=$(tm split-window -d -h -P -F '#{pane_id}' -t "$splitpane" -c "$dir" "bash $q_sh") || die "tmux split-window failed"
+  else
+    pane=$(tm new-window -d -P -F '#{pane_id}' -t "=$SESSION:" -n "$name" -c "$dir" "bash $q_sh") || die "tmux new-window failed"
+  fi
+  tm select-pane -t "$pane" -T "$name" 2>/dev/null || true
+  local panepid at
+  panepid=$(tm display-message -p -t "$pane" '#{pane_pid}' 2>/dev/null || true)
+  at=$(now)
+
+  roster_merge "$name" "$(jq -n --arg name "$name" --arg cli "$cli" --arg mode "$mode" --arg role "$role" --arg pane "$pane" \
+    --arg sid "$sid" --argjson port "${port:-null}" --arg dir "$dir" --arg model "$model" \
+    --argjson pid "${panepid:-null}" --arg at "$at" \
+    '{name:$name,cli:$cli,mode:$mode,role:$role,pane:$pane,session_id:(if $sid=="" then null else $sid end),port:$port,dir:$dir,model:(if $model=="" then null else $model end),pid:$pid,at:$at}')"
+  flog "$name launched cli=$cli mode=$mode pane=$pane"
+  jq -n --arg name "$name" --arg mode "$mode" --arg cli "$cli" --arg sid "$sid" --arg script "$sh" --arg pane "$pane" --arg at "$at" \
+    '{name:$name,cli:$cli,mode:$mode,pane:$pane,sessionId:$sid,script:$script,at:$at}' > "$ldir/$name.launch.json"
+
+  local goal=n/a
+  if [ "$mode" = goal ]; then goal=unverified; fi
+
+  if [ "$noproof" = 0 ]; then
+    case $cli in
+      claude) proof_claude "$name" "$sid" "$pane" "$mode" ;;
+      codex) proof_codex "$name" "$pane" "$dir" "$mode" "$marker" ;;
+      opencode) proof_opencode "$name" "$port" "$dir" "$mode" ;;
+    esac
+    [ "$mode" != goal ] || goal=active
+    sid=$(roster_get "$name" session_id)
+  fi
+  [ -z "$marker" ] || rm -f "$marker"
+  printf 'OK %s cli=%s mode=%s pane=%s session=%s goal=%s\n' "$name" "$cli" "$mode" "$pane" "${sid:-pending}" "$goal"
+}
+
+# ---------------------------------------------------------------- proofs
+env_check() { # pid -> sets $miss (empty = all checks passed)
+  local env
+  miss=
+  if [ -r "/proc/$1/environ" ]; then
+    env="$(ps -ww -o args= -p "$1" 2>/dev/null) $(tr '\0' ' ' < "/proc/$1/environ" 2>/dev/null)"
+  else
+    env=$(ps eww -o command= -p "$1" 2>/dev/null || true)
+  fi
+  case $env in *--dangerously-skip-permissions*) ;; *) miss="$miss bypass-flag" ;; esac
+  case $env in *--disallowed-tools=AskUserQuestion*) ;; *) miss="$miss AskUserQuestion-off" ;; esac
+  case $env in *" $SKIPVAR=1"*) ;; *) miss="$miss $SKIPVAR" ;; esac
+  case $env in *CLAUDE_CODE_CHILD_SESSION=*) miss="$miss nested:CLAUDE_CODE_CHILD_SESSION" ;; esac
+  [ -z "$miss" ]
+}
+
+proof_claude() { # name sid pane mode
+  local name=$1 sid=$2 pane=$3 mode=$4 pid= miss= rc=0
+  poll 'pid=$(pgrep -f -- "-n $name .*$sid" 2>/dev/null | head -1 || true); [ -n "$pid" ]' "$PROOF_T" \
+    || die "no claude process for $name ($sid) after ${PROOF_T}s; script $STATE/launch/$name.sh; pane $pane"
+  # macOS ps can show a just-started process's args before its env (seen once in ~30 test runs),
+  # so re-read until every check passes or the proof timeout ends.
+  poll 'env_check "$pid"' "$PROOF_T" || true
+  [ -z "$miss" ] || die "pid $pid env check failed:$miss; kill $pid and fix $STATE/launch/$name.sh"
+  roster_merge "$name" "$(jq -n --argjson p "$pid" '{pid:$p}')"
+  # The first prompt is only submitted past the workspace-trust dialog, and the transcript appears then.
+  if [ "$mode" != resume ]; then
+    poll 'f=$(ls "$HOME"/.claude/projects/*/"$sid".jsonl 2>/dev/null | head -1 || true); [ -n "$f" ] || { tm capture-pane -p -t "$pane" 2>/dev/null | grep -q "trust this folder\|one you trust" && return 2; tm capture-pane -p -t "$pane" 2>/dev/null | grep -q "Yes, I accept" && return 3; false; }' "$PROOF_T" || rc=$?
+    case ${rc:-0} in
+      0) ;;
+      2) die "pid $pid is waiting at Claude's workspace-trust dialog in pane $pane; run: install/claude.sh --trust $(roster_get "$name" dir) --trust-only, then fleet stop $name and relaunch" ;;
+      3) die "pid $pid is waiting at Claude's Bypass Permissions accept dialog in pane $pane (seen intermittently even with skipDangerousModePermissionPrompt set); accept it in the pane (fleet attach) or fleet stop $name and relaunch" ;;
+      *) die "pid $pid started but its transcript never appeared after ${PROOF_T}s (first prompt not submitted); look at pane $pane" ;;
+    esac
+  else
+    # resume writes no new transcript at start, so look once for the bypass accept dialog after a short settle
+    sleep "${FLEET_RESUME_SETTLE:-6}"
+    if tm capture-pane -p -t "$pane" 2>/dev/null | grep -q "Yes, I accept"; then
+      die "pid $pid is waiting at Claude's Bypass Permissions accept dialog in pane $pane; accept it in the pane (fleet attach) or fleet stop $name and relaunch"
+    fi
+  fi
+  if [ "$mode" = goal ]; then
+    poll 'f=$(ls "$HOME"/.claude/projects/*/"$sid".jsonl 2>/dev/null | head -1 || true); [ -n "$f" ] && grep -q "Goal set:" "$f"' "$PROOF_T" \
+      || die "pid $pid started but no 'Goal set:' in its transcript after ${PROOF_T}s; look at pane $pane"
+  fi
+}
+
+codex_pane_state() { # pane -> prints trust|ready|wait
+  local txt
+  txt=$(tm capture-pane -p -t "$1" 2>/dev/null || true)
+  if printf '%s' "$txt" | grep -Eqi 'trust (this|the) (folder|directory)|do you trust'; then echo trust
+  elif printf '%s' "$txt" | grep -Eq '›|OpenAI Codex|>_'; then echo ready
+  else echo wait; fi
+}
+
+codex_goal_ok() { # db thread
+  [ -f "$1" ] || return 1
+  python3 - "$1" "$2" <<'PY'
+import sqlite3, sys
+try:
+    c = sqlite3.connect(sys.argv[1])
+    r = c.execute("select status from thread_goals where thread_id=?", (sys.argv[2],)).fetchone()
+except Exception:
+    r = None
+sys.exit(0 if r and r[0] in ("active", "complete") else 1)
+PY
+}
+
+codex_find_once() { # dir marker -> prints thread id or nothing
+  local dir=$1 marker=$2 home=${CODEX_HOME:-$HOME/.codex} files f c id
+  files=$(find "$home/sessions" -name 'rollout-*.jsonl' -newer "$marker" 2>/dev/null || true)
+  [ -n "$files" ] || return 0
+  for f in $(ls -t $files 2>/dev/null); do
+    c=$(head -1 "$f" | jq -r '.payload.cwd // empty' 2>/dev/null || true)
+    if [ "$c" = "$dir" ]; then
+      id=$(head -1 "$f" | jq -r '.payload.id // empty' 2>/dev/null || true)
+      if [ -n "$id" ]; then printf '%s' "$id"; return 0; fi
+    fi
+  done
+}
+
+proof_codex() { # name pane dir mode marker
+  local name=$1 pane=$2 dir=$3 mode=$4 marker=$5 sid= ui st=wait
+  ui=$(min 30 "$PROOF_T")
+  poll 'st=$(codex_pane_state "$pane"); [ "$st" != wait ]' "$ui" || die "codex UI not up in pane $pane after ${ui}s"
+  if [ "$st" = trust ]; then
+    die "codex asks to trust $dir; run: install/codex.sh --trust $dir, then fleet stop $name and launch again"
+  fi
+  tm send-keys -t "$pane" -l "/rename $name"
+  sleep 1; tm send-keys -t "$pane" Enter
+  sleep 1; tm send-keys -t "$pane" Enter
+  poll 'sid=$(codex_find_once "$dir" "$marker"); [ -n "$sid" ]' "$(min 60 "$PROOF_T")" || true
+  if [ -n "$sid" ]; then
+    roster_merge "$name" "$(jq -n --arg s "$sid" '{session_id:$s}')"
+    if [ "$mode" = goal ]; then
+      need python3
+      local db=${CODEX_HOME:-$HOME/.codex}/goals_1.sqlite
+      poll 'codex_goal_ok "$db" "$sid"' "$PROOF_T" || die "codex goal for $name not active in $db after ${PROOF_T}s; look at pane $pane"
+    fi
+  elif [ "$mode" = goal ]; then
+    die "codex session id for $name not found after launch; cannot prove the goal; look at pane $pane"
+  fi
+}
+
+proof_opencode() { # name port dir mode
+  local name=$1 port=$2 dir=$3 mode=$4 sid=
+  need curl
+  poll 'sid=$(curl -fsS --max-time 3 "http://127.0.0.1:$port/session" 2>/dev/null | jq -r --arg d "$dir" "[.[]|select(.directory==\$d)]|sort_by(.time.created)|last|.id // empty" 2>/dev/null || true); [ -n "$sid" ]' "$(min 60 "$PROOF_T")" \
+    || die "no opencode session for $name on port $port after $(min 60 "$PROOF_T")s"
+  roster_merge "$name" "$(jq -n --arg s "$sid" '{session_id:$s}')"
+  if [ "$mode" = goal ]; then
+    poll 'curl -fsS --max-time 3 "http://127.0.0.1:$port/session" 2>/dev/null | jq -e --arg i "$sid" "[.[]|select(.id==\$i)]|first|((.metadata.goal.state // \"\")==\"active\" or ((.title // \"\")|startswith(\"▶\")))" >/dev/null 2>&1' "$PROOF_T" \
+      || die "opencode goal for $name not active after ${PROOF_T}s"
+  fi
+}
+
+# ---------------------------------------------------------------- other commands
+cmd_ls() {
+  [ -s "$ROSTER" ] || { echo "(no lanes)"; return 0; }
+  local names n pane alive
+  names=$(jq -r 'keys[]' "$ROSTER")
+  for n in $names; do
+    pane=$(roster_get "$n" pane)
+    if pane_alive "$pane"; then alive=alive; else alive=dead; fi
+    printf '%s cli=%s mode=%s pane=%s %s session=%s\n' "$n" "$(roster_get "$n" cli)" "$(roster_get "$n" mode)" \
+      "${pane:--}" "$alive" "$(roster_get "$n" session_id)"
+  done
+}
+
+cmd_attach() { tm attach -t "=$SESSION"; }
+
+cmd_layout() {
+  tm has-session -t "=$SESSION" 2>/dev/null || { echo "(no tmux session $SESSION)"; return 0; }
+  tm list-panes -s -t "=$SESSION:" -F '#{session_name}:#{window_index}.#{pane_index} window=#{window_name} pane=#{pane_id} title=#{pane_title} cmd=#{pane_current_command}'
+}
+
+cmd_stop() {
+  [ $# -ge 1 ] || usage
+  role_guard stop
+  local pane
+  pane=$(roster_get "$1" pane)
+  [ -n "$pane" ] || die "no lane named $1 in the roster"
+  pane_alive "$pane" || die "lane $1 has no live pane ($pane)"
+  tm kill-pane -t "$pane" || die "could not kill pane $pane"
+  flog "$1 stopped pane=$pane"
+  echo "OK stopped $1 pane=$pane"
+}
+
+[ $# -ge 1 ] || usage
+sub=$1; shift
+case $sub in
+  launch) cmd_launch "$@" ;;
+  ls) cmd_ls ;;
+  attach) cmd_attach ;;
+  layout) cmd_layout ;;
+  stop) cmd_stop "$@" ;;
+  send)
+    [ $# -ge 2 ] || usage
+    exec python3 "$ROOT/lib/fleet_mesh.py" send "${FLEET_NAME:-${FLEET_ORCHESTRATOR:-ORCHESTRATOR}}" "$1" "${*:2}" ;;
+  tick|park|reopen|cleanup|handoff)
+    case $sub in
+      park|reopen) role_guard "$sub" ;;
+      cleanup) case " $* " in *" --apply "*) role_guard cleanup ;; esac ;;
+    esac
+    [ -f "$BINDIR/fleet-lifecycle" ] || die "fleet-lifecycle missing"
+    if [ -x "$BINDIR/fleet-lifecycle" ]; then exec "$BINDIR/fleet-lifecycle" "$sub" "$@"; fi
+    exec bash "$BINDIR/fleet-lifecycle" "$sub" "$@" ;;
+  -h|--help|help) usage ;;
+  *) usage ;;
+esac

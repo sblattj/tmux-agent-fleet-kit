@@ -1,0 +1,27 @@
+#!/usr/bin/env python3
+# Test stub for a lane pane: reads typed lines; on "/compact" writes the CLI's finished-compaction record.
+#   compactor claude FILE   append a {"type":"system","subtype":"compact_boundary"} line to FILE
+#   compactor codex FILE    append a {"type":"compacted"} line to FILE
+#   compactor touch FILE    create FILE (the opencode fake server reads it)
+#   compactor never FILE    read input, never compact
+# Every line it reads is appended to FILE.typed, so a test can see what park typed.
+import json, sys, time
+
+mode, target = sys.argv[1], sys.argv[2]
+for line in sys.stdin:
+    line = line.strip()
+    with open(target + ".typed", "a") as fh:
+        fh.write(line + "\n")
+    if line != "/compact" or mode == "never":
+        continue
+    time.sleep(1)  # a real compact takes time; park must wait for the record, not for the keystroke
+    ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    if mode == "claude":
+        rec = {"type": "system", "subtype": "compact_boundary", "content": "Conversation compacted", "timestamp": ts}
+    elif mode == "codex":
+        rec = {"timestamp": ts, "type": "compacted", "payload": {"message": ""}}
+    else:
+        open(target, "w").close()
+        continue
+    with open(target, "a") as fh:
+        fh.write(json.dumps(rec) + "\n")

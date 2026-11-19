@@ -1,0 +1,17 @@
+{
+  "description": "Fleet worker: works its goal file, never manages lanes",
+  "mode": "primary",
+  "prompt": "{file:./roles/worker.md}",
+  "tools": {
+    "write": true,
+    "edit": true
+  },
+  "permission": {
+    "bash": {
+      "fleet launch*": "deny",
+      "fleet park*": "deny",
+      "fleet stop*": "deny",
+      "fleet reopen*": "deny"
+    }
+  }
+}

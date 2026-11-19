@@ -1,0 +1,15 @@
+{
+  "description": "Fleet orchestrator: routes work, owns lane lifecycle, never edits files",
+  "mode": "primary",
+  "prompt": "{file:./roles/orchestrator.md}",
+  "tools": {
+    "write": false,
+    "edit": false
+  },
+  "permission": {
+    "bash": {
+      "git commit*": "deny",
+      "git push*": "deny"
+    }
+  }
+}

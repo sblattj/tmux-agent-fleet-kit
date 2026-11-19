@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash(fleet launch:*)",
+      "Bash(fleet park:*)",
+      "Bash(fleet stop:*)",
+      "Bash(fleet reopen:*)",
+      "AskUserQuestion"
+    ]
+  }
+}

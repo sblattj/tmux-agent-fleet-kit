@@ -1,0 +1,229 @@
+#!/usr/bin/env bash
+# fleet-goal: create, validate and turn a living goal file into a /goal condition.
+#   fleet-goal new <goal.json> --goal "<text>" [--report-to NAME]
+#   fleet-goal condition <goal.json> [--report-to NAME] [--turns N]
+#   fleet-goal check <goal.json>        first line "OK" or "FAIL <path>: <why>"; exit 0/1
+# Needs python3 (stdlib only). Portable to bash 3.2 and 5.
+set -eu
+
+usage() { sed -n '2,5p' "$0"; }
+
+[ $# -ge 1 ] || { usage; exit 2; }
+
+exec python3 - "$@" <<'PY'
+import datetime
+import json
+import os
+import re
+import sys
+
+ISO = re.compile(r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})$')
+AT_KEYS = ('at', 'answeredAt', 'lastReconciled')
+
+
+def now():
+    return datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+
+def die(msg, code=2):
+    sys.stderr.write(msg + '\n')
+    sys.exit(code)
+
+
+def parse_flags(rest, allowed):
+    out = {}
+    i = 0
+    while i < len(rest):
+        a = rest[i]
+        if a in allowed:
+            if i + 1 >= len(rest):
+                die('missing value for ' + a)
+            out[a] = rest[i + 1]
+            i += 2
+        else:
+            die('unknown arg ' + a)
+    return out
+
+
+def validate(path):
+    """Return None when valid, else a one-line reason."""
+    try:
+        with open(path) as fh:
+            d = json.load(fh)
+    except IOError as e:
+        return 'cannot read: %s' % e.strerror
+    except ValueError as e:
+        return 'not valid JSON: %s' % e
+    if not isinstance(d, dict):
+        return 'top level must be an object'
+    g = d.get('goal')
+    if not isinstance(g, str) or not g.strip():
+        return 'goal: must be a non-empty string'
+    ph = d.get('phases')
+    if not isinstance(ph, list) or not ph:
+        return 'phases: must be a non-empty list'
+    for i, p in enumerate(ph):
+        if not isinstance(p, dict) or not p.get('id') or not p.get('title'):
+            return 'phases[%d]: needs id and title' % i
+    na = d.get('nextAction')
+    if not isinstance(na, str) or not na.strip():
+        return 'nextAction: must be a non-empty string'
+    if not isinstance(d.get('done'), list):
+        return 'done: must be a list'
+    ofh = d.get('openForHuman')
+    if not isinstance(ofh, list):
+        return 'openForHuman: must be a list'
+    for i, q in enumerate(ofh):
+        if not isinstance(q, dict) or not q.get('id') or not q.get('question') or not q.get('status'):
+            return 'openForHuman[%d]: needs id, question and status' % i
+    dec = d.get('decisions')
+    if not isinstance(dec, list):
+        return 'decisions: must be a list'
+    for i, q in enumerate(dec):
+        if not isinstance(q, dict) or not q.get('id') or not q.get('decision'):
+            return 'decisions[%d]: needs id and decision' % i
+    gates = d.get('gates', {})
+    if not isinstance(gates, (dict, list)):
+        return 'gates: must be an object (or a list of {id})'
+    bad = []
+
+    def walk(node, where):
+        if isinstance(node, dict):
+            for k, v in node.items():
+                if k in AT_KEYS and isinstance(v, str) and not ISO.match(v):
+                    bad.append('%s.%s' % (where, k))
+                elif k in AT_KEYS and not isinstance(v, str):
+                    bad.append('%s.%s' % (where, k))
+                else:
+                    walk(v, '%s.%s' % (where, k))
+        elif isinstance(node, list):
+            for i, v in enumerate(node):
+                walk(v, '%s[%d]' % (where, i))
+
+    walk(d, '$')
+    if bad:
+        return '%s: must be ISO-8601 (stamp with date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)' % bad[0]
+    return None
+
+
+def gate_ids(d):
+    g = d.get('gates', {})
+    if isinstance(g, dict):
+        return [k for k in g.keys() if k]
+    return [x['id'] for x in g if isinstance(x, dict) and x.get('id')]
+
+
+def cmd_new(args):
+    if not args:
+        die('usage: fleet-goal new <goal.json> --goal "<text>" [--report-to NAME]')
+    path, rest = args[0], args[1:]
+    fl = parse_flags(rest, ('--goal', '--report-to'))
+    if '--goal' not in fl or not fl['--goal'].strip():
+        die('--goal "<text>" is required')
+    if os.path.exists(path):
+        die('refusing to overwrite existing %s' % path, 1)
+    t = now()
+    d = {
+        'goal': fl['--goal'],
+        'owner': os.environ.get('FLEET_NAME', ''),
+        'reportTo': fl.get('--report-to', ''),
+        'createdAt': t,
+        'lastReconciled': t,
+        'phases': [
+            {'id': 'P1', 'title': 'Do the work and record evidence in done[]'},
+        ],
+        'gates': {
+            'G1-evidence': 'every phase has evidence in done[] and the goal file validates',
+        },
+        'mustNot': [],
+        'nextAction': 'Read the goal, split it into phases[], then start phase P1.',
+        'done': [],
+        'openForHuman': [],
+        'decisions': [],
+        'changelog': [{'at': t, 'change': 'created', 'why': 'new goal'}],
+    }
+    parent = os.path.dirname(os.path.abspath(path))
+    if not os.path.isdir(parent):
+        os.makedirs(parent)
+    with open(path, 'w') as fh:
+        json.dump(d, fh, indent=2)
+        fh.write('\n')
+    why = validate(path)
+    if why:
+        die('internal: new file failed its own check: ' + why, 1)
+    print('OK created %s' % os.path.abspath(path))
+
+
+def cmd_check(args):
+    if len(args) != 1:
+        die('usage: fleet-goal check <goal.json>')
+    why = validate(args[0])
+    if why:
+        print('FAIL %s: %s' % (args[0], why))
+        sys.exit(1)
+    print('OK')
+
+
+def cmd_condition(args):
+    if not args:
+        die('usage: fleet-goal condition <goal.json> [--report-to NAME] [--turns N]')
+    path, rest = args[0], args[1:]
+    fl = parse_flags(rest, ('--report-to', '--turns'))
+    try:
+        turns = int(fl.get('--turns', '150'))
+    except ValueError:
+        die('--turns needs an integer')
+    why = validate(path)
+    if why:
+        print('FAIL %s: %s' % (path, why))
+        sys.exit(1)
+    abspath = os.path.abspath(path)
+    with open(path) as fh:
+        d = json.load(fh)
+    report = fl.get('--report-to') or d.get('reportTo') or ''
+    gates = gate_ids(d)
+    chk = 'fleet-goal check %s' % abspath
+    parts = [
+        '/goal Work the living goal file %s. Read it before every action; if this text, your memory or a summary '
+        'disagrees with it, the file wins.' % abspath,
+        'Start at its nextAction and follow phases[] in order: each step closes only with evidence the world '
+        'produced, recorded in done[]; after every edit to the goal file run `%s`.' % chk,
+        'Questions for the human go to openForHuman in the file plus a message to the decisions desk, never a '
+        'blocking prompt; keep working on everything that does not depend on the answer.',
+    ]
+    if report:
+        parts.append('Send %s a short status at each phase exit.' % report)
+    met = ['(1) the output of `%s` with its first line OK, run after the last edit to the goal file' % chk]
+    n = 2
+    if gates:
+        met.append('(%d) the main session printing the lines %s, one per gates key, each right after the check '
+                   'output it summarizes' % (n, ', '.join('GATE %s PASS' % g for g in gates)))
+        n += 1
+    if report:
+        met.append('(%d) a message to %s with the deliverable paths, the gate lines and the openForHuman list' % (n, report))
+    parts.append('The goal is met when this transcript shows all of: ' + '; '.join(met) + '.')
+    parts.append('The goal also ends when the transcript shows a line GOAL HALT: <reason> after a hit bound, a '
+                 'failed safety gate, or two identical failures with no alternative path, followed by a report.')
+    parts.append('When only openForHuman items remain, say so once and end the turn. Or stop after %d turns.' % turns)
+    text = ' '.join(parts)
+    if len(text) > 4000:
+        die('condition is %d chars, max 4000 (shorten the goal path or gate ids)' % len(text), 1)
+    print(text)
+
+
+def main(argv):
+    cmd, args = argv[0], argv[1:]
+    if cmd == 'new':
+        cmd_new(args)
+    elif cmd == 'condition':
+        cmd_condition(args)
+    elif cmd == 'check':
+        cmd_check(args)
+    elif cmd in ('-h', '--help', 'help'):
+        print('usage: fleet-goal new|condition|check <goal.json> [flags]')
+    else:
+        die('unknown command %s (new|condition|check)' % cmd)
+
+
+main(sys.argv[1:])
+PY

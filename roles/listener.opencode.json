@@ -1,0 +1,19 @@
+{
+  "description": "Fleet listener: turns feed events into messages, never acts",
+  "mode": "primary",
+  "prompt": "{file:./roles/listener.md}",
+  "tools": {
+    "write": false,
+    "edit": false
+  },
+  "permission": {
+    "bash": {
+      "fleet launch*": "deny",
+      "fleet park*": "deny",
+      "fleet stop*": "deny",
+      "fleet reopen*": "deny",
+      "git commit*": "deny",
+      "git push*": "deny"
+    }
+  }
+}

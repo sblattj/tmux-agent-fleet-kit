@@ -1,0 +1,4 @@
+{"type":"user","timestamp":"2026-01-01T10:00:00.000Z","message":{"role":"user","content":"Work the queue"}}
+{"type":"system","timestamp":"2026-01-01T10:00:01.000Z","content":"Goal set: drain the queue"}
+{"type":"attachment","timestamp":"2026-01-01T10:03:00.000Z","attachment":{"type":"goal_status","met":false,"reason":"queue not empty"}}
+{"type":"system","timestamp":"2026-01-01T10:10:00.000Z","content":"Goal paused"}

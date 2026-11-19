@@ -1,0 +1,19 @@
+{
+  "description": "Fleet decisions desk: relays the human's decisions, never edits or launches",
+  "mode": "primary",
+  "prompt": "{file:./roles/desk.md}",
+  "tools": {
+    "write": false,
+    "edit": false
+  },
+  "permission": {
+    "bash": {
+      "fleet launch*": "deny",
+      "fleet park*": "deny",
+      "fleet stop*": "deny",
+      "fleet reopen*": "deny",
+      "git commit*": "deny",
+      "git push*": "deny"
+    }
+  }
+}

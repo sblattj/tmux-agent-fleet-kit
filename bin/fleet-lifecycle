@@ -1,0 +1,819 @@
+#!/usr/bin/env bash
+# fleet-lifecycle: tick / park / reopen / cleanup / handoff for fleet lanes. `fleet` dispatches here.
+#
+#   fleet tick [--json]               read-only table: NAME CLI ROLE TIER LAST-ACTIVE GOAL UNREAD ACTION
+#   fleet park NAME [--no-compact]    type /compact and wait for the CLI's own compact record in the transcript,
+#                                     then stop the CLI, kill its pane, roster status=parked + resume command;
+#                                     an unconfirmed compact refuses to park (--no-compact skips the compact)
+#   fleet reopen NAME [--fresh]       parked/done lane back: resume the same id, or --fresh from handoff/NAME.md
+#   fleet cleanup [--apply] [--kill-orphans]   dry run by default; --apply archives the roster, parks, marks
+#   fleet handoff NAME                write $FLEET_STATE/handoff/NAME.md (first line "Was: NAME") from the transcript
+#
+# Columns: TIER = the lane's roster model (or -); LAST-ACTIVE = age of the newest of tmux window_activity,
+# the claude sessions/<pid>.json statusUpdatedAt, roster lastActive; UNREAD = unread/young (young = under 3600 s old).
+# ACTION: park = worker AND (goal achieved OR goal stopped > 600 s) AND no unread inbox line under 3600 s old;
+# orchestrator-decides = worker with goal none; - = nothing. Orchestrator/desk/listener lanes are never parked.
+# Stopped-since time, in order: roster goalStoppedAt (epoch secs or ISO), the transcript record's timestamp
+# (claude), the goals db row's updated_at else db mtime (codex), session time.updated (opencode), else file mtime.
+# env: FLEET_STATE FLEET_TMUX_SESSION FLEET_TMUX_SOCKET FLEET_CLAUDE_HOME (~/.claude) CODEX_HOME (~/.codex)
+#      FLEET_BIN (path of `fleet`, default: sibling of this script) FLEET_PARK_WAIT (20 s) FLEET_COMPACT_WAIT (600 s) FLEET_QUIET_SECS (7200)
+#      FLEET_CLAUDE_BIN / FLEET_OPENCODE_BIN
+# ---
+set -euo pipefail
+
+SESSION=${FLEET_TMUX_SESSION:-fleet}
+SOCKET=${FLEET_TMUX_SOCKET:-}
+STATE=${FLEET_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet}
+ROSTER=$STATE/roster.json
+PARK_WAIT=${FLEET_PARK_WAIT:-20}
+COMPACT_WAIT=${FLEET_COMPACT_WAIT:-600}
+export FLEET_STATE=$STATE FLEET_TMUX_SESSION=$SESSION FLEET_TMUX_SOCKET=$SOCKET
+export FLEET_CLAUDE_HOME=${FLEET_CLAUDE_HOME:-$HOME/.claude} CODEX_HOME=${CODEX_HOME:-$HOME/.codex}
+HERE=$(cd "$(dirname "$0")" && pwd -P)
+
+usage() { sed -n '2,/^# ---$/{/^# ---$/d;s/^# \{0,1\}//;p;}' "$0"; exit 2; }
+die() { printf 'FAIL %s\n' "$*" >&2; exit 1; }
+now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+tm() { if [ -n "$SOCKET" ]; then tmux -L "$SOCKET" "$@"; else tmux "$@"; fi; }
+flog() { mkdir -p "$STATE/log"; printf '%s %s\n' "$(now)" "$*" >> "$STATE/log/fleet.log"; }
+need() { command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1"; }
+
+pane_alive() {
+  local out
+  [ -n "${1:-}" ] || return 1
+  out=$(tm list-panes -a -F '#{pane_id}' 2>/dev/null || true)
+  printf '%s\n' "$out" | grep -qx -- "$1"
+}
+
+roster_get() {
+  [ -s "$ROSTER" ] || return 0
+  jq -r --arg n "$1" --arg f "$2" '.[$n][$f] // empty' "$ROSTER" 2>/dev/null || true
+}
+
+roster_merge() {
+  local t
+  mkdir -p "$STATE"
+  [ -s "$ROSTER" ] || printf '{}\n' > "$ROSTER"
+  t=$(mktemp "$STATE/.roster.XXXXXX")
+  if jq --arg n "$1" --argjson p "$2" '.[$n] = ((.[$n] // {}) + $p)' "$ROSTER" > "$t"; then
+    mv "$t" "$ROSTER"
+  else
+    rm -f "$t"; die "could not update $ROSTER"
+  fi
+}
+
+poll() {
+  local cmd=$1 secs=$2 end
+  end=$(( $(date +%s) + secs ))
+  while :; do
+    if eval "$cmd"; then return 0; fi
+    [ "$(date +%s)" -lt "$end" ] || return 1
+    sleep 1
+  done
+}
+
+has_lane() { [ -s "$ROSTER" ] && jq -e --arg n "$1" 'has($n)' "$ROSTER" >/dev/null 2>&1; }
+
+role_guard() { # verb
+  if [ -n "${FLEET_ROLE:-}" ] && [ "$FLEET_ROLE" != orchestrator ]; then die "role $FLEET_ROLE can't $1"; fi
+}
+
+resume_cmd() { # name -> native command that resumes the lane's session
+  local cli sid dir
+  cli=$(roster_get "$1" cli); sid=$(roster_get "$1" session_id); dir=$(roster_get "$1" dir)
+  [ -n "$sid" ] || return 0
+  case $cli in
+    claude) printf '%s --resume %s -n %s' "${FLEET_CLAUDE_BIN:-claude}" "$sid" "$1" ;;
+    codex) printf '%s resume %s' "${FLEET_CODEX_BIN:-codex}" "$sid" ;;
+    opencode) printf '%s -s %s %s' "${FLEET_OPENCODE_BIN:-opencode}" "$sid" "$dir" ;;
+  esac
+}
+
+IFS= read -r -d '' PYLIB <<'PY' || true
+import os, sys, json, re, time, glob, calendar, subprocess, sqlite3, urllib.request
+
+STATE = os.environ["FLEET_STATE"]
+ROSTER = STATE + "/roster.json"
+SOCK = os.environ.get("FLEET_TMUX_SOCKET", "")
+SESSION = os.environ.get("FLEET_TMUX_SESSION", "fleet")
+CLAUDE_HOME = os.environ["FLEET_CLAUDE_HOME"]
+CODEX_HOME = os.environ["CODEX_HOME"]
+NOW = time.time()
+YOUNG = 3600
+STOP_AFTER = 600
+QUIET = int(os.environ.get("FLEET_QUIET_SECS", "7200"))
+
+
+def tm(*a):
+    cmd = ["tmux"] + (["-L", SOCK] if SOCK else []) + list(a)
+    try:
+        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, universal_newlines=True)
+        return p.returncode, p.stdout
+    except OSError:
+        return 1, ""
+
+
+def load_roster():
+    try:
+        with open(ROSTER) as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+ISO = re.compile(r"^(\d{4})-(\d\d)-(\d\d)[T ](\d\d):(\d\d):(\d\d)(\.\d+)?(Z|[+-]\d\d:?\d\d)?$")
+
+
+def to_epoch(v):
+    if v is None or v == "":
+        return 0
+    if isinstance(v, (int, float)):
+        v = float(v)
+        return v / 1000.0 if v > 1e11 else v
+    s = str(v).strip()
+    try:
+        return to_epoch(float(s))
+    except ValueError:
+        pass
+    m = ISO.match(s)
+    if not m:
+        return 0
+    y, mo, d, h, mi, se = [int(x) for x in m.groups()[:6]]
+    t = calendar.timegm((y, mo, d, h, mi, se, 0, 0, 0))
+    z = m.group(8)
+    if z and z != "Z":
+        sign = 1 if z[0] == "+" else -1
+        zz = z[1:].replace(":", "")
+        t -= sign * (int(zz[:2]) * 3600 + int(zz[2:]) * 60)
+    return t
+
+
+def strings(o):
+    if isinstance(o, str):
+        yield o
+    elif isinstance(o, dict):
+        for v in o.values():
+            for s in strings(v):
+                yield s
+    elif isinstance(o, list):
+        for v in o:
+            for s in strings(v):
+                yield s
+
+
+def claude_file(sid):
+    fs = glob.glob(os.path.join(CLAUDE_HOME, "projects", "*", sid + ".jsonl")) if sid else []
+    return fs[0] if fs else None
+
+
+def claude_goal(sid):
+    f = claude_file(sid)
+    if not f:
+        return None
+    state, since, mt = "none", 0, os.path.getmtime(f)
+    with open(f, errors="replace") as fh:
+        for line in fh:
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(r, dict):
+                continue
+            ts = to_epoch(r.get("timestamp"))
+            att = r.get("attachment")
+            if r.get("type") == "attachment" and isinstance(att, dict) and att.get("type") == "goal_status":
+                if att.get("met") is True:
+                    state = "achieved"
+                else:
+                    state = "active"
+                continue
+            if r.get("type") == "assistant":
+                continue
+            txt = "\n".join(strings(r))
+            if "Goal set:" in txt:
+                state = "active"
+            elif re.search(r"Goal (cleared|paused)", txt) and state != "none":
+                state, since = "stopped", (ts or mt)
+    return state, since or mt
+
+
+def codex_goal(sid):
+    db = os.path.join(CODEX_HOME, "goals_1.sqlite")
+    if not sid or not os.path.exists(db):
+        return None
+    try:
+        c = sqlite3.connect("file:%s?mode=ro" % db, uri=True)
+        cols = [r[1] for r in c.execute("pragma table_info(thread_goals)")]
+        sel = "status" + (", updated_at" if "updated_at" in cols else ", null")
+        row = c.execute("select %s from thread_goals where thread_id=? order by rowid desc limit 1" % sel, (sid,)).fetchone()
+        c.close()
+    except sqlite3.Error:
+        return None
+    if not row:
+        return "none", 0
+    st = row[0]
+    state = "active" if st == "active" else ("achieved" if st == "complete" else "stopped")
+    return state, to_epoch(row[1]) or os.path.getmtime(db)
+
+
+def http_json(url, timeout=3):
+    with urllib.request.urlopen(url, timeout=timeout) as r:
+        return json.loads(r.read().decode("utf-8", "replace"))
+
+
+def opencode_goal(e):
+    port, sid = e.get("port"), e.get("session_id")
+    if not port or not sid:
+        return None
+    try:
+        data = http_json("http://127.0.0.1:%s/session" % port)
+    except Exception:
+        return None
+    for s in data if isinstance(data, list) else []:
+        if s.get("id") == sid:
+            g = ((s.get("metadata") or {}).get("goal") or {}).get("state")
+            if not g:
+                return "none", 0
+            state = "active" if g == "active" else ("achieved" if g in ("complete", "achieved") else "stopped")
+            return state, to_epoch((s.get("time") or {}).get("updated"))
+    return None
+
+
+def goal_state(e):
+    cli, sid = e.get("cli"), e.get("session_id")
+    r = None
+    if cli == "claude":
+        r = claude_goal(sid)
+    elif cli == "codex":
+        r = codex_goal(sid)
+    elif cli == "opencode":
+        r = opencode_goal(e)
+    if r is None:
+        r = (e.get("goalState") or "none", 0)
+    state, since = r
+    ov = to_epoch(e.get("goalStoppedAt"))
+    if state == "stopped" and ov:
+        since = ov
+    return state, since
+
+
+def pane_activity():
+    rc, out = tm("list-panes", "-a", "-F", "#{pane_id} #{window_activity}")
+    d = {}
+    for ln in out.splitlines():
+        p = ln.split()
+        if len(p) == 2:
+            d[p[0]] = int(p[1]) if p[1].isdigit() else 0
+    return d
+
+
+def claude_busy(sid):
+    best = 0
+    for f in glob.glob(os.path.join(CLAUDE_HOME, "sessions", "*.json")):
+        try:
+            with open(f) as fh:
+                d = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if d.get("sessionId") == sid:
+            best = max(best, to_epoch(d.get("statusUpdatedAt")))
+    return best
+
+
+def inbox(name):
+    p = os.path.join(STATE, "inbox", name + ".jsonl")
+    cp = os.path.join(STATE, "inbox", name + ".cursor")
+    try:
+        with open(p) as f:
+            lines = [l for l in f.read().splitlines() if l.strip()]
+    except OSError:
+        return 0, 0
+    try:
+        with open(cp) as f:
+            cur = int(f.read().strip() or 0)
+    except (OSError, ValueError):
+        cur = 0
+    unread = lines[cur:]
+    young = 0
+    for l in unread:
+        try:
+            at = to_epoch(json.loads(l).get("at"))
+        except ValueError:
+            at = 0
+        if not at or NOW - at < YOUNG:
+            young += 1
+    return len(unread), young
+
+
+def facts(name, e, act):
+    pane = e.get("pane") or ""
+    alive = pane in act
+    status = e.get("status") or "live"
+    role = e.get("role") or "worker"
+    gs, since = goal_state(e)
+    last = to_epoch(e.get("lastActive"))
+    if alive:
+        last = max(last, act[pane])
+    if e.get("cli") == "claude":
+        last = max(last, claude_busy(e.get("session_id")))
+    un, young = inbox(name)
+    action = "-"
+    if status == "live" and role == "worker":
+        if gs == "none":
+            action = "orchestrator-decides"
+        elif (gs == "achieved" or (gs == "stopped" and NOW - since > STOP_AFTER)) and young == 0:
+            action = "park"
+    return {"name": name, "cli": e.get("cli"), "role": role, "tier": e.get("model") or "-", "status": status,
+            "pane": pane, "paneAlive": alive, "goalState": gs, "goalStoppedAt": int(since) if gs == "stopped" else 0,
+            "lastActive": int(last), "unread": un, "unreadYoung": young, "action": action,
+            "session_id": e.get("session_id")}
+
+
+def age(last):
+    if not last:
+        return "never"
+    s = int(NOW - last)
+    if s < 0:
+        s = 0
+    if s < 120:
+        return "%ds" % s
+    if s < 7200:
+        return "%dm" % (s // 60)
+    if s < 172800:
+        return "%dh" % (s // 3600)
+    return "%dd" % (s // 86400)
+
+
+def all_facts():
+    r = load_roster()
+    act = pane_activity()
+    return [facts(n, r[n], act) for n in sorted(r) if isinstance(r[n], dict)]
+
+
+def cmd_tick(args):
+    fs = all_facts()
+    if "--json" in args:
+        print(json.dumps(fs, indent=1))
+        return
+    if not fs:
+        print("(no lanes)")
+        return
+    rows = [("NAME", "CLI", "ROLE", "TIER", "LAST-ACTIVE", "GOAL", "UNREAD", "ACTION")]
+    for f in fs:
+        rows.append((f["name"], f["cli"] or "-", f["role"], f["tier"], age(f["lastActive"]), f["goalState"],
+                     "%d/%d" % (f["unread"], f["unreadYoung"]), f["action"]))
+    w = [max(len(r[i]) for r in rows) for i in range(8)]
+    for r in rows:
+        print("  ".join(r[i].ljust(w[i]) for i in range(8)).rstrip())
+
+
+def cmd_facts(args):
+    r = load_roster()
+    n = args[0]
+    print(json.dumps(facts(n, r[n], pane_activity())))
+
+
+def cmd_scan(args):
+    r = load_roster()
+    act = pane_activity()
+    fs = [facts(n, r[n], act) for n in sorted(r) if isinstance(r[n], dict)]
+    quiet = [f for f in fs if f["status"] == "live" and f["role"] == "worker" and f["paneAlive"]
+             and f["goalState"] == "none" and f["lastActive"] and NOW - f["lastActive"] > QUIET]
+    dead = [{"name": f["name"], "pane": f["pane"]} for f in fs if f["status"] == "live" and not f["paneAlive"]]
+    live_panes = set(f["pane"] for f in fs if f["status"] == "live" and f["paneAlive"])
+    names = set(r.keys())
+    orphans = []
+    rc, out = tm("list-panes", "-s", "-t", "=" + SESSION + ":", "-F", "#{window_id}\t#{window_name}\t#{pane_id}")
+    wins = {}
+    if rc == 0:
+        for ln in out.splitlines():
+            p = ln.split("\t")
+            if len(p) == 3:
+                wins.setdefault(p[0], (p[1], set()))[1].add(p[2])
+    for wid, (wname, panes) in sorted(wins.items()):
+        if wname == "home" or wname in names or (panes & live_panes):
+            continue
+        orphans.append({"window": wid, "name": wname})
+    procs = []
+    me = set([os.getpid(), os.getppid()])
+    try:
+        ps = subprocess.run(["ps", "-axo", "pid=,args="], stdout=subprocess.PIPE, universal_newlines=True).stdout
+    except OSError:
+        ps = ""
+    gone = [f for f in fs if not f["paneAlive"]]
+    for ln in ps.splitlines():
+        m = re.match(r"\s*(\d+)\s+(.*)$", ln)
+        if not m:
+            continue
+        pid, args_ = int(m.group(1)), m.group(2)
+        if pid in me or "fleet-lifecycle" in args_ or "python" in args_.split(" ", 1)[0]:
+            continue
+        for f in gone:
+            e = r[f["name"]]
+            sid, cli = e.get("session_id") or "", e.get("cli") or ""
+            hit = ("/launch/%s.sh" % f["name"]) in args_
+            if not hit and cli and cli in args_.split(" ", 1)[0].split("/")[-1]:
+                if cli == "claude":
+                    hit = re.search(r"(^|\s)-n %s(\s|$)" % re.escape(f["name"]), args_) is not None
+                else:
+                    hit = len(sid) >= 8 and sid in args_
+            if hit:
+                procs.append({"pid": pid, "lane": f["name"], "args": args_[:120]})
+                break
+    print(json.dumps({"quiet": [{"name": f["name"], "age": age(f["lastActive"])} for f in quiet],
+                      "orphanWindows": orphans, "deadLanes": dead, "orphanProcs": procs}))
+
+
+# ---------------------------------------------------------------- handoff
+def clip(s, n=1500):
+    s = s.strip()
+    return s if len(s) <= n else s[:n] + " ..."
+
+
+def text_of(content):
+    if isinstance(content, str):
+        return content
+    out = []
+    for b in content if isinstance(content, list) else []:
+        if isinstance(b, dict) and b.get("type") in ("text", "input_text", "output_text") and isinstance(b.get("text"), str):
+            out.append(b["text"])
+    return "\n".join(out)
+
+
+def collect_claude(f):
+    goal, users, asst, files = None, [], [], []
+    with open(f, errors="replace") as fh:
+        for line in fh:
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(r, dict):
+                continue
+            t = r.get("type")
+            msg = r.get("message") if isinstance(r.get("message"), dict) else {}
+            if t == "assistant":
+                tx = text_of(msg.get("content"))
+                if tx.strip():
+                    asst.append(tx)
+                for b in msg.get("content") if isinstance(msg.get("content"), list) else []:
+                    if isinstance(b, dict) and b.get("type") == "tool_use":
+                        inp = b.get("input") or {}
+                        for k in ("file_path", "path", "notebook_path"):
+                            if isinstance(inp.get(k), str) and inp[k] not in files:
+                                files.append(inp[k])
+                continue
+            if t == "attachment":
+                continue
+            for s in strings(r):
+                i = s.find("Goal set:")
+                if i >= 0:
+                    goal = s[i + len("Goal set:"):].strip()
+            if t == "user":
+                tx = text_of(msg.get("content")).strip()
+                if tx and not tx.startswith("<"):
+                    users.append(tx)
+    return goal, users, asst, files
+
+
+def collect_codex(sid):
+    fs = glob.glob(os.path.join(CODEX_HOME, "sessions", "**", "rollout-*%s.jsonl" % sid), recursive=True)
+    if not fs:
+        return None
+    users, asst, files = [], [], []
+    with open(fs[0], errors="replace") as fh:
+        for line in fh:
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            p = r.get("payload") if isinstance(r, dict) else None
+            if not isinstance(p, dict):
+                continue
+            if p.get("type") == "message":
+                tx = text_of(p.get("content")).strip()
+                if p.get("role") == "assistant" and tx:
+                    asst.append(tx)
+                elif p.get("role") == "user" and tx and not tx.startswith("<") and not tx.startswith("# AGENTS"):
+                    users.append(tx)
+            for m in re.findall(r"\*\*\* (?:Update|Add|Delete) File: ([^\s\\\"]+)", line):
+                if m not in files:
+                    files.append(m)
+    return None, users, asst, files
+
+
+def collect_opencode(e):
+    data = None
+    port, sid = e.get("port"), e.get("session_id")
+    if port:
+        try:
+            data = http_json("http://127.0.0.1:%s/session/%s/message" % (port, sid), 5)
+        except Exception:
+            data = None
+    if data is None:
+        b = os.environ.get("FLEET_OPENCODE_BIN", "opencode")
+        # opencode 1.19 truncates `export` output when stdout is a pipe (proven: JSON cut at ~62 KB),
+        # so write it to a real file and read that back.
+        import tempfile
+        try:
+            with tempfile.TemporaryFile(mode="w+") as tf:
+                subprocess.run([b, "export", sid], stdout=tf, stderr=subprocess.DEVNULL,
+                               stdin=subprocess.DEVNULL, timeout=30)
+                tf.seek(0)
+                data = json.loads(tf.read())
+        except Exception:
+            return None
+    items = data if isinstance(data, list) else (data.get("messages") or [])
+    users, asst, files = [], [], []
+    for it in items:
+        role = (it.get("info") or {}).get("role")
+        for pt in it.get("parts") or []:
+            if pt.get("type") == "text" and (pt.get("text") or "").strip():
+                (asst if role == "assistant" else users).append(pt["text"])
+            inp = ((pt.get("state") or {}).get("input")) or {}
+            for k in ("filePath", "file_path", "path"):
+                if isinstance(inp.get(k), str) and inp[k] not in files:
+                    files.append(inp[k])
+    return None, users, asst, files
+
+
+def cmd_handoff(args):
+    name, out = args[0], args[1]
+    e = load_roster().get(name)
+    if not e:
+        sys.exit("no lane named %s" % name)
+    cli, sid = e.get("cli"), e.get("session_id")
+    if not sid:
+        sys.exit("lane %s has no session id; nothing to read" % name)
+    if cli == "claude":
+        f = claude_file(sid)
+        res = collect_claude(f) if f else None
+    elif cli == "codex":
+        res = collect_codex(sid)
+    else:
+        res = collect_opencode(e)
+    if res is None:
+        sys.exit("no transcript found for %s (%s %s)" % (name, cli, sid))
+    goal, users, asst, files = res
+    if not goal:
+        goal = users[-1] if users else "(no user message found)"
+    lines = ["Was: %s" % name,
+             "You are taking over lane %s from a retired session (cli=%s role=%s dir=%s session=%s). "
+             "Continue its work from the notes below; verify the repo state before relying on them."
+             % (name, cli, e.get("role") or "worker", e.get("dir") or "?", sid),
+             "", "## Last goal", clip(goal, 3000), "", "## Last assistant messages (newest last, up to 20)"]
+    last = asst[-20:]
+    if not last:
+        lines.append("(none)")
+    for i, a in enumerate(last, 1):
+        lines.append("%d. %s" % (i, clip(a).replace("\n", "\n   ")))
+    lines += ["", "## Files touched"] + (["- " + x for x in files] or ["(none recorded)"])
+    with open(out, "w") as fh:
+        fh.write("\n".join(lines) + "\n")
+
+
+def opencode_messages(e):
+    port, sid = e.get("port"), e.get("session_id")
+    if port:
+        try:
+            return http_json("http://127.0.0.1:%s/session/%s/message" % (port, sid), 5)
+        except Exception:
+            pass
+    b = os.environ.get("FLEET_OPENCODE_BIN", "opencode")
+    import tempfile
+    try:
+        with tempfile.TemporaryFile(mode="w+") as tf:   # export truncates on a pipe, see collect_opencode
+            subprocess.run([b, "export", sid], stdout=tf, stderr=subprocess.DEVNULL,
+                           stdin=subprocess.DEVNULL, timeout=30)
+            tf.seek(0)
+            d = json.loads(tf.read())
+        return d if isinstance(d, list) else (d.get("messages") or [])
+    except Exception:
+        return None
+
+
+def compact_count(e):
+    """Finished compactions in the lane's own transcript, or -1 when the transcript can't be read.
+    claude: system records with subtype compact_boundary (written when /compact completes)
+    codex:  rollout records with type compacted (written with the replacement history)
+    opencode: assistant messages with summary true and time.completed set"""
+    cli, sid = e.get("cli"), e.get("session_id")
+    if not sid:
+        return -1
+    n = 0
+    if cli == "claude":
+        f = claude_file(sid)
+        if not f:
+            return -1
+        with open(f, errors="replace") as fh:
+            for line in fh:
+                if '"compact_boundary"' in line:
+                    try:
+                        r = json.loads(line)
+                    except ValueError:
+                        continue
+                    if r.get("type") == "system" and r.get("subtype") == "compact_boundary":
+                        n += 1
+        return n
+    if cli == "codex":
+        fs = glob.glob(os.path.join(CODEX_HOME, "sessions", "**", "rollout-*%s.jsonl" % sid), recursive=True)
+        if not fs:
+            return -1
+        with open(fs[0], errors="replace") as fh:
+            for line in fh:
+                if '"compacted"' in line:
+                    try:
+                        r = json.loads(line)
+                    except ValueError:
+                        continue
+                    if r.get("type") == "compacted":
+                        n += 1
+        return n
+    if cli == "opencode":
+        items = opencode_messages(e)
+        if items is None:
+            return -1
+        for it in items:
+            i = it.get("info") or {}
+            if i.get("role") == "assistant" and i.get("summary") is True and (i.get("time") or {}).get("completed"):
+                n += 1
+        return n
+    return -1
+
+
+def cmd_compactcount(args):
+    print(compact_count(load_roster().get(args[0]) or {}))
+
+
+if __name__ == "__main__":
+    {"tick": cmd_tick, "facts": cmd_facts, "scan": cmd_scan, "handoff": cmd_handoff,
+     "compactcount": cmd_compactcount}[sys.argv[1]](sys.argv[2:])
+PY
+
+pyh() { python3 -I -c "$PYLIB" "$@"; }
+
+# ---------------------------------------------------------------- commands
+cmd_tick() {
+  need python3
+  pyh tick "$@"
+}
+
+cmd_handoff() {
+  [ $# -ge 1 ] || usage
+  local name=$1 out
+  need jq; need python3
+  has_lane "$name" || die "no lane named $name in the roster"
+  mkdir -p "$STATE/handoff"
+  out=$STATE/handoff/$name.md
+  pyh handoff "$name" "$out" || die "could not build a handoff for $name"
+  flog "$name handoff written $out"
+  echo "OK handoff $name $out"
+}
+
+cmd_park() {
+  local name= compact=1 pane cli pid panepid clipid= facts gs last res args before after= cjson=null
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --no-compact) compact=0; shift ;;
+      -*) die "unknown flag $1" ;;
+      *) name=$1; shift ;;
+    esac
+  done
+  [ -n "$name" ] || usage
+  role_guard park
+  need jq; need python3
+  has_lane "$name" || die "no lane named $name in the roster"
+  case $(roster_get "$name" status) in parked|archived) echo "OK $name already $(roster_get "$name" status)"; return 0 ;; esac
+  pane=$(roster_get "$name" pane); cli=$(roster_get "$name" cli); pid=$(roster_get "$name" pid)
+  facts=$(pyh facts "$name")
+  gs=$(printf '%s' "$facts" | jq -r .goalState); last=$(printf '%s' "$facts" | jq -r .lastActive)
+  if pane_alive "$pane" && [ "$compact" = 1 ]; then
+    # compact before parking, so a reopen resumes the compacted context; never park on an unconfirmed compact
+    before=$(pyh compactcount "$name")
+    [ "$before" -ge 0 ] 2>/dev/null || die "can't read the transcript of $name to confirm a compact; not parked (fleet park $name --no-compact parks without it)"
+    tm send-keys -t "$pane" -l /compact
+    sleep 1
+    tm send-keys -t "$pane" Enter
+    flog "$name compact requested (finished compactions before: $before)"
+    poll 'after=$(pyh compactcount "$name"); [ "$after" -gt "$before" ] 2>/dev/null' "$COMPACT_WAIT" \
+      || die "compact of $name not confirmed in its transcript after ${COMPACT_WAIT}s; not parked (fleet park $name --no-compact parks without it)"
+    cjson=$(jq -n --arg t "$(now)" '$t')
+    flog "$name compacted (finished compactions: $after)"
+    echo "OK compacted $name"
+  fi
+  if pane_alive "$pane"; then
+    panepid=$(tm display-message -p -t "$pane" '#{pane_pid}' 2>/dev/null || true)
+    if [ -n "$pid" ] && [ "$pid" != "$panepid" ]; then clipid=$pid; fi
+    tm send-keys -t "$pane" C-c 2>/dev/null || true
+    sleep 1
+    tm send-keys -t "$pane" C-c 2>/dev/null || true
+    poll '! pane_alive "$pane" || { [ -n "$clipid" ] && ! kill -0 "$clipid" 2>/dev/null; }' "$PARK_WAIT" || true
+    if [ -n "$clipid" ] && kill -0 "$clipid" 2>/dev/null; then
+      args=$(ps -p "$clipid" -o args= 2>/dev/null || true)
+      case $args in *"$cli"*|*"$name"*|*launch/*) kill "$clipid" 2>/dev/null || true; sleep 1 ;; esac
+    fi
+    if pane_alive "$pane"; then tm kill-pane -t "$pane" 2>/dev/null || true; fi
+    pane_alive "$pane" && die "could not close pane $pane of $name"
+  fi
+  res=$(resume_cmd "$name")
+  roster_merge "$name" "$(jq -n --arg at "$(now)" --arg r "$res" --arg gs "$gs" --argjson last "${last:-0}" --argjson c "$cjson" \
+    '{status:"parked",parkedAt:$at,resume:$r,goalState:$gs,lastActive:$last} + (if $c then {compactedAt:$c} else {} end)')"
+  flog "$name parked pane=$pane goal=$gs"
+  echo "OK parked $name goal=$gs resume=${res:-none}"
+}
+
+cmd_reopen() {
+  local name= fresh=0 cli role dir sid status fb file model
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --fresh) fresh=1; shift ;;
+      -*) die "unknown flag $1" ;;
+      *) name=$1; shift ;;
+    esac
+  done
+  [ -n "$name" ] || usage
+  role_guard reopen
+  need jq
+  has_lane "$name" || die "no lane named $name in the roster"
+  status=$(roster_get "$name" status)
+  case ${status:-live} in parked|done) ;; *) die "lane $name is ${status:-live}, only parked or done lanes reopen" ;; esac
+  cli=$(roster_get "$name" cli); role=$(roster_get "$name" role); role=${role:-worker}
+  dir=$(roster_get "$name" dir); sid=$(roster_get "$name" session_id)
+  model=$(roster_get "$name" model)
+  set -- --cli "$cli"
+  [ -z "$model" ] || set -- "$@" --model "$model"   # keep the lane's model; fleet launch would default claude to opus
+  set -- "$@" --role "$role" --dir "$dir"
+  fb=${FLEET_BIN:-$HERE/fleet}
+  [ -n "$dir" ] || die "lane $name has no dir in the roster"
+  if [ "$fresh" = 1 ]; then
+    file=$STATE/handoff/$name.md
+    [ -s "$file" ] || cmd_handoff "$name" >/dev/null
+    [ -s "$file" ] || die "no handoff for $name"
+    "$fb" launch "$@" "$name" prompt "$file"
+  else
+    [ -n "$sid" ] || die "lane $name has no session id; use: fleet reopen $name --fresh"
+    "$fb" launch "$@" "$name" resume "$sid"
+  fi
+  roster_merge "$name" '{"status":"live","parkedAt":null}'
+  flog "$name reopened fresh=$fresh"
+}
+
+cmd_cleanup() {
+  local apply=0 kill=0 scan n i ts
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --apply) apply=1; shift ;;
+      --kill-orphans) kill=1; shift ;;
+      *) usage ;;
+    esac
+  done
+  need jq; need python3
+  [ "$apply" = 0 ] || role_guard "cleanup --apply"
+  [ -s "$ROSTER" ] || { echo "(no lanes)"; return 0; }
+  scan=$(pyh scan)
+  echo "(1) goal-less workers quiet > ${FLEET_QUIET_SECS:-7200}s:"
+  printf '%s' "$scan" | jq -r '.quiet[] | "  QUIET \(.name) idle=\(.age)"'
+  echo "(2) tmux windows in session $SESSION with no roster lane:"
+  printf '%s' "$scan" | jq -r '.orphanWindows[] | "  ORPHAN-WINDOW \(.name) window=\(.window)"'
+  echo "(3) live roster entries whose pane is gone:"
+  printf '%s' "$scan" | jq -r '.deadLanes[] | "  DEAD-LANE \(.name) pane=\(.pane)"'
+  echo "(4) cli processes naming a roster lane that has no pane:"
+  printf '%s' "$scan" | jq -r '.orphanProcs[] | "  ORPHAN-PROC pid=\(.pid) lane=\(.lane) \(.args)"'
+  if [ "$apply" = 0 ]; then
+    echo "dry run: nothing changed (pass --apply; add --kill-orphans to kill (2) and (4))"
+    return 0
+  fi
+  ts=$(date -u +%Y%m%dT%H%M%SZ)
+  mkdir -p "$STATE/archive"
+  cp "$ROSTER" "$STATE/archive/roster-$ts.json"
+  echo "archived roster -> $STATE/archive/roster-$ts.json"
+  for n in $(printf '%s' "$scan" | jq -r '.quiet[].name'); do
+    ( cmd_park "$n" ) || echo "WARN could not park $n" >&2
+  done
+  for n in $(printf '%s' "$scan" | jq -r '.deadLanes[].name'); do
+    roster_merge "$n" "$(jq -n --arg at "$(now)" --arg r "$(resume_cmd "$n")" '{status:"parked",parkedAt:$at,resume:$r}')"
+    flog "$n marked parked by cleanup (pane gone)"
+    echo "OK marked $n parked"
+  done
+  if [ "$kill" = 1 ]; then
+    for i in $(printf '%s' "$scan" | jq -r '.orphanWindows[].window'); do
+      tm kill-window -t "$i" 2>/dev/null && echo "OK killed window $i" || echo "WARN could not kill window $i" >&2
+    done
+    for i in $(printf '%s' "$scan" | jq -r '.orphanProcs[].pid'); do
+      kill "$i" 2>/dev/null && echo "OK killed pid $i" || echo "WARN could not kill pid $i" >&2
+    done
+  fi
+}
+
+[ $# -ge 1 ] || usage
+sub=$1; shift
+case $sub in
+  tick) cmd_tick "$@" ;;
+  park) cmd_park "$@" ;;
+  reopen) cmd_reopen "$@" ;;
+  cleanup) cmd_cleanup "$@" ;;
+  handoff) cmd_handoff "$@" ;;
+  -h|--help|help) usage ;;
+  *) usage ;;
+esac

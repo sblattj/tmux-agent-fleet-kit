@@ -1,0 +1,2 @@
+{"type":"user","timestamp":"2026-01-01T10:00:00.000Z","message":{"role":"user","content":"Just chat"}}
+{"type":"assistant","timestamp":"2026-01-01T10:00:05.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Sure."}]}}
