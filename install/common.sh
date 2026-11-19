@@ -190,3 +190,21 @@ fc_install_opencode_roles() {
   done
   if [ "$found" = 0 ]; then fc_say "no role agents found in $FC_ROLES_DIR (roles/*.opencode.json); skipping"; fi
 }
+
+# Write $1/fleet-<role>.json (agents dir) from each roles/<role>.kiro.json: .name = "fleet-<role>" and
+# .prompt = the INLINE text of roles/<role>.md (Kiro rejects absolute file:// prompts and silently falls
+# back to the default agent, dropping the deny rules). Idempotent; reuses fc_jq_edit for backups.
+fc_install_kiro_roles() {
+  local dir=$1 f role found=0
+  for f in "$FC_ROLES_DIR"/*.kiro.json; do
+    [ -f "$f" ] || continue
+    found=1
+    role=$(basename "$f" .kiro.json)
+    jq -e . "$f" >/dev/null 2>&1 || fc_die "$f is not valid JSON"
+    [ -f "$FC_ROLES_DIR/$role.md" ] || fc_die "missing $FC_ROLES_DIR/$role.md (prompt text for kiro agent fleet-$role)"
+    fc_jq_edit "$dir/fleet-$role.json" "kiro agent fleet-$role" --arg n "fleet-$role" \
+      --rawfile p "$FC_ROLES_DIR/$role.md" --slurpfile a "$f" \
+      '$a[0] | .name = $n | .prompt = $p'
+  done
+  if [ "$found" = 0 ]; then fc_say "no role agents found in $FC_ROLES_DIR (roles/*.kiro.json); skipping"; fi
+}

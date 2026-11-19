@@ -196,7 +196,7 @@ def wake(frm, to, text, entry):
             return "opencode prompt_async", 200 <= code < 300, "http %s" % code
         except Exception as e:
             return "opencode prompt_async", False, str(e)
-    if cli == "claude":
+    if cli in ("claude", "kiro"):  # kiro: typed text + a separate Enter starts a turn on an idle lane (PROVEN)
         pane = entry.get("pane")
         if not pane:
             return "tmux send-keys", False, "roster entry lacks pane"

@@ -15,9 +15,13 @@
 # orchestrator-decides = worker with goal none; - = nothing. Orchestrator/desk/listener lanes are never parked.
 # Stopped-since time, in order: roster goalStoppedAt (epoch secs or ISO), the transcript record's timestamp
 # (claude), the goals db row's updated_at else db mtime (codex), session time.updated (opencode), else file mtime.
+# kiro (Kiro CLI): transcript ${KIRO_HOME:-~/.kiro}/sessions/*/<sid>/{session.json,messages.jsonl}; goal = the
+# `goal` workflow's run_start/run_complete markers in messages.jsonl (completed = achieved, any other end = stopped);
+# last activity = session.json lastModifiedAt else messages.jsonl mtime; compact = tombstone kind=summarization lines.
 # env: FLEET_STATE FLEET_TMUX_SESSION FLEET_TMUX_SOCKET FLEET_CLAUDE_HOME (~/.claude) CODEX_HOME (~/.codex)
+#      KIRO_HOME (~/.kiro)
 #      FLEET_BIN (path of `fleet`, default: sibling of this script) FLEET_PARK_WAIT (20 s) FLEET_COMPACT_WAIT (600 s) FLEET_QUIET_SECS (7200)
-#      FLEET_CLAUDE_BIN / FLEET_OPENCODE_BIN
+#      FLEET_CLAUDE_BIN / FLEET_OPENCODE_BIN / FLEET_CODEX_BIN / FLEET_KIRO_BIN (kiro-cli)
 # ---
 set -euo pipefail
 
@@ -86,6 +90,7 @@ resume_cmd() { # name -> native command that resumes the lane's session
     claude) printf '%s --resume %s -n %s' "${FLEET_CLAUDE_BIN:-claude}" "$sid" "$1" ;;
     codex) printf '%s resume %s' "${FLEET_CODEX_BIN:-codex}" "$sid" ;;
     opencode) printf '%s -s %s %s' "${FLEET_OPENCODE_BIN:-opencode}" "$sid" "$dir" ;;
+    kiro) printf '%s chat --agent-engine v3 --trust-all-tools --trust-workspace --resume-id %s' "${FLEET_KIRO_BIN:-kiro-cli}" "$sid" ;;
   esac
 }
 
@@ -98,6 +103,7 @@ SOCK = os.environ.get("FLEET_TMUX_SOCKET", "")
 SESSION = os.environ.get("FLEET_TMUX_SESSION", "fleet")
 CLAUDE_HOME = os.environ["FLEET_CLAUDE_HOME"]
 CODEX_HOME = os.environ["CODEX_HOME"]
+KIRO_HOME = os.environ.get("KIRO_HOME") or os.path.join(os.path.expanduser("~"), ".kiro")
 NOW = time.time()
 YOUNG = 3600
 STOP_AFTER = 600
@@ -240,6 +246,79 @@ def opencode_goal(e):
     return None
 
 
+def kiro_dir(sid):
+    # sessions/<cwdhash>/<sid>/ ; glob by sid (the cwd hash isn't in the roster)
+    fs = glob.glob(os.path.join(KIRO_HOME, "sessions", "*", sid)) if sid else []
+    return fs[0] if fs else None
+
+
+def kiro_msgs(sid):
+    d = kiro_dir(sid)
+    f = os.path.join(d, "messages.jsonl") if d else None
+    return f if f and os.path.exists(f) else None
+
+
+def kiro_events(f):
+    """Yield (payload, timestamp) for each messages.jsonl line."""
+    with open(f, errors="replace") as fh:
+        for line in fh:
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            p = r.get("payload") if isinstance(r, dict) else None
+            if isinstance(p, dict):
+                yield p, to_epoch(r.get("timestamp"))
+
+
+def kiro_workflow(p):
+    """The workflow marker JSON inside a steer user line, or None."""
+    c = p.get("content")
+    if p.get("type") != "user" or not isinstance(c, str) or "_kiro/workflow/run_" not in c:
+        return None
+    try:
+        d = json.loads(c)
+    except ValueError:
+        return None
+    return d if isinstance(d, dict) and str(d.get("method", "")).startswith("_kiro/workflow/run_") else None
+
+
+def kiro_goal(sid):
+    f = kiro_msgs(sid)
+    if not f:
+        return None
+    state, since, mt = "none", 0, os.path.getmtime(f)
+    wid = None
+    for p, ts in kiro_events(f):
+        d = kiro_workflow(p)
+        if not d:
+            continue
+        name = d.get("workflowName") or (d.get("finalState") or {}).get("workflowName")
+        if d["method"].endswith("run_start") and name == "goal":
+            state, wid, since = "active", d.get("workflowId"), 0
+        elif d["method"].endswith("run_complete") and (name == "goal" or (wid and d.get("workflowId") == wid)):
+            if d.get("status") == "completed":
+                state, since = "achieved", 0
+            else:   # failed / paused at max iterations / cancelled: the goal isn't running and wasn't met
+                state, since = "stopped", (ts or mt)
+    return state, since
+
+
+def kiro_activity(sid):
+    d = kiro_dir(sid)
+    if not d:
+        return 0
+    try:
+        with open(os.path.join(d, "session.json")) as fh:
+            t = to_epoch(json.load(fh).get("lastModifiedAt"))
+        if t:
+            return t
+    except (OSError, ValueError, AttributeError):
+        pass
+    f = os.path.join(d, "messages.jsonl")
+    return os.path.getmtime(f) if os.path.exists(f) else 0
+
+
 def goal_state(e):
     cli, sid = e.get("cli"), e.get("session_id")
     r = None
@@ -249,6 +328,8 @@ def goal_state(e):
         r = codex_goal(sid)
     elif cli == "opencode":
         r = opencode_goal(e)
+    elif cli == "kiro":
+        r = kiro_goal(sid)
     if r is None:
         r = (e.get("goalState") or "none", 0)
     state, since = r
@@ -317,6 +398,8 @@ def facts(name, e, act):
         last = max(last, act[pane])
     if e.get("cli") == "claude":
         last = max(last, claude_busy(e.get("session_id")))
+    elif e.get("cli") == "kiro":
+        last = max(last, kiro_activity(e.get("session_id")))
     un, young = inbox(name)
     action = "-"
     if status == "live" and role == "worker":
@@ -538,6 +621,29 @@ def collect_opencode(e):
     return None, users, asst, files
 
 
+def collect_kiro(sid):
+    f = kiro_msgs(sid)
+    if not f:
+        return None
+    goal, users, asst = None, [], []
+    for p, _ in kiro_events(f):
+        d = kiro_workflow(p)
+        if d:
+            if d["method"].endswith("run_start") and d.get("workflowName") == "goal":
+                goal = str((d.get("inputs") or {}).get("prompt") or "") or goal
+            continue
+        t = p.get("type")
+        c = p.get("content")
+        tx = (c if isinstance(c, str) else text_of(c)).strip()
+        if not tx:
+            continue
+        if t == "assistant":
+            asst.append(tx)
+        elif t == "user" and p.get("source") != "steer" and not tx.startswith(("<", "[WORKFLOW", "A workflow you launched")):
+            users.append(tx)
+    return goal, users, asst, []
+
+
 def cmd_handoff(args):
     name, out = args[0], args[1]
     e = load_roster().get(name)
@@ -551,6 +657,8 @@ def cmd_handoff(args):
         res = collect_claude(f) if f else None
     elif cli == "codex":
         res = collect_codex(sid)
+    elif cli == "kiro":
+        res = collect_kiro(sid)
     else:
         res = collect_opencode(e)
     if res is None:
@@ -597,7 +705,8 @@ def compact_count(e):
     """Finished compactions in the lane's own transcript, or -1 when the transcript can't be read.
     claude: system records with subtype compact_boundary (written when /compact completes)
     codex:  rollout records with type compacted (written with the replacement history)
-    opencode: assistant messages with summary true and time.completed set"""
+    opencode: assistant messages with summary true and time.completed set
+    kiro: messages.jsonl payloads with type tombstone and kind summarization (appended when /compact finishes)"""
     cli, sid = e.get("cli"), e.get("session_id")
     if not sid:
         return -1
@@ -629,6 +738,14 @@ def compact_count(e):
                         continue
                     if r.get("type") == "compacted":
                         n += 1
+        return n
+    if cli == "kiro":
+        f = kiro_msgs(sid)
+        if not f:
+            return -1
+        for p, _ in kiro_events(f):
+            if p.get("type") == "tombstone" and p.get("kind") == "summarization":
+                n += 1
         return n
     if cli == "opencode":
         items = opencode_messages(e)

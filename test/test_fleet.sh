@@ -175,5 +175,107 @@ t "control: no dialog still fails (no transcript) but names neither dialog" bash
 out=$(dlg DRPLAIN resume 00000000-0000-4000-8000-000000000002); rc=$?
 t "control: resume with no dialog launches OK" bash -c 'test "$2" -eq 0 && printf "%s" "$1" | grep -q "^OK DRPLAIN"' _ "$out" "$rc"
 
+# ---- (8) kiro: scratch KIRO_HOME, python stub that writes leases/sessions like kiro-cli 3.5 (test/stubs/kiro)
+export KIRO_HOME=$T/kh FLEET_KIRO_BIN=$HERE/stubs/kiro
+mkdir -p "$KIRO_HOME"
+chmod +x "$HERE/stubs/kiro"
+RT=$(cd "$T" && pwd -P)
+KSID=sess_11111111-2222-4333-8444-555555555555
+out=$(dry kiro --dir "$T" K0 prompt "$T/prompt.txt"); rc=$?
+t "kiro dry-run exits 0" test $rc -eq 0
+t "kiro dry-run has chat --agent-engine v3 --trust-all-tools --trust-workspace" has "$out" 'chat --agent-engine v3 --trust-all-tools --trust-workspace'
+t "kiro dry-run reads the prompt file" has "$out" '"$(cat '
+t "kiro dry-run without the agent file warns" has "$out" 'warn: kiro agent fleet-worker not installed'
+t "kiro dry-run without the agent file has no --agent" bash -c '! printf "%s" "$1" | grep -q -- "--agent fleet-"' _ "$out"
+t "kiro window script exports KIRO_HOME" has "$out" "KIRO_HOME=$KIRO_HOME"
+t "kiro window script passes FLEET_KIRO_BIN" has "$out" "FLEET_KIRO_BIN=$FLEET_KIRO_BIN"
+mkdir -p "$KIRO_HOME/agents"; printf '{"name":"fleet-worker"}\n' > "$KIRO_HOME/agents/fleet-worker.json"
+out=$(dry kiro --dir "$T" --model m1 K0 prompt "$T/prompt.txt")
+t "kiro dry-run with the agent file has --agent fleet-worker" has "$out" '--trust-workspace --agent fleet-worker --model m1 "$(cat '
+t "kiro dry-run with the agent file does not warn" bash -c '! printf "%s" "$1" | grep -q "^warn:"' _ "$out"
+out=$(dry kiro --dir "$T" K0 goal "$T/good.txt")
+t "kiro goal prompt is rewritten to /goal --max 20" bash -c 'printf "%s\n" "$1" | grep -qx "/goal --max 20 Work from goal.json; the file wins over memory, then stop after 5 turns."' _ "$out"
+out=$(FLEET_KIRO_GOAL_MAX=7 "$FLEET" launch --dry-run --cli kiro --dir "$T" K0 goal "$T/good.txt" 2>&1)
+t "FLEET_KIRO_GOAL_MAX=7 gives /goal --max 7" has "$out" '/goal --max 7 Work from goal.json'
+out=$(FLEET_KIRO_GOAL_MAX=0 "$FLEET" launch --dry-run --cli kiro --dir "$T" K0 goal "$T/good.txt" 2>&1); rc=$?
+t "FLEET_KIRO_GOAL_MAX=0 is refused" bash -c 'test "$2" -eq 1 && printf "%s" "$1" | grep -q "^FAIL FLEET_KIRO_GOAL_MAX must be a positive integer"' _ "$out" "$rc"
+out=$(dry claude --dir "$T" K0 goal "$T/good.txt")
+t "control: claude goal prompt is not rewritten (no --max)" bash -c 'printf "%s\n" "$1" | grep -qx "/goal Work from goal.json; the file wins over memory, then stop after 5 turns." && ! printf "%s" "$1" | grep -q -- "--max"' _ "$out"
+{ printf '%s' '/goal goal.json file wins stop after 5 '; head -c 3955 /dev/zero | tr '\0' x; printf '\n'; } > "$T/c6.txt"
+t "control: a 3994-char condition passes the 4000 lint for claude" "$FLEET" launch --dry-run L9 goal "$T/c6.txt"
+rej "kiro: the 4000 lint counts the --max rewrite" "max 4000" --cli kiro L9 goal "$T/c6.txt"
+out=$(dry kiro --dir "$T" K0 resume "$KSID")
+t "kiro dry-run resume has --resume-id SID" has "$out" "--trust-workspace --agent fleet-worker --resume-id $KSID"
+t "kiro dry-run resume sends no prompt file" bash -c '! printf "%s" "$1" | grep -q "## prompt"' _ "$out"
+rej "kiro resume rejects a non-sess_ id" "sess_<uuid>" --cli kiro K0 resume ses_abc123
+
+# an unrelated live process's lease on the same workspace: no kiro proof may pick it
+USID=sess_99999999-0000-4000-8000-000000000000
+mkdir -p "$KIRO_HOME/session-leases" "$KIRO_HOME/sessions/unrelated/$USID"
+jq -n --argjson p $$ '{v:1,pid:$p,parentPid:1,clientName:"kiro-cli"}' > "$KIRO_HOME/session-leases/$USID.lease"
+jq -n --arg s "$USID" --arg d "$RT" '{id:$s,agentMode:"main",workspacePaths:[$d]}' > "$KIRO_HOME/sessions/unrelated/$USID/session.json"
+printf '%s\n' '{"payload":{"type":"user","content":"unrelated"}}' > "$KIRO_HOME/sessions/unrelated/$USID/messages.jsonl"
+R=$FLEET_STATE/roster.json
+
+rm -f "$FLEET_STATE/stub-kiro.argv" "$FLEET_STATE/stub-kiro.env"
+out=$("$FLEET" launch --cli kiro --dir "$T" K1 prompt "$T/prompt.txt" 2>&1); rc=$?
+t "kiro launch K1 (proof on) exits 0" test $rc -eq 0 || printf '    launcher said: %s\n' "$out"
+t "kiro K1 prints one OK line with session=sess_<uuid>" bash -c 'printf "%s\n" "$1" | grep -Eqx "OK K1 cli=kiro mode=prompt pane=%[0-9]+ session=sess_[0-9a-f-]{36} goal=n/a"' _ "$out"
+k1sid=$(jq -r '.K1.session_id // empty' "$R")
+t "roster K1 session_id is not the unrelated lease" test -n "$k1sid" -a "$k1sid" != "$USID"
+t "roster K1 session_id names a live lease" test -f "$KIRO_HOME/session-leases/$k1sid.lease"
+k1lp=$(jq -r .pid "$KIRO_HOME/session-leases/$k1sid.lease" 2>/dev/null)
+k1pp=$(jq -r .K1.pid "$R")
+t "K1 lease pid is a grandchild of the pane pid (not its child)" bash -c 'p=$(ps -o ppid= -p "$1" | tr -d " "); test "$p" != "$2" && test "$(ps -o ppid= -p "$p" | tr -d " ")" = "$2"' _ "$k1lp" "$k1pp"
+argv=$(cat "$FLEET_STATE/stub-kiro.argv" 2>/dev/null)
+t "kiro stub argv starts with chat" bash -c 'test "$(printf "%s\n" "$1" | head -1)" = chat' _ "$argv"
+t "kiro stub argv has --trust-all-tools" bash -c 'printf "%s\n" "$1" | grep -qx -e --trust-all-tools' _ "$argv"
+t "kiro stub argv has --trust-workspace" bash -c 'printf "%s\n" "$1" | grep -qx -e --trust-workspace' _ "$argv"
+t "kiro stub argv has --agent then fleet-worker" bash -c 'printf "%s\n" "$1" | grep -A1 -x -e --agent | grep -qx fleet-worker' _ "$argv"
+t "kiro stub argv has the prompt text" has "$argv" 'Do the thing.'
+t "kiro window env has KIRO_HOME" grep -qx "KIRO_HOME=$KIRO_HOME" "$FLEET_STATE/stub-kiro.env"
+before=$(tm list-panes -a -F '#{pane_id}' | wc -l | tr -d ' ')
+out=$("$FLEET" launch --cli kiro --dir "$T" K1 prompt "$T/prompt.txt" 2>&1); rc=$?
+t "second live kiro K1 is refused" bash -c 'test "$2" -eq 1 && printf "%s" "$1" | grep -q "^FAIL .*already live"' _ "$out" "$rc"
+t "kiro refusal opened no pane" test "$(tm list-panes -a -F '#{pane_id}' | wc -l | tr -d ' ')" = "$before"
+
+out=$("$FLEET" launch --cli kiro --dir "$T" K2 goal "$T/good.txt" 2>&1); rc=$?
+t "kiro goal K2 exits 0 with goal=active" bash -c 'test "$2" -eq 0 && printf "%s\n" "$1" | grep -Eqx "OK K2 cli=kiro mode=goal pane=%[0-9]+ session=sess_[0-9a-f-]{36} goal=active"' _ "$out" "$rc" \
+  || printf '    launcher said: %s\n' "$out"
+k2sid=$(jq -r '.K2.session_id // empty' "$R")
+t "kiro stub got /goal --max 20" has "$(cat "$FLEET_STATE/stub-kiro.argv" 2>/dev/null)" '/goal --max 20 Work from goal.json'
+t "K2 has a live goal child lease that sorts first (rootConversationId = K2)" bash -c '
+  for f in "$1"/session-leases/sess_00000000-*.lease; do
+    s=$(basename "$f" .lease); jq -e --arg r "$2" ".rootConversationId == \$r" "$1"/sessions/*/"$s"/session.json >/dev/null && exit 0
+  done; exit 1' _ "$KIRO_HOME" "$k2sid"
+t "roster K2 session_id is the parent session (no rootConversationId)" bash -c 'jq -e ".rootConversationId == null" "$1"/sessions/*/"$2"/session.json' _ "$KIRO_HOME" "$k2sid"
+
+out=$("$FLEET" launch --cli kiro --dir "$T" K3 resume "$KSID" 2>&1); rc=$?
+t "kiro resume K3 prints OK session=SID" bash -c 'test "$2" -eq 0 && printf "%s\n" "$1" | grep -Eqx "OK K3 cli=kiro mode=resume pane=%[0-9]+ session=$3 goal=n/a"' _ "$out" "$rc" "$KSID" \
+  || printf '    launcher said: %s\n' "$out"
+t "kiro stub argv has --resume-id then SID" bash -c 'grep -A1 -x -e --resume-id "$1" | grep -qx "$2"' _ "$FLEET_STATE/stub-kiro.argv" "$KSID"
+
+nlease=$(ls "$KIRO_HOME/session-leases" | wc -l | tr -d ' ')
+out=$(FLEET_PROOF_TIMEOUT=10 "$FLEET" launch --cli kiro --dir "$T" KTRUSTALL prompt "$T/prompt.txt" 2>&1); rc=$?
+t "kiro trust-all warning: launch exits 1 with FAIL naming the confirmation" bash -c 'test "$2" -eq 1 && printf "%s" "$1" | grep -q "^FAIL Kiro trust-all confirmation in pane %[0-9]*; run install/kiro.sh (sets chat.disableTrustAllConfirmation) then fleet stop KTRUSTALL and relaunch"' _ "$out" "$rc" \
+  || printf '    launcher said: %s\n' "$out"
+t "kiro trust-all stub created no lease" test "$(ls "$KIRO_HOME/session-leases" | wc -l | tr -d ' ')" = "$nlease"
+
+# CONTROL: only an unrelated pid's lease and this pane's goal-child lease exist; the proof must pick neither
+out=$(FLEET_PROOF_TIMEOUT=5 "$FLEET" launch --cli kiro --dir "$T" KCHILDONLY prompt "$T/prompt.txt" 2>&1); rc=$?
+t "control: child-only + unrelated lease: launch fails 'no kiro session'" bash -c 'test "$2" -eq 1 && printf "%s" "$1" | grep -q "^FAIL no kiro session for KCHILDONLY"' _ "$out" "$rc" \
+  || printf '    launcher said: %s\n' "$out"
+t "control: roster KCHILDONLY has no session_id" bash -c 'test "$(jq -r ".KCHILDONLY.session_id" "$1")" = null' _ "$R"
+t "control setup was real: the unrelated lease is still there" test -f "$KIRO_HOME/session-leases/$USID.lease"
+t "control setup was real: a child lease held by a KCHILDONLY pane descendant exists" bash -c '
+  pp=$(jq -r .KCHILDONLY.pid "$2")
+  for f in "$1"/session-leases/sess_00000000-*.lease; do
+    p=$(jq -r .pid "$f"); while [ -n "$p" ] && [ "$p" -gt 1 ]; do [ "$p" = "$pp" ] && exit 0; p=$(ps -o ppid= -p "$p" | tr -d " "); done
+  done; exit 1' _ "$KIRO_HOME" "$R"
+
+t "fleet stop K1 succeeds" "$FLEET" stop K1
+for i in 1 2 3 4 5 6 7 8 9 10; do [ -e "$KIRO_HOME/session-leases/$k1sid.lease" ] || break; sleep 0.5; done
+t "stopping K1 removes its lease (stub cleanup like real Kiro)" test ! -e "$KIRO_HOME/session-leases/$k1sid.lease"
+
 echo
 if [ "$FAILS" -eq 0 ]; then echo "ALL PASS"; else echo "$FAILS FAILED"; exit 1; fi

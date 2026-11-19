@@ -1,0 +1,61 @@
+{
+  "name": "fleet-listener",
+  "description": "Fleet listener: turns feed events into messages, never acts. Kiro has no AskUserQuestion equivalent (UNVERIFIED); the role text routes questions.",
+  "tools": [
+    "*"
+  ],
+  "includeMcpJson": true,
+  "permissions": {
+    "rules": [
+      {
+        "capability": "shell",
+        "match": [
+          "fleet launch*"
+        ],
+        "effect": "deny"
+      },
+      {
+        "capability": "shell",
+        "match": [
+          "fleet park*"
+        ],
+        "effect": "deny"
+      },
+      {
+        "capability": "shell",
+        "match": [
+          "fleet stop*"
+        ],
+        "effect": "deny"
+      },
+      {
+        "capability": "shell",
+        "match": [
+          "fleet reopen*"
+        ],
+        "effect": "deny"
+      },
+      {
+        "capability": "fs_write",
+        "match": [
+          "**"
+        ],
+        "effect": "deny"
+      },
+      {
+        "capability": "shell",
+        "match": [
+          "git commit*"
+        ],
+        "effect": "deny"
+      },
+      {
+        "capability": "shell",
+        "match": [
+          "git push*"
+        ],
+        "effect": "deny"
+      }
+    ]
+  }
+}

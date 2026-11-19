@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Tests for bin/fleet-lifecycle. Private tmux server, temp state/claude/codex homes, fake fleet binary.
-# Never touches the default tmux server, ~/.claude or ~/.codex. Exit 1 on any FAIL.
+# Tests for bin/fleet-lifecycle. Private tmux server, temp state/claude/codex/kiro homes, fake fleet binary.
+# Never touches the default tmux server, ~/.claude, ~/.codex or ~/.kiro. Exit 1 on any FAIL.
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd -P)
 LC=$HERE/../bin/fleet-lifecycle
@@ -11,9 +11,10 @@ export FLEET_TMUX_SESSION=lcs
 export FLEET_STATE=$T/state
 export FLEET_CLAUDE_HOME=$T/claude
 export CODEX_HOME=$T/codex
+export KIRO_HOME=$T/kiro
 unset FLEET_ROLE FLEET_NAME TMUX FLEET_BIN FLEET_QUIET_SECS FLEET_PARK_WAIT
 W=$T/work
-mkdir -p "$FLEET_STATE" "$FLEET_CLAUDE_HOME/projects/slug" "$CODEX_HOME/sessions/2026/11/18" "$W"
+mkdir -p "$FLEET_STATE" "$FLEET_CLAUDE_HOME/projects/slug" "$CODEX_HOME/sessions/2026/11/18" "$KIRO_HOME/sessions" "$W"
 SRVPID=
 cleanup() {
   [ -z "$SRVPID" ] || kill "$SRVPID" 2>/dev/null
@@ -57,6 +58,13 @@ addlane() { # name cli role sid pane [extra-json]
     "$FLEET_STATE/roster.json" > "$t2" && mv "$t2" "$FLEET_STATE/roster.json"
 }
 cfix() { mkdir -p "$FLEET_CLAUDE_HOME/projects/slug"; cp "$FIX/$1.jsonl" "$FLEET_CLAUDE_HOME/projects/slug/$2.jsonl"; }
+kfix() { # fixture sid [no-session-json]: a kiro session dir under KIRO_HOME (cwd-hash dir is arbitrary)
+  local d=$KIRO_HOME/sessions/h$(printf '%s' "$2" | cksum | cut -d' ' -f1)/$2
+  mkdir -p "$d"; cp "$FIX/$1.jsonl" "$d/messages.jsonl"
+  [ -n "${3:-}" ] || sed "s/sess_KSID/$2/" "$FIX/kiro-session.json" > "$d/session.json"
+  printf '%s' "$d"
+}
+epoch() { python3 -c 'import sys,calendar,time;print(calendar.timegm(time.strptime(sys.argv[1],"%Y-%m-%dT%H:%M:%SZ")))' "$1"; }
 ticks() { "$LC" tick --json; }
 field() { # name field
   ticks | jq -r --arg n "$1" --arg f "$2" '.[]|select(.name==$n)|.[$f]'
@@ -135,6 +143,20 @@ eq "opencode complete -> achieved" achieved "$(field oa goalState)"
 eq "opencode active"  active   "$(field ob goalState)"
 eq "opencode paused -> stopped" stopped "$(field oc goalState)"
 eq "opencode no goal -> none" none "$(field od goalState)"
+kfix kiro-goal-achieved sess_ka >/dev/null; kfix kiro-goal-active sess_kb >/dev/null; kfix kiro-goal-failed sess_kc >/dev/null
+kfix kiro-none sess_kd nosession >/dev/null
+touch -t 202601020000 "$KIRO_HOME"/sessions/*/sess_kd/messages.jsonl
+addlane kA kiro worker sess_ka %901; addlane kB kiro worker sess_kb %901; addlane kC kiro worker sess_kc %901
+addlane kD kiro worker sess_kd %901; addlane kE kiro worker sess_knodir %901
+eq "kiro run_start + run_complete(completed) -> achieved" achieved "$(field kA goalState)"
+eq "kiro run_start only -> active" active "$(field kB goalState)"
+eq "kiro run_complete(failed) -> stopped" stopped "$(field kC goalState)"
+eq "kiro no goal markers -> none" none "$(field kD goalState)"
+eq "kiro session dir missing -> none (roster fallback)" none "$(field kE goalState)"
+eq "kiro stopped-since is the run_complete timestamp" "$(epoch 2026-01-01T10:04:30Z)" "$(field kC goalStoppedAt)"
+eq "kiro last activity = session.json lastModifiedAt" "$(epoch 2026-01-01T10:05:00Z)" "$(field kA lastActive)"
+t "kiro mtime fallback differs from a session.json lastModifiedAt (control)" test "$(field kD lastActive)" != "$(field kA lastActive)"
+eq "kiro mtime fallback is what tick reports" "$(field kD lastActive)" "$(python3 -c 'import os,glob,sys;print(int(os.path.getmtime(glob.glob(sys.argv[1]+"/sessions/*/sess_kd/messages.jsonl")[0])))' "$KIRO_HOME")"
 eq "claude stopped-since comes from the transcript record timestamp" 1767262200 "$(field cC goalStoppedAt)"
 tick_txt=$("$LC" tick)
 t "tick table has the header" has "$tick_txt" "NAME"
@@ -157,6 +179,9 @@ addlane wStopTs claude worker "$(uid 19)" %901
 addlane wStopNew claude worker "$(uid 20)" %901 "{\"goalStoppedAt\":$(ago 100)}"
 addlane wStopOld claude worker "$(uid 21)" %901 "{\"goalStoppedAt\":$(ago 1000)}"
 addlane wActive claude worker "$(uid 22)" %901
+kfix kiro-goal-achieved sess_t1 >/dev/null; kfix kiro-goal-failed sess_t2 >/dev/null; kfix kiro-goal-active sess_t3 >/dev/null
+addlane kPark kiro worker sess_t1 %901; addlane kFail kiro worker sess_t2 %901; addlane kAct kiro worker sess_t3 %901
+addlane kOrch kiro orchestrator sess_t1 %901
 eq "tick: worker with achieved goal -> park" park "$(field wPark action)"
 eq "tick: orchestrator with achieved goal -> not park" "-" "$(field orch action)"
 eq "tick: desk with achieved goal -> not park" "-" "$(field desk action)"
@@ -170,6 +195,10 @@ eq "tick: stopped 100 s (goalStoppedAt override) -> no park" "-" "$(field wStopN
 eq "tick: stopped 1000 s (goalStoppedAt override) -> park" park "$(field wStopOld action)"
 eq "tick: stopped, no override, old transcript timestamp -> park" park "$(field wStopTs action)"
 eq "tick: active goal -> no action" "-" "$(field wActive action)"
+eq "tick: kiro worker with achieved goal -> park" park "$(field kPark action)"
+eq "tick: kiro worker with a failed goal (stopped long ago) -> park" park "$(field kFail action)"
+eq "tick: kiro worker with an active goal -> no action" "-" "$(field kAct action)"
+eq "tick: kiro orchestrator with achieved goal -> not park" "-" "$(field kOrch action)"
 t "tick text row shows park for wPark" bash -c '"$1" tick | grep "^wPark" | grep -q "park$"' _ "$LC"
 before=$(cksum "$FLEET_STATE/roster.json"); ticks >/dev/null; "$LC" tick >/dev/null
 eq "tick is read-only (roster unchanged)" "$before" "$(cksum "$FLEET_STATE/roster.json")"
@@ -233,6 +262,39 @@ out=$("$LC" park opk 2>&1); rc=$?
 eq "opencode park exits 0 after the summary message completes" 0 "$rc"
 eq "opencode lane parked" parked "$(jq -r .opk.status "$FLEET_STATE/roster.json")"
 t "opencode park says it compacted" has "$out" "OK compacted opk"
+# kiro: tombstone(kind=summarization) in messages.jsonl
+KD=$(kfix kiro-goal-achieved sess_kpk); KF=$KD/messages.jsonl
+before_n=$(grep -c tombstone "$KF")
+pane=$(mkwin kpk "python3 $HERE/stubs/compactor kiro $KF")
+addlane kpk kiro worker sess_kpk "$pane"
+out=$("$LC" park kpk 2>&1); rc=$?
+eq "kiro park exits 0 after the tombstone" 0 "$rc"
+t "kiro park typed /compact into the lane" grep -qx /compact "$KF.typed"
+eq "kiro transcript gained exactly one summarization tombstone" "$((before_n+1))" "$(grep -c '"kind": "summarization"' "$KF")"
+t "kiro park says it compacted" has "$out" "OK compacted kpk"
+eq "kiro lane parked" parked "$(jq -r .kpk.status "$FLEET_STATE/roster.json")"
+t "kiro park records compactedAt" test -n "$(jq -r '.kpk.compactedAt // empty' "$FLEET_STATE/roster.json")"
+t "kiro park records parkedAt" test -n "$(jq -r '.kpk.parkedAt // empty' "$FLEET_STATE/roster.json")"
+eq "kiro park records the resume command with --resume-id" "kiro-cli chat --agent-engine v3 --trust-all-tools --trust-workspace --resume-id sess_kpk" "$(jq -r .kpk.resume "$FLEET_STATE/roster.json")"
+eq "kiro park records goalState" achieved "$(jq -r .kpk.goalState "$FLEET_STATE/roster.json")"
+t "kiro park killed the stub window" bash -c '! tmux -L "$1" list-panes -a -F "#{pane_id}" | grep -qx "$2"' _ "$FLEET_TMUX_SOCKET" "$pane"
+# CONTROL: a kiro lane that never compacts must refuse to park
+KD2=$(kfix kiro-goal-achieved sess_knc); KF2=$KD2/messages.jsonl
+pane=$(mkwin knc "python3 $HERE/stubs/compactor never $KF2")
+addlane knc kiro worker sess_knc "$pane"
+out=$(FLEET_COMPACT_WAIT=3 "$LC" park knc 2>&1); rc=$?
+t "kiro control: park refuses when no tombstone appears" bash -c '[ "$1" != 0 ] && printf "%s" "$2" | grep -q "compact of knc not confirmed"' _ "$rc" "$out"
+t "kiro control: refused park left the pane alive" bash -c 'tmux -L "$1" list-panes -a -F "#{pane_id}" | grep -qx "$2"' _ "$FLEET_TMUX_SOCKET" "$pane"
+eq "kiro control: refused park left the status unparked" live "$(jq -r '.knc.status // "live"' "$FLEET_STATE/roster.json")"
+# a non-summarization tombstone does not count as a compact
+printf '%s\n' '{"id":"x","timestamp":"2026-01-01T11:00:00Z","payload":{"type":"tombstone","kind":"other"}}' >> "$KF2"
+out=$(FLEET_COMPACT_WAIT=3 "$LC" park knc 2>&1); rc=$?
+t "kiro control: a tombstone of another kind is not a finished compact" bash -c '[ "$1" != 0 ] && printf "%s" "$2" | grep -q "compact of knc not confirmed"' _ "$rc" "$out"
+# kiro transcript missing: refuse rather than park blind
+pane=$(mkwin knt "python3 $HERE/stubs/compactor never $T/knt")
+addlane knt kiro worker sess_nodir "$pane"
+out=$("$LC" park knt 2>&1); rc=$?
+t "kiro park refuses when the transcript can't be found" bash -c '[ "$1" != 0 ] && printf "%s" "$2" | grep -q "transcript of knt"' _ "$rc" "$out"
 # stubborn process: ignores C-c, so park must fall through to the kill path
 pane=$(mkwin stub "bash -c 'trap \"\" INT; sleep 300'")
 addlane stub claude worker "$(uid 31)" "$pane"
@@ -262,6 +324,19 @@ t "handoff (codex) goal, assistant text and file" bash -c 'f=$1; grep -q "Port t
 "$LC" handoff h3 >/dev/null 2>&1
 eq "handoff (opencode) first line" "Was: h3" "$(head -1 "$FLEET_STATE/handoff/h3.md")"
 t "handoff (opencode) goal, assistant text and file" bash -c 'f=$1; grep -q "Add dark mode" "$f" && grep -q "Dark mode added" "$f" && grep -q "/work/ui.css" "$f"' _ "$FLEET_STATE/handoff/h3.md"
+addlane h4 kiro worker sess_kh %901 '{"status":"parked"}'
+kfix kiro-goal-achieved sess_kh >/dev/null
+"$LC" handoff h4 >/dev/null 2>&1
+eq "handoff (kiro) first line" "Was: h4" "$(head -1 "$FLEET_STATE/handoff/h4.md")"
+t "handoff (kiro) goal and assistant text" bash -c 'f=$1; grep -q "rename the widget module to gadget" "$f" && grep -q "Renamed widget to gadget" "$f"' _ "$FLEET_STATE/handoff/h4.md"
+t "handoff (kiro) leaves workflow markers out" bash -c '! grep -q "_kiro/workflow" "$1"' _ "$FLEET_STATE/handoff/h4.md"
+addlane h5 kiro worker sess_kh5 %901 '{"status":"parked"}'
+kfix kiro-none sess_kh5 >/dev/null
+"$LC" handoff h5 >/dev/null 2>&1
+t "handoff (kiro, list content blocks) carries the assistant text" grep -q "Hello from the fixture." "$FLEET_STATE/handoff/h5.md"
+addlane h6 kiro worker sess_missing %901 '{"status":"parked"}'
+out=$("$LC" handoff h6 2>&1); rc=$?
+t "handoff (kiro) with no session dir fails loud" bash -c '[ "$1" != 0 ] && printf "%s" "$2" | grep -q "^FAIL"' _ "$rc" "$out"
 out=$("$LC" handoff nosuch 2>&1); rc=$?
 t "handoff of an unknown lane fails loud" bash -c '[ "$1" != 0 ] && printf "%s" "$2" | grep -q "^FAIL"' _ "$rc" "$out"
 
@@ -283,6 +358,10 @@ addlane rl claude worker "$(uid 51)" %901 '{"status":"live"}'
 eq "reopen claude runs fleet launch ... resume <id>" "launch --cli claude --model opus --role worker --dir $W rc resume $(uid 51)" "$(tail -1 "$T/fake.log")"
 "$LC" reopen rx >/dev/null 2>&1
 eq "reopen codex keeps the role and resumes the thread" "launch --cli codex --model opus --role orchestrator --dir $W rx resume cx-r" "$(tail -1 "$T/fake.log")"
+addlane rk kiro worker sess_rk %901 '{"status":"parked"}'
+"$LC" reopen rk >/dev/null 2>&1
+eq "reopen kiro resumes the session id through fleet launch" "launch --cli kiro --model opus --role worker --dir $W rk resume sess_rk" "$(tail -1 "$T/fake.log")"
+eq "reopen kiro flips the roster status to live" live "$(jq -r .rk.status "$FLEET_STATE/roster.json")"
 "$LC" reopen ro >/dev/null 2>&1
 eq "reopen opencode (status done, model null: no --model) resumes the ses_ id" "launch --cli opencode --role worker --dir $W ro resume ses_oa" "$(tail -1 "$T/fake.log")"
 eq "reopen flips the roster status to live" live "$(jq -r .rc.status "$FLEET_STATE/roster.json")"

@@ -85,6 +85,24 @@ done
 t "opencode orchestrator denies git commit, not fleet launch" jq -e '.permission.bash["git commit*"]=="deny" and (.permission.bash|has("fleet launch*")|not)' "$ROOT/roles/orchestrator.opencode.json"
 t "opencode worker denies fleet launch" jq -e '.permission.bash["fleet launch*"]=="deny"' "$ROOT/roles/worker.opencode.json"
 
+# ---- kiro agent json (installer fills name and prompt; the deny set lives here)
+for r in $ROLES; do
+  t "$r.kiro.json is valid JSON with V3 permissions.rules" jq -e '.tools==["*"] and .includeMcpJson==true and (.permissions.rules|type=="array") and (.description|type=="string")' "$ROOT/roles/$r.kiro.json"
+  t "$r.kiro.json has no em dash" bash -c '! grep -q "$(printf "\342\200\224")" "$1"' _ "$ROOT/roles/$r.kiro.json"
+done
+for r in worker desk listener; do
+  for v in launch park stop reopen; do
+    t "kiro $r denies shell fleet $v*" jq -e --arg g "fleet $v*" '[.permissions.rules[]|select(.capability=="shell" and .effect=="deny" and (.match|index($g)))]|length==1' "$ROOT/roles/$r.kiro.json"
+  done
+done
+for r in orchestrator desk listener; do
+  t "kiro $r denies fs_write ** and git commit/push" jq -e '([.permissions.rules[]|select(.capability=="fs_write" and .effect=="deny" and .match==["**"])]|length==1) and ([.permissions.rules[]|select(.capability=="shell" and .effect=="deny")|.match[]] as $m | ($m|index("git commit*")!=null) and ($m|index("git push*")!=null))' "$ROOT/roles/$r.kiro.json"
+done
+t "kiro worker does not deny writes or git" jq -e '[.permissions.rules[]|select(.capability=="fs_write" or (.match|index("git commit*")))]|length==0' "$ROOT/roles/worker.kiro.json"
+t "kiro orchestrator does not deny fleet launch" jq -e '[.permissions.rules[].match[]]|index("fleet launch*")==null' "$ROOT/roles/orchestrator.kiro.json"
+t "control: a kiro file missing the fleet park rule fails the deny check" bash -c '! jq \
+  '"'"'.permissions.rules|=map(select((.match//[])|index("fleet park*")|not))'"'"' "$1" | jq -e '"'"'[.permissions.rules[]|select(.match|index("fleet park*"))]|length==1'"'"' >/dev/null' _ "$ROOT/roles/worker.kiro.json"
+
 # ---- claude dry-run wiring
 for r in $ROLES; do
   out=$(dry --cli claude --role $r --dir "$T" N1 prompt "$T/prompt.txt")

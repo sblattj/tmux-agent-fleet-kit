@@ -1,0 +1,40 @@
+{
+  "name": "fleet-worker",
+  "description": "Fleet worker: works its goal file, never manages lanes. Kiro has no AskUserQuestion equivalent (UNVERIFIED); the role text routes questions to the desk.",
+  "tools": [
+    "*"
+  ],
+  "includeMcpJson": true,
+  "permissions": {
+    "rules": [
+      {
+        "capability": "shell",
+        "match": [
+          "fleet launch*"
+        ],
+        "effect": "deny"
+      },
+      {
+        "capability": "shell",
+        "match": [
+          "fleet park*"
+        ],
+        "effect": "deny"
+      },
+      {
+        "capability": "shell",
+        "match": [
+          "fleet stop*"
+        ],
+        "effect": "deny"
+      },
+      {
+        "capability": "shell",
+        "match": [
+          "fleet reopen*"
+        ],
+        "effect": "deny"
+      }
+    ]
+  }
+}

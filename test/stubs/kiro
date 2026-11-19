@@ -1,0 +1,158 @@
+#!/usr/bin/env python3
+# stub kiro-cli for the fleet tests: record argv and env like stubs/codex, then emulate Kiro's on-disk session
+# state under $KIRO_HOME (required: the stub refuses to touch a real ~/.kiro). Synthetic data only.
+#   - forks a holder process, so the lease pid is a grandchild of the pane (real Kiro: pane -> kiro-cli -> tui -> node)
+#   - $KIRO_HOME/session-leases/<sid>.lease = {"v":1,"pid":<holder>,"parentPid":<stub>,...}, removed on exit
+#   - $KIRO_HOME/sessions/<hash>/<sid>/{session.json,messages.jsonl}, session.json written a moment after the lease
+#   - INPUT starting with /goal: a goal-workflow child session (rootConversationId set, its own lease, sorted first)
+#     and a "_kiro/workflow/run_start" line in the parent messages.jsonl
+# Mode switches come from FLEET_NAME (a tmux window does not inherit the test's env, the window script sets it):
+#   *TRUSTALL*  show the trust-all confirmation ("No, exit"), create no lease
+#   *CHILDONLY* create only a goal child session + lease (control: the proof must not pick it)
+# Python, not bash: macOS `ps eww` hides the environment of /bin/bash.
+import hashlib, json, os, signal, sys, time, uuid
+
+argv = sys.argv[1:]
+state = os.environ.get("FLEET_STATE")
+if not state:
+    sys.exit("stub kiro: FLEET_STATE unset")
+with open(os.path.join(state, "stub-kiro.argv"), "w") as fh:
+    fh.write("".join(a + "\n" for a in argv))
+with open(os.path.join(state, "stub-kiro.env"), "w") as fh:
+    fh.write("".join("%s=%s\n" % kv for kv in sorted(os.environ.items())))
+
+home = os.environ.get("KIRO_HOME")
+if not home:
+    print("stub kiro: KIRO_HOME unset; refusing to write a real ~/.kiro", flush=True)
+    time.sleep(300)
+    sys.exit(1)
+
+valued = {"--agent-engine", "--agent", "--model", "--resume-id"}
+opts, pos, i = {}, [], 1 if argv[:1] == ["chat"] else 0
+while i < len(argv):
+    a = argv[i]
+    if a in valued and i + 1 < len(argv):
+        opts[a] = argv[i + 1]; i += 2
+    elif a.startswith("--"):
+        opts[a] = True; i += 1
+    else:
+        pos.append(a); i += 1
+text = pos[-1] if pos else ""
+name = os.environ.get("FLEET_NAME", "")
+
+if "TRUSTALL" in name:
+    print("Warning: Kiro is running in trust all tools mode\n"
+          "In this mode, Kiro will execute all tool calls without asking for your approval.\n"
+          "❯ No, exit\n  Yes, I accept\n  Yes, and don't ask again\n"
+          "esc to cancel · ↑↓ to navigate · ↵ to select", flush=True)
+    time.sleep(300)
+    sys.exit(0)
+
+cwd = os.path.realpath(os.getcwd())
+sessdir = os.path.join(home, "sessions", hashlib.sha256(cwd.encode()).hexdigest()[:16])
+leasedir = os.path.join(home, "session-leases")
+os.makedirs(leasedir, exist_ok=True)
+os.makedirs(sessdir, exist_ok=True)
+
+
+def ts():
+    return time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
+
+
+def write_json(path, obj):
+    tmp = path + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(obj, fh)
+    os.replace(tmp, path)
+
+
+def append(sid, obj):
+    with open(os.path.join(sessdir, sid, "messages.jsonl"), "a") as fh:
+        fh.write(json.dumps(obj) + "\n")
+
+
+def lease(sid):
+    path = os.path.join(leasedir, sid + ".lease")
+    write_json(path, {"v": 1, "pid": os.getpid(), "parentPid": os.getppid(), "instanceId": "stub-" + uuid.uuid4().hex,
+                      "hostId": "stub-host", "acquiredAt": ts(), "token": "stub", "clientName": "kiro-cli"})
+    return path
+
+
+def session(sid, root=None):
+    os.makedirs(os.path.join(sessdir, sid), exist_ok=True)
+    sj = {"schemaVersion": "1.0.0", "id": sid, "title": "stub session", "agentMode": "wf-coder" if root else "main",
+          "workspacePaths": [cwd], "rootPaths": [cwd], "createdAt": ts(), "lastModifiedAt": ts(), "status": "idle"}
+    if root:
+        sj["rootConversationId"] = root
+    path = os.path.join(sessdir, sid, "session.json")
+    if not os.path.exists(path):
+        write_json(path, sj)
+
+
+held = []
+
+
+def bye(*_):
+    for p in held:
+        try:
+            os.unlink(p)
+        except OSError:
+            pass
+    os._exit(0)
+
+
+holder = os.fork()
+if holder:  # the stub process: wait for the holder, forward a kill
+    def stop(*_):
+        try:
+            os.kill(holder, signal.SIGTERM)
+        except OSError:
+            pass
+        os._exit(0)
+    for s in (signal.SIGHUP, signal.SIGTERM, signal.SIGINT):
+        signal.signal(s, stop)
+    os.waitpid(holder, 0)
+    sys.exit(0)
+
+# the holder (grandchild of the pane): owns the leases and the session files
+for s in (signal.SIGHUP, signal.SIGTERM, signal.SIGINT):
+    signal.signal(s, bye)
+parent = os.getppid()
+try:
+    sid = opts.get("--resume-id") or "sess_" + str(uuid.uuid4())
+    goal = text.startswith("/goal")
+    if "CHILDONLY" in name or goal:
+        child = "sess_00000000-" + str(uuid.uuid4())[9:]  # sorts before any real sid: a first-match pick would be wrong
+        held.append(lease(child))
+        session(child, root=sid)
+    if "CHILDONLY" not in name:
+        held.append(lease(sid))
+        time.sleep(1)  # real Kiro writes session.json ~2 s after the lease
+        session(sid)
+        append(sid, {"id": str(uuid.uuid4()), "timestamp": ts(),
+                     "payload": {"type": "session_start", "content": "", "agentType": opts.get("--agent", "Default")}})
+        if text:
+            append(sid, {"id": str(uuid.uuid4()), "timestamp": ts(),
+                         "payload": {"type": "user", "content": text, "documents": [], "images": []}})
+        if goal:
+            words = text.split()
+            if len(words) > 2 and words[1] == "--max":
+                mx, prompt = words[2], " ".join(words[3:])
+            else:
+                mx, prompt = "5", " ".join(words[1:])
+            wf = "wf_" + uuid.uuid4().hex[:16]
+            inner = {"method": "_kiro/workflow/run_start", "workflowId": wf, "workflowName": "goal",
+                     "inputs": {"prompt": prompt, "max_iterations": mx},
+                     "nodeTree": [{"nodeId": "goal-loop", "type": "repeat", "maxIterations": int(mx),
+                                   "onMaxIterations": "pause", "stopCondition": {"completionSignal": "success"}}],
+                     "parentSessionId": sid}
+            append(sid, {"id": "wf-progress-" + str(uuid.uuid4()), "timestamp": ts(),
+                         "payload": {"type": "user", "source": "steer", "content": json.dumps(inner, separators=(",", ":")),
+                                     "_meta": {"kiro": {"notification": {"kind": "workflow-progress", "workflowId": wf,
+                                                                          "eventType": "run_start"}}}}})
+    print("stub kiro: session " + sid, flush=True)
+    end = time.time() + 300
+    while time.time() < end and os.getppid() == parent:
+        time.sleep(1)
+finally:
+    bye()

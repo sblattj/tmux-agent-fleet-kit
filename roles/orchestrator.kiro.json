@@ -1,0 +1,33 @@
+{
+  "name": "fleet-orchestrator",
+  "description": "Fleet orchestrator: routes work, owns lane lifecycle, never edits files. Kiro has no AskUserQuestion equivalent (UNVERIFIED), so asking the human goes through the desk by role text.",
+  "tools": [
+    "*"
+  ],
+  "includeMcpJson": true,
+  "permissions": {
+    "rules": [
+      {
+        "capability": "fs_write",
+        "match": [
+          "**"
+        ],
+        "effect": "deny"
+      },
+      {
+        "capability": "shell",
+        "match": [
+          "git commit*"
+        ],
+        "effect": "deny"
+      },
+      {
+        "capability": "shell",
+        "match": [
+          "git push*"
+        ],
+        "effect": "deny"
+      }
+    ]
+  }
+}

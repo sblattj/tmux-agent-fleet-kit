@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# fleet: launch and manage a fleet of coding-agent CLIs (claude, codex, opencode) as tmux windows/panes.
+# fleet: launch and manage a fleet of coding-agent CLIs (claude, codex, opencode, kiro) as tmux windows/panes.
 #
 #   fleet launch [opts] <name> goal   <condition.txt>   first prompt is a /goal condition (living goal JSON)
 #   fleet launch [opts] <name> prompt <text|file>       plain first prompt
@@ -13,7 +13,7 @@
 #   fleet tick|park|reopen|cleanup|handoff ...          lifecycle, handled by bin/fleet-lifecycle
 #
 # launch opts:
-#   --cli claude|codex|opencode   which CLI (default claude)
+#   --cli claude|codex|opencode|kiro  which CLI (default claude)
 #   --model M                     model (claude default: opus; others: the CLI default)
 #   --dir D                       working dir (default $FLEET_DIR, else $PWD)
 #   --split-right-of NAME         open as a pane right of NAME's pane instead of a new window
@@ -26,8 +26,9 @@
 # and "stop after". desk text may not start with "/goal".
 #
 # env: FLEET_TMUX_SESSION (fleet)  FLEET_TMUX_SOCKET (-L socket)  FLEET_STATE (~/.local/state/fleet)
-#      FLEET_DIR  FLEET_HUMAN  FLEET_CLAUDE_BIN / FLEET_CODEX_BIN / FLEET_OPENCODE_BIN
-#      FLEET_PROOF_TIMEOUT (90 seconds; also bounds the codex UI wait at 30 and opencode session wait at 60)
+#      FLEET_DIR  FLEET_HUMAN  FLEET_CLAUDE_BIN / FLEET_CODEX_BIN / FLEET_OPENCODE_BIN / FLEET_KIRO_BIN (kiro-cli)
+#      KIRO_HOME (~/.kiro; passed to kiro lanes when set)  FLEET_KIRO_GOAL_MAX (20; kiro goal mode sends /goal --max N)
+#      FLEET_PROOF_TIMEOUT (90 seconds; also bounds the codex UI wait at 30 and opencode/kiro session wait at 60)
 # Every lane runs in bypass/no-approval mode. Failure prints "FAIL <reason>" to stderr and exits 1.
 # ---
 set -euo pipefail
@@ -125,7 +126,7 @@ cmd_launch() {
   [ $# -ge 2 ] || usage
   local name=$1 mode=$2 arg=${3:-}
   printf '%s' "$name" | grep -Eq '^[A-Za-z0-9._-]+$' || die "name must match [A-Za-z0-9._-]+: $name"
-  case $cli in claude|codex|opencode) ;; *) die "unknown --cli $cli (claude|codex|opencode)" ;; esac
+  case $cli in claude|codex|opencode|kiro) ;; *) die "unknown --cli $cli (claude|codex|opencode|kiro)" ;; esac
   need jq
   role_guard launch
   if [ -z "$role" ]; then if [ "$mode" = desk ]; then role=desk; else role=worker; fi; fi
@@ -142,6 +143,11 @@ cmd_launch() {
       [ -f "$arg" ] || die "goal mode needs a condition file"
       text=$(cat "$arg")
       case $text in "/goal "*) ;; *) die "condition must start with '/goal '" ;; esac
+      if [ "$cli" = kiro ]; then # Kiro: /goal [--max N] <objective>, default 5 iterations; rewrite before the length check
+        local gmax=${FLEET_KIRO_GOAL_MAX:-20}
+        printf '%s' "$gmax" | grep -Eq '^[1-9][0-9]*$' || die "FLEET_KIRO_GOAL_MAX must be a positive integer: $gmax"
+        text="/goal --max $gmax ${text#/goal }"
+      fi
       [ "${#text}" -le 4000 ] || die "condition is ${#text} chars, max 4000"
       case $text in *.json*) ;; *) die "condition does not name a *.json goal file" ;; esac
       case $text in *"file wins"*) ;; *) die "condition lacks 'file wins'" ;; esac
@@ -157,6 +163,8 @@ cmd_launch() {
       [ -n "$arg" ] || die "resume needs a session id"
       if [ "$cli" = claude ]; then
         printf '%s' "$arg" | grep -Eq '^[0-9a-f-]{36}$' || die "claude resume needs a session uuid"
+      elif [ "$cli" = kiro ]; then
+        printf '%s' "$arg" | grep -Eq '^sess_[0-9A-Fa-f-]{36}$' || die "kiro resume needs a session id like sess_<uuid>: $arg"
       else
         printf '%s' "$arg" | grep -Eq '^[A-Za-z0-9_.-]+$' || die "bad session id: $arg"
       fi
@@ -170,6 +178,7 @@ cmd_launch() {
     claude) binvar=${FLEET_CLAUDE_BIN:-claude} ;;
     codex) binvar=${FLEET_CODEX_BIN:-codex} ;;
     opencode) binvar=${FLEET_OPENCODE_BIN:-opencode} ;;
+    kiro) binvar=${FLEET_KIRO_BIN:-kiro-cli} ;;
   esac
   bin=$(command -v "$binvar" 2>/dev/null || true)
   if [ -z "$bin" ]; then
@@ -215,6 +224,9 @@ cmd_launch() {
     opencode)
       if jq -e --arg a "fleet-$role" '.agent[$a] != null' "${XDG_CONFIG_HOME:-$HOME/.config}/opencode/opencode.json" >/dev/null 2>&1; then rflags=" --agent fleet-$role"
       else printf 'warn: opencode agent fleet-%s not installed (%s/opencode/opencode.json); launching without role %s (run install/opencode.sh)\n' "$role" "${XDG_CONFIG_HOME:-$HOME/.config}" "$role" >&2; fi ;;
+    kiro)
+      if [ -f "${KIRO_HOME:-$HOME/.kiro}/agents/fleet-$role.json" ]; then rflags=" --agent fleet-$role"
+      else printf 'warn: kiro agent fleet-%s not installed (%s/agents/fleet-%s.json); launching without role %s (run install/kiro.sh)\n' "$role" "${KIRO_HOME:-$HOME/.kiro}" "$role" "$role" >&2; fi ;;
   esac
   if [ "$resume" = 0 ]; then first=" \"\$(cat $q_txt)\""; fi
   case $cli in
@@ -234,9 +246,15 @@ cmd_launch() {
       cmd="$q_bin --port $port$rflags"
       [ -z "$model" ] || cmd="$cmd -m $(printf '%q' "$model")"
       if [ "$resume" = 1 ]; then cmd="$cmd -s $sid $q_dir"; else cmd="$cmd --prompt \"\$(cat $q_txt)\" $q_dir"; fi ;;
+    kiro)
+      cmd="$q_bin chat --agent-engine v3 --trust-all-tools --trust-workspace$rflags"
+      [ -z "$model" ] || cmd="$cmd --model $(printf '%q' "$model")"
+      if [ "$resume" = 1 ]; then cmd="$cmd --resume-id $sid"; else cmd="$cmd$first"; fi ;;
   esac
   [ -z "$SOCKET" ] || extra="$extra FLEET_TMUX_SOCKET=$(printf '%q' "$SOCKET")"
   [ -z "${FLEET_CODEX_BIN:-}" ] || extra="$extra FLEET_CODEX_BIN=$(printf '%q' "$FLEET_CODEX_BIN")"
+  [ -z "${FLEET_KIRO_BIN:-}" ] || extra="$extra FLEET_KIRO_BIN=$(printf '%q' "$FLEET_KIRO_BIN")"
+  [ -z "${KIRO_HOME:-}" ] || extra="$extra KIRO_HOME=$(printf '%q' "$KIRO_HOME")"
 
   local body
   body=$(cat <<EOF
@@ -315,6 +333,7 @@ EOF
       claude) proof_claude "$name" "$sid" "$pane" "$mode" ;;
       codex) proof_codex "$name" "$pane" "$dir" "$mode" "$marker" ;;
       opencode) proof_opencode "$name" "$port" "$dir" "$mode" ;;
+      kiro) proof_kiro "$name" "$pane" "${panepid:-}" "$mode" "$sid" ;;
     esac
     [ "$mode" != goal ] || goal=active
     sid=$(roster_get "$name" session_id)
@@ -436,6 +455,121 @@ proof_opencode() { # name port dir mode
   if [ "$mode" = goal ]; then
     poll 'curl -fsS --max-time 3 "http://127.0.0.1:$port/session" 2>/dev/null | jq -e --arg i "$sid" "[.[]|select(.id==\$i)]|first|((.metadata.goal.state // \"\")==\"active\" or ((.title // \"\")|startswith(\"▶\")))" >/dev/null 2>&1' "$PROOF_T" \
       || die "opencode goal for $name not active after ${PROOF_T}s"
+  fi
+}
+
+kiro_probe() { # sid KIRO_HOME PANE_PID | user KIRO_HOME SID | goal KIRO_HOME SID -> exit 0 when found (sid prints it)
+  python3 - "$@" <<'PY'
+import glob, json, os, subprocess, sys
+op, home, arg = sys.argv[1], sys.argv[2], sys.argv[3]
+
+def load(path):
+    try:
+        with open(path) as fh:
+            return json.load(fh)
+    except Exception:
+        return None  # absent or half-written: not yet
+
+def lines(sid):
+    for f in glob.glob(os.path.join(home, "sessions", "*", sid, "messages.jsonl")):
+        with open(f, errors="replace") as fh:
+            for raw in fh:
+                try:
+                    yield json.loads(raw)
+                except Exception:
+                    pass
+
+if op == "sid":
+    # The lease pid is Kiro's agent server, a grandchild+ of the pane pid (pane shell -> kiro-cli -> tui -> node).
+    out = subprocess.run(["ps", "-A", "-o", "pid=,ppid="], capture_output=True, text=True).stdout
+    kids = {}
+    for row in out.split("\n"):
+        f = row.split()
+        if len(f) == 2 and f[0].isdigit() and f[1].isdigit():
+            kids.setdefault(int(f[1]), []).append(int(f[0]))
+    desc, todo = set(), [int(arg)]
+    while todo:
+        for c in kids.get(todo.pop(), []):
+            if c not in desc:
+                desc.add(c); todo.append(c)
+    found = []
+    for lf in glob.glob(os.path.join(home, "session-leases", "*.lease")):
+        lease = load(lf)
+        if not isinstance(lease, dict) or lease.get("pid") not in desc:
+            continue
+        sid = os.path.basename(lf)[:-len(".lease")]
+        sj = [load(x) for x in glob.glob(os.path.join(home, "sessions", "*", sid, "session.json"))]
+        sj = [x for x in sj if isinstance(x, dict)]
+        if not sj or any(x.get("rootConversationId") for x in sj):
+            continue  # session.json not written yet, or a goal workflow child session (wf-*) holding its own lease
+        try:
+            found.append((os.path.getmtime(lf), sid))
+        except OSError:
+            pass
+    if not found:
+        sys.exit(1)
+    print(max(found)[1]); sys.exit(0)
+
+if op == "user":  # a real (non-steer) user turn: the first INPUT was submitted
+    for d in lines(arg):
+        p = d.get("payload") or {}
+        if p.get("type") == "user" and not p.get("source") and isinstance(p.get("content"), str) and p["content"]:
+            sys.exit(0)
+    sys.exit(1)
+
+if op == "goal":  # parent messages.jsonl: _kiro/workflow/run_start (or run_complete) of workflow "goal"
+    for d in lines(arg):
+        p = d.get("payload") or {}
+        c = p.get("content")
+        if not isinstance(c, str) or "_kiro/workflow/run_" not in c:
+            continue
+        try:
+            inner = json.loads(c)  # the marker is a JSON string inside payload.content
+        except Exception:
+            continue
+        if not isinstance(inner, dict) or inner.get("method") not in ("_kiro/workflow/run_start", "_kiro/workflow/run_complete"):
+            continue
+        wname = inner.get("workflowName") or (inner.get("finalState") or {}).get("workflowName")
+        if wname == "goal":
+            sys.exit(0)
+    sys.exit(1)
+sys.exit(2)
+PY
+}
+
+kiro_trust_dialog() { # pane -> 0 when Kiro's trust-all confirmation (default "No, exit") is on screen
+  tm capture-pane -p -t "$1" 2>/dev/null | grep -Eqi 'No, exit|running in trust all tools mode'
+}
+
+proof_kiro() { # name pane pane_pid mode resume-sid
+  local name=$1 pane=$2 panepid=$3 mode=$4 want=$5 sid= rc=0 kh=${KIRO_HOME:-$HOME/.kiro} t
+  need python3
+  [ -n "$panepid" ] || die "no pane pid for kiro lane $name (pane $pane)"
+  local trustmsg="Kiro trust-all confirmation in pane $pane; run install/kiro.sh (sets chat.disableTrustAllConfirmation) then fleet stop $name and relaunch"
+  t=$(min 60 "$PROOF_T")
+  poll 'kiro_trust_dialog "$pane" && return 2; sid=$(kiro_probe sid "$kh" "$panepid" 2>/dev/null || true); [ -n "$sid" ]' "$t" || rc=$?
+  case $rc in
+    0) ;;
+    2) die "$trustmsg" ;;
+    *) die "no kiro session for $name after ${t}s: no lease in $kh/session-leases held by a descendant of pane pid $panepid (goal child sessions skipped); look at pane $pane" ;;
+  esac
+  ! kiro_trust_dialog "$pane" || die "$trustmsg"
+  if [ "$mode" = resume ] && [ "$sid" != "$want" ]; then
+    die "kiro lane $name resumed session $sid, not the requested $want; look at pane $pane"
+  fi
+  roster_merge "$name" "$(jq -n --arg s "$sid" '{session_id:$s}')"
+  if [ "$mode" != resume ]; then
+    rc=0
+    poll 'kiro_trust_dialog "$pane" && return 2; kiro_probe user "$kh" "$sid"' "$PROOF_T" || rc=$?
+    case $rc in
+      0) ;;
+      2) die "$trustmsg" ;;
+      *) die "kiro session $sid for $name has no user turn after ${PROOF_T}s (first prompt not submitted); look at pane $pane" ;;
+    esac
+  fi
+  if [ "$mode" = goal ]; then
+    poll 'kiro_probe goal "$kh" "$sid"' "$PROOF_T" \
+      || die "kiro goal for $name not started: no goal workflow run_start in $kh/sessions/*/$sid/messages.jsonl after ${PROOF_T}s; look at pane $pane"
   fi
 }
 

@@ -67,6 +67,8 @@ class MeshBase(unittest.TestCase):
                    "session_id": "ses_abc", "port": self.port},
             "cl": {"name": "cl", "cli": "claude", "mode": "prompt", "pane": "%3", "session_id": "u-1",
                    "port": None},
+            "ki": {"name": "ki", "cli": "kiro", "mode": "prompt", "pane": "%4", "session_id": "sess_fake-1",
+                   "port": None},
             "DECISIONS": {"name": "DECISIONS", "cli": "claude", "mode": "desk", "pane": "%9",
                           "session_id": None, "port": None},
             "ORCHESTRATOR": {"name": "ORCHESTRATOR", "cli": "claude", "mode": "prompt", "pane": "%8",
@@ -137,6 +139,28 @@ class TestDelivery(MeshBase):
             self.assertNotIn("secret body", fh.read())
         self.assertIn("tmux", res)
         self.assertEqual(self.inbox_lines("cl")[0]["text"], "secret body")
+
+    def test_send_kiro(self):
+        res = mesh.deliver("alpha", "ki", "kiro secret body")
+        self.assertTrue(os.path.exists(self.tmux + ".argv"), "control: fake tmux never ran")
+        self.assertEqual(calls(self.tmux), [
+            ["-L", "testsock", "send-keys", "-t", "%4", "-l",
+             "[fleet] message from alpha: run peer_inbox to read it"],
+            ["-L", "testsock", "send-keys", "-t", "%4", "Enter"],
+        ])
+        with open(self.tmux + ".argv") as fh:
+            self.assertNotIn("kiro secret body", fh.read())
+        self.assertFalse(os.path.exists(self.codex + ".argv"), "kiro must not go through codex queue")
+        self.assertIn("tmux send-keys", res)
+        self.assertEqual(self.inbox_lines("ki")[0]["text"], "kiro secret body")
+
+    def test_send_kiro_without_pane_fails_loud(self):
+        r = json.load(open(os.path.join(self.state, "roster.json")))
+        r["ki"]["pane"] = None
+        json.dump(r, open(os.path.join(self.state, "roster.json"), "w"))
+        res = mesh.deliver("alpha", "ki", "x")
+        self.assertIn("FAILED", res)
+        self.assertFalse(os.path.exists(self.tmux + ".argv"))
 
     def test_send_missing_target(self):
         res = mesh.deliver("alpha", "ghost", "anyone?")
@@ -211,6 +235,7 @@ class TestReopen(MeshBase):
         self.roster["cx"]["status"] = "parked"
         self.roster["cl"]["status"] = "done"
         self.roster["oc"]["status"] = "live"
+        self.roster["ki"]["status"] = "parked"
         with open(os.path.join(self.state, "roster.json"), "w") as f:
             json.dump(self.roster, f)
 
@@ -228,6 +253,18 @@ class TestReopen(MeshBase):
         self.assertEqual(calls(self.fleet), [["reopen", "cl"]])
         self.assertIn("reopened", res)
         self.assertTrue(os.path.exists(self.tmux + ".argv"), "wake after reopen did not run")
+
+    def test_parked_kiro_is_reopened_then_woken(self):
+        res = mesh.deliver("alpha", "ki", "wake kiro")
+        self.assertEqual(calls(self.fleet), [["reopen", "ki"]])
+        self.assertIn("reopened", res)
+        self.assertIn("tmux send-keys", res)
+        self.assertEqual(calls(self.tmux), [
+            ["-L", "testsock", "send-keys", "-t", "%4", "-l",
+             "[fleet] message from alpha: run peer_inbox to read it"],
+            ["-L", "testsock", "send-keys", "-t", "%4", "Enter"],
+        ])
+        self.assertEqual(mesh.load_roster()["ki"]["status"], "live")
 
     def test_live_is_not_reopened(self):
         res = mesh.deliver("alpha", "oc", "hi")

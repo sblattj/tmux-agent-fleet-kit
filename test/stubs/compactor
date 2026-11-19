@@ -2,7 +2,8 @@
 # Test stub for a lane pane: reads typed lines; on "/compact" writes the CLI's finished-compaction record.
 #   compactor claude FILE   append a {"type":"system","subtype":"compact_boundary"} line to FILE
 #   compactor codex FILE    append a {"type":"compacted"} line to FILE
-#   compactor touch FILE    create FILE (the opencode fake server reads it)
+#   compactor kiro FILE     append a tombstone(kind=summarization) line then an assistant Summary line to FILE
+#   compactor touch FILE   create FILE (the opencode fake server reads it)
 #   compactor never FILE    read input, never compact
 # Every line it reads is appended to FILE.typed, so a test can see what park typed.
 import json, sys, time
@@ -16,6 +17,17 @@ for line in sys.stdin:
         continue
     time.sleep(1)  # a real compact takes time; park must wait for the record, not for the keystroke
     ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    if mode == "kiro":
+        # Kiro appends a tombstone (kind summarization) then an assistant Summary line when /compact finishes
+        recs = [{"id": "tombstone_summarize_fixture-%d" % time.time_ns(), "timestamp": ts,
+                 "payload": {"type": "tombstone", "kind": "summarization", "effectiveFromMessageId": "context_snapshot_fixture",
+                             "metadata": {"truncatedMessageCount": 3, "truncatedAt": ts}}},
+                {"id": "summary_fixture-%d" % time.time_ns(), "timestamp": ts,
+                 "payload": {"type": "assistant", "content": "## Overview\nSynthetic summary.", "operationType": "Summary"}}]
+        with open(target, "a") as fh:
+            for r in recs:
+                fh.write(json.dumps(r) + "\n")
+        continue
     if mode == "claude":
         rec = {"type": "system", "subtype": "compact_boundary", "content": "Conversation compacted", "timestamp": ts}
     elif mode == "codex":

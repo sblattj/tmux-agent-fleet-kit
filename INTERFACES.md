@@ -19,13 +19,16 @@ and `$FLEET_ORCHESTRATOR` (default `ORCHESTRATOR`).
 | FLEET_DESK / FLEET_ORCHESTRATOR | `DECISIONS` / `ORCHESTRATOR` | role names |
 | FLEET_NAME | set by the launcher inside each window | the lane's own name (fleet_mesh.py reads it as the sender) |
 | FLEET_CLAUDE_BIN / FLEET_CODEX_BIN / FLEET_OPENCODE_BIN | `claude` / `codex` / `opencode` on PATH | binaries (tests point them at stubs) |
+| FLEET_KIRO_BIN | `kiro-cli` | Kiro binary (tests point it at a stub) |
+| KIRO_HOME | `~/.kiro` | Kiro's global dir (sessions, leases, agents, settings, steering); passed to kiro lanes when set; read by install/kiro.sh and bin/fleet-lifecycle |
+| FLEET_KIRO_GOAL_MAX | `20` | kiro goal mode rewrites `/goal ` to `/goal --max N `; positive integer (Kiro's own default is 5, DOC) |
 
 ## State layout ($FLEET_STATE)
 
 ```
 roster.json            {"<name>": {"name","cli","mode","pane","session_id","port","dir","model","pid","at"}}
-                       cli: claude|codex|opencode ; pane: tmux pane id like "%12" ; port: int or null ;
-                       session_id: claude uuid | codex thread uuid | opencode "ses_..." | null until known
+                       cli: claude|codex|opencode|kiro ; pane: tmux pane id like "%12" ; port: int or null ;
+                       session_id: claude uuid | codex thread uuid | opencode "ses_..." | kiro "sess_<uuid>" | null until known
 inbox/<name>.jsonl     one JSON per line: {"id","at","from","to","text"}
 inbox/<name>.cursor    integer: number of lines already returned by peer_inbox
 decisions.jsonl        {"id":"Q<n>","at","from","question","options":[...],"status":"open|answered","answer","answeredAt"}
@@ -37,7 +40,7 @@ Writers update roster.json atomically (write temp file in the same dir, then `mv
 ## bin/fleet
 
 ```
-fleet launch [--cli claude|codex|opencode] [--model M] [--dir D] [--split-right-of NAME] [--dry-run] [--no-proof]
+fleet launch [--cli claude|codex|opencode|kiro] [--model M] [--dir D] [--split-right-of NAME] [--dry-run] [--no-proof]
              <name> goal <condition.txt> | prompt <text|file> | desk [text|file] | resume <session-id>
 fleet ls                      roster + liveness (pane alive?) one line per lane
 fleet attach                  tmux attach -t $FLEET_TMUX_SESSION
@@ -72,6 +75,15 @@ fleet stop <name>             kill that pane (asks nothing; used by tests and re
   (resume: `opencode --port <p> -s <id> <dir>`). Session id: poll `GET http://127.0.0.1:<p>/session` (<= 60 s) for a
   session whose `directory` is the real path of dir, newest `time.created`. Goal proof (goal mode): that session's
   `.metadata.goal.state == "active"` or its title starts with `▶`, wait <= 90 s.
+- kiro: `kiro-cli chat --agent-engine v3 --trust-all-tools --trust-workspace [--agent fleet-<role>] [--model <m>] "$(cat <txt>)"`
+  (resume: `... --resume-id sess_<uuid>`, no prompt). Goal mode: the first prompt's leading `/goal ` becomes
+  `/goal --max $FLEET_KIRO_GOAL_MAX ` (default 20; the `/goal ` prefix check runs on the original text, the length check on the rewritten text). Session id: poll (<= 60 s)
+  `$KIRO_HOME/session-leases/<sid>.lease` (JSON with `pid`) for a pid that is a descendant of the pane pid (pane shell ->
+  kiro-cli -> bun -> node, not the direct child); goal workflow child sessions (session.json `rootConversationId` set,
+  `agentMode` `wf-*`) hold their own lease and are skipped. Goal proof: a `_kiro/workflow/run_start` line for workflow
+  `goal` in the parent `$KIRO_HOME/sessions/*/<sid>/messages.jsonl`, wait <= 90 s. No `--name`: the roster maps name to
+  session id. If the trust-all confirmation (default "No, exit") is on screen the launcher fails loud (run
+  `install/kiro.sh`, then `fleet stop <name>` and relaunch). PROVEN on kiro-cli 3.5.0.
 - Every successful launch writes the roster entry and prints exactly one line starting `OK <name> cli=<cli> mode=<mode> pane=<id>`
   plus `session=<id>` and `goal=active|n/a`. Failure prints `FAIL <reason>` to stderr and exits 1.
 - `--dry-run` prints the window script, the first prompt and the tmux command, touches nothing (no tmux, no state).
@@ -94,6 +106,7 @@ Delivery (`deliver(frm, to, text)`): always append to inbox/<to>.jsonl, then wak
 - opencode: `POST http://127.0.0.1:<port>/session/<session_id>/prompt_async` JSON `{"parts":[{"type":"text","text":"[fleet message from <frm>] <text>"}]}` (PROVEN, 204)
 - claude: `tmux [-L sock] send-keys -t <pane> -l "[fleet] message from <frm>: run peer_inbox to read it"` then `send-keys -t <pane> Enter`
   (never the message body itself: typed input is treated as the human's)
+- kiro: same typed pointer line and `Enter` as claude (PROVEN: starts a turn on an idle lane; the lane then runs `peer_inbox`)
 - target missing from roster: inbox only, result says `queued (no live lane)`.
 Result text names the wake used and whether it succeeded; a failed wake still leaves the message in the inbox.
 
@@ -114,17 +127,21 @@ Desk helper `skills/running-the-decisions-desk/desk.sh` uses `fleet-goal check` 
 - Files: `roles/<role>.md` (role context), `roles/<role>.claude.json` (a Claude `--settings` file with
   `permissions.deny` only: allow rules do nothing in bypass mode), `roles/<role>.codex.toml` (Codex profile body:
   `developer_instructions` from the role file, `[mcp_servers.fleet] enabled_tools` list),
-  `roles/<role>.opencode.json` (an OpenCode v1 agent object: `prompt`, `tools`, `permission`).
+  `roles/<role>.opencode.json` (an OpenCode v1 agent object: `prompt`, `tools`, `permission`),
+  `roles/<role>.kiro.json` (a Kiro V3 agent: `tools`, `includeMcpJson`, `permissions.rules` with capability `shell`, effect `deny`).
 - Launch wiring: claude `--settings <repo>/roles/<role>.claude.json --append-system-prompt-file <repo>/roles/<role>.md`;
   codex `-p fleet-<role>` (installer writes `$CODEX_HOME/fleet-<role>.config.toml`); opencode `--agent fleet-<role>`
-  (installer adds `agent.fleet-<role>` to opencode.json). If the profile/agent is not installed the launcher
+  (installer adds `agent.fleet-<role>` to opencode.json); kiro `--agent fleet-<role>` (installer writes
+  `$KIRO_HOME/agents/fleet-<role>.json`, prompt = inline text of roles/<role>.md because a `file://` prompt path is rejected
+  at runtime and Kiro falls back to the default agent, dropping the denies; PROVEN). If the profile/agent is not installed the launcher
   warns once and launches without it.
 - Deny lists: orchestrator denies Edit, Write, NotebookEdit, `Bash(git commit:*)`, `Bash(git push:*)`;
   desk denies Edit, Write, NotebookEdit, `Bash(fleet launch:*)`, `Bash(fleet park:*)`, `Bash(fleet stop:*)`,
   `Bash(fleet reopen:*)`, `Bash(git commit:*)`, `Bash(git push:*)`; listener denies Edit, Write, NotebookEdit,
   `Bash(fleet launch:*)`, `Bash(fleet park:*)`, `Bash(fleet stop:*)`, `Bash(fleet reopen:*)`, `Bash(git commit:*)`,
   `Bash(git push:*)`; worker denies `Bash(fleet launch:*)`, `Bash(fleet park:*)`, `Bash(fleet stop:*)`,
-  `Bash(fleet reopen:*)`. Every role denies AskUserQuestion.
+  `Bash(fleet reopen:*)`. Every role denies AskUserQuestion. Kiro has the same fleet/git denies as `shell` match globs
+  (`fleet park*`); PROVEN enforced under trust-all but `sh -c "fleet park X"` is not caught; no AskUserQuestion equivalent (UNVERIFIED).
 - Role guard: `fleet launch|park|stop|reopen|cleanup --apply` refuse with `FAIL role <r> can't <verb>` when
   `FLEET_ROLE` is set and is not `orchestrator`. Unset `FLEET_ROLE` (the human's own shell) is allowed.
 
@@ -134,23 +151,25 @@ Desk helper `skills/running-the-decisions-desk/desk.sh` uses `fleet-goal check` 
 - Goal state per CLI: claude = transcript jsonl records `{"type":"attachment","attachment":{"type":"goal_status","met":bool,...}}`
   (PROVEN on 2.1.327): last one `met:true` -> achieved; a `Goal set:` line with no later met:true -> active, unless a
   later `Goal cleared` / `Goal paused` text appears -> stopped (those two strings are from the docs, UNVERIFIED in jsonl); codex = `thread_goals.status` (active -> active; complete -> achieved; else stopped);
-  opencode = `GET /session` `.metadata.goal.state` (active -> active; complete|achieved -> achieved; else stopped).
+  opencode = `GET /session` `.metadata.goal.state` (active -> active; complete|achieved -> achieved; else stopped);
+  kiro = the `goal` workflow markers in messages.jsonl (`_kiro/workflow/run_start` -> active; `run_complete` with status
+  `completed` -> achieved; any other status -> stopped; a goal stopped at max iterations: UNVERIFIED, never observed).
   No goal ever set -> `none`.
 - `fleet tick [--json]`: read-only. Prints one row per lane: NAME CLI ROLE TIER LAST-ACTIVE GOAL UNREAD ACTION,
   where ACTION is `park` when: role is worker (never orchestrator/desk/listener) AND (goal achieved OR goal stopped
   > 600 s) AND no unread inbox line younger than 3600 s. Goal `none` workers: ACTION `orchestrator-decides`.
 - `fleet park NAME [--no-compact]`: first types `/compact` and waits <= FLEET_COMPACT_WAIT (600 s) for the CLI's
-  finished-compaction record (claude `compact_boundary`, codex `compacted`, opencode completed `summary` message),
+  finished-compaction record (claude `compact_boundary`, codex `compacted`, opencode completed `summary` message, kiro `tombstone` line with `kind` `summarization` in messages.jsonl),
   refusing to park when it never appears or the transcript is unreadable; roster gets `compactedAt`. Then it stops the CLI cleanly (claude/codex: send `C-c` twice then wait <= 20 s for the pid to exit,
-  then `kill`; opencode: same), `tmux kill-window`/`kill-pane`, sets status parked, parkedAt, resume command.
+  then `kill`; opencode and kiro: same; Kiro exits ~1 s, PROVEN), `tmux kill-window`/`kill-pane`, sets status parked, parkedAt, resume command.
 - `fleet reopen NAME`: for parked/done entries: default resume the same id
-  (claude `--resume <id>` with the same name; codex `codex resume <id>`; opencode `-s <id>`) via `fleet launch ... resume`.
+  (claude `--resume <id>` with the same name; codex `codex resume <id>`; opencode `-s <id>`; kiro `kiro-cli chat --agent-engine v3 --trust-all-tools --trust-workspace --resume-id <id>`) via `fleet launch ... resume`.
   `--fresh` instead starts a new lane from `$FLEET_STATE/handoff/NAME.md`; if that file is missing, generate it first
   with `fleet handoff NAME` from the transcript (claude jsonl, codex rollout jsonl, opencode `GET /session/<id>/message`
-  or `opencode export <id>` if the server is gone): last user goal, last 20 assistant texts, files touched.
+  or `opencode export <id>` if the server is gone, kiro messages.jsonl): last user goal, last 20 assistant texts, files touched.
 - `fleet cleanup [--apply]`: dry run by default. Reports: (1) goal-less workers quiet > 2 h, (2) tmux windows in the
   fleet session with no roster lane, (3) roster live entries whose pane or pid is gone (-> mark parked),
-  (4) claude/codex/opencode processes whose argv names a roster lane but no pane. `--apply` parks (1), marks (3),
+  (4) claude/codex/opencode/kiro processes whose argv names a roster lane but no pane. `--apply` parks (1), marks (3),
   kills (2) and (4) only with `--kill-orphans`. Copy the roster to `$FLEET_STATE/archive/roster-<ts>.json` before any apply.
 
 ### Messaging routing
@@ -159,4 +178,6 @@ Desk helper `skills/running-the-decisions-desk/desk.sh` uses `fleet-goal check` 
 - Shared decisions log `$FLEET_STATE/decisions-log.jsonl`, append-only: `{"id","at","asker","verbatim","relayedTo"}`.
   `decision_answer` appends to it and delivers only to the asker (no orchestrator message). desk.sh `answer` appends too.
 - Installers: codex.sh writes `$CODEX_HOME/fleet-<role>.config.toml` from roles/*.codex.toml; opencode.sh merges
-  roles/*.opencode.json into `agent.fleet-<role>`; claude.sh needs nothing (roles are passed per launch).
+  roles/*.opencode.json into `agent.fleet-<role>`; kiro.sh writes
+  `$KIRO_HOME/agents/fleet-<role>.json` from roles/*.kiro.json, `settings/mcp.json`, `settings/cli.json`
+  (`chat.disableTrustAllConfirmation` true) and `steering/fleet-rules.md`; claude.sh needs nothing (roles are passed per launch).

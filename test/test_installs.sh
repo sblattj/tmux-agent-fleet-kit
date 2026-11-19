@@ -53,8 +53,9 @@ chmod +x "$stubs"/*
 # run an installer with a given HOME; XDG vars unset so nothing can leak to the real HOME
 inst() {
   local h=$1 script=$2; shift 2
-  ( unset CODEX_HOME XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME FLEET_STATE FLEET_PREFIX
+  ( unset CODEX_HOME KIRO_HOME XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME FLEET_STATE FLEET_PREFIX
     if [ -n "${INST_CODEX_HOME:-}" ]; then export CODEX_HOME=$INST_CODEX_HOME; fi
+    if [ -n "${INST_KIRO_HOME:-}" ]; then export KIRO_HOME=$INST_KIRO_HOME; fi
     export HOME="$h" PATH="$stubs:$PATH" FLEET_CLAUDE_BIN=claude FLEET_CODEX_BIN=codex
     bash "$ROOT/install/$script" "$@" )
 }
@@ -253,6 +254,82 @@ h=$(newhome roles-claude)
 out=$(inst "$h" claude.sh --help 2>&1)
 check "claude roles: --help says no role install is needed" bash -c "printf '%s' \"\$1\" | grep -q 'installs no role files'" _ "$out"
 check "claude roles: the installer writes no fleet-* role files" bash -c "! find \"\$1\" -name 'fleet-*' | grep -q ." _ "$h"
+
+# =========================================================== kiro.sh
+h=$(newhome kiro); kh=$h/.kiro
+mkdir -p "$kh/settings"
+printf '{"chat.defaultModel":"keep-me"}\n' > "$kh/settings/cli.json"
+printf '{"mcpServers":{"other":{"url":"http://127.0.0.1:1/mcp"}}}\n' > "$kh/settings/mcp.json"
+out=$(inst "$h" kiro.sh --prefix "$h/.local" 2>&1); rc=$?
+eq "kiro.sh first run exits 0" "$rc" 0
+check "kiro: cli.json disables the trust-all confirmation, keeps other keys" jq -e '."chat.disableTrustAllConfirmation" == true and ."chat.defaultModel" == "keep-me"' "$kh/settings/cli.json"
+check "kiro: the install prints the trust-all note" bash -c "printf '%s' \"\$1\" | grep -q 'chat.disableTrustAllConfirmation=true'" _ "$out"
+check "kiro: mcp.json fleet server is python3 <repo>/lib/fleet_mesh.py serve" jq -e --arg m "$ROOT/lib/fleet_mesh.py" '.mcpServers.fleet == {"command":"python3","args":[$m,"serve"]}' "$kh/settings/mcp.json"
+check "kiro: existing mcp server preserved" jq -e '.mcpServers.other.url == "http://127.0.0.1:1/mcp"' "$kh/settings/mcp.json"
+eq "kiro: steering begin marker once" "$(count 'fleet-rules:begin' "$kh/steering/fleet-rules.md")" 1
+eq "kiro: steering has no unreplaced placeholders" "$(count '{{' "$kh/steering/fleet-rules.md")" 0
+check "kiro: steering placeholder substituted" grep -q 'DESKY\|DESKX' "$kh/steering/fleet-rules.md"
+for r in orchestrator desk listener worker; do
+  af=$kh/agents/fleet-$r.json
+  check "kiro: agent fleet-$r valid JSON named fleet-$r" jq -e --arg n "fleet-$r" '.name == $n and .tools == ["*"] and .includeMcpJson == true' "$af"
+  check "kiro: agent fleet-$r prompt is the inline text of roles/$r.md" jq -e --rawfile p "$ROOT/roles/$r.md" '.prompt == $p and (.prompt | startswith("file:") | not)' "$af"
+done
+for r in worker desk listener; do
+  for v in launch park stop reopen; do
+    check "kiro: fleet-$r denies shell 'fleet $v*'" jq -e --arg g "fleet $v*" '[.permissions.rules[] | select(.capability=="shell" and .effect=="deny" and (.match | index($g)))] | length == 1' "$kh/agents/fleet-$r.json"
+  done
+done
+for r in orchestrator desk listener; do
+  check "kiro: fleet-$r denies fs_write **" jq -e '[.permissions.rules[] | select(.capability=="fs_write" and .effect=="deny" and .match == ["**"])] | length == 1' "$kh/agents/fleet-$r.json"
+  check "kiro: fleet-$r denies git commit and git push" jq -e '([.permissions.rules[] | select(.capability=="shell" and .effect=="deny") | .match[]] | index("git commit*") != null and index("git push*") != null)' "$kh/agents/fleet-$r.json"
+done
+check "kiro: worker has no fs_write deny" jq -e '[.permissions.rules[] | select(.capability=="fs_write")] | length == 0' "$kh/agents/fleet-worker.json"
+check "kiro: orchestrator does not deny fleet launch" jq -e '[.permissions.rules[].match[]] | index("fleet launch*") == null' "$kh/agents/fleet-orchestrator.json"
+eq "kiro: bin/fleet symlink" "$(readlink "$h/.local/bin/fleet")" "$ROOT/bin/fleet"
+# CONTROL: the deny assertion must fail on an agent whose deny rule was stripped
+jq '.permissions.rules |= map(select((.match // []) | index("fleet park*") | not))' "$kh/agents/fleet-worker.json" > "$tmp/stripped-agent.json"
+if jq -e '[.permissions.rules[] | select(.capability=="shell" and .effect=="deny" and (.match | index("fleet park*")))] | length == 1' "$tmp/stripped-agent.json" >/dev/null 2>&1; then fail "control: kiro deny assertion catches an agent missing the fleet park rule"; else pass "control: kiro deny assertion catches an agent missing the fleet park rule"; fi
+sumbefore=$(cat "$kh/settings/cli.json" "$kh/settings/mcp.json" "$kh"/agents/fleet-*.json "$kh/steering/fleet-rules.md" | cksum)
+nbak=$(find "$kh" -name '*.fleet-bak.*' | wc -l | tr -d ' ')
+eq "kiro: backups made for the two pre-existing settings files" "$nbak" 2
+check "kiro: cli.json backup holds the original content" bash -c "grep -q 'keep-me' \"\$1\"/settings/cli.json.fleet-bak.* && ! grep -q disableTrust \"\$1\"/settings/cli.json.fleet-bak.*" _ "$kh"
+out=$(inst "$h" kiro.sh --prefix "$h/.local" 2>&1); rc=$?
+eq "kiro.sh second run exits 0" "$rc" 0
+eq "kiro: second run leaves every file byte-identical" "$(cat "$kh/settings/cli.json" "$kh/settings/mcp.json" "$kh"/agents/fleet-*.json "$kh/steering/fleet-rules.md" | cksum)" "$sumbefore"
+eq "kiro: second run makes no extra backup" "$(find "$kh" -name '*.fleet-bak.*' | wc -l | tr -d ' ')" "$nbak"
+check "kiro: second run reports no 'wrote:' lines" bash -c "! printf '%s' \"\$1\" | grep -q '^wrote:'" _ "$out"
+eq "kiro: fleet server entry still once after second run" "$(jq '.mcpServers | keys | map(select(. == "fleet")) | length' "$kh/settings/mcp.json")" 1
+
+h=$(newhome kiro-dry)
+out=$(inst "$h" kiro.sh --dry-run --prefix "$h/.local" 2>&1); rc=$?
+eq "kiro --dry-run exits 0" "$rc" 0
+eq "kiro --dry-run wrote nothing under HOME" "$(nfiles "$h")" 0
+check "kiro --dry-run prints would-write lines for agents and mcp" bash -c "printf '%s' \"\$1\" | grep -q 'would write: kiro agent fleet-worker' && printf '%s' \"\$1\" | grep -q 'would write: fleet MCP in kiro mcp.json'" _ "$out"
+
+h=$(newhome kiro-home); mkdir -p "$tmp/khome"
+INST_KIRO_HOME=$tmp/khome inst "$h" kiro.sh --prefix "$h/.local" >/dev/null 2>&1; rc=$?
+eq "kiro (KIRO_HOME set) exits 0" "$rc" 0
+check "kiro: KIRO_HOME is honored for agents, mcp, cli.json and steering" bash -c "test -f \"\$1\"/agents/fleet-worker.json && test -f \"\$1\"/settings/mcp.json && test -f \"\$1\"/settings/cli.json && test -f \"\$1\"/steering/fleet-rules.md" _ "$tmp/khome"
+check "kiro: KIRO_HOME set, nothing written to HOME/.kiro" test ! -e "$h/.kiro"
+
+h=$(newhome kiro-jsonc); mkdir -p "$h/.kiro/settings"
+printf '{\n  // comment\n  "mcpServers": {}\n}\n' > "$h/.kiro/settings/mcp.json"
+before=$(cksum < "$h/.kiro/settings/mcp.json")
+out=$(inst "$h" kiro.sh --prefix "$h/.local" 2>&1); rc=$?
+eq "kiro (JSONC mcp.json) exits 1" "$rc" 1
+check "kiro (JSONC mcp.json) says it is not plain JSON" bash -c "printf '%s' \"\$1\" | grep -q 'not plain JSON'" _ "$out"
+eq "kiro (JSONC mcp.json) left untouched" "$(cksum < "$h/.kiro/settings/mcp.json")" "$before"
+
+h=$(newhome kiro-roles-fixture)
+fx=$tmp/kiroroles; mkdir -p "$fx"
+printf '{"name":"x","description":"gamma","tools":["*"],"permissions":{"rules":[]}}\n' > "$fx/gamma.kiro.json"
+printf 'Gamma "role" text\nline two\n' > "$fx/gamma.md"
+FLEET_ROLES_DIR="$fx" inst "$h" kiro.sh --prefix "$h/.local" >/dev/null 2>&1; rc=$?
+eq "kiro roles (fixture dir) exits 0" "$rc" 0
+check "kiro roles: fixture prompt is the exact inline md text, name overwritten" jq -e --rawfile p "$fx/gamma.md" '.name == "fleet-gamma" and .prompt == $p' "$h/.kiro/agents/fleet-gamma.json"
+rm -f "$fx/gamma.md"; h=$(newhome kiro-roles-nomd)
+out=$(FLEET_ROLES_DIR="$fx" inst "$h" kiro.sh --prefix "$h/.local" 2>&1); rc=$?
+eq "kiro roles: a role json without its .md fails" "$rc" 1
 
 # ---- control: a half-marked file must make the installer fail, not corrupt the file
 h=$(newhome control); mkdir -p "$h/.codex"
