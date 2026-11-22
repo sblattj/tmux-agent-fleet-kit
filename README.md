@@ -87,6 +87,8 @@ The launcher warns once and launches without the role when the Codex profile, Op
 
 The orchestrator keeps the fleet small by parking lanes that are finished and bringing them back when needed. `fleet tick` (read-only) shows who is due.
 
+`fleet tick` also ends with one browser line, `chrome tabs: N (agent A, other B)`, read from Chrome's DevTools list at `FLEET_CDP_URL` (default `http://127.0.0.1:9222`, pages only; "agent" means cdp-toolkit recorded opening the tab). Above `FLEET_TAB_WARN` (default 50) it adds a WARN line. If Chrome is down it prints `chrome tabs: unavailable` and tick carries on. It only reads; it never opens or closes a tab.
+
 | Tier | Meaning | Roster `status` |
 |---|---|---|
 | LIVE | pane alive, recently active | `live` |

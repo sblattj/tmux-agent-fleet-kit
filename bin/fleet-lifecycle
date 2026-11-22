@@ -11,6 +11,9 @@
 #
 # Columns: TIER = the lane's roster model (or -); LAST-ACTIVE = age of the newest of tmux window_activity,
 # the claude sessions/<pid>.json statusUpdatedAt, roster lastActive; UNREAD = unread/young (young = under 3600 s old).
+# After the table, text tick prints `chrome tabs: N (agent A, other B)` (read-only GET FLEET_CDP_URL/json/list,
+# type page; agent = a cdp-toolkit origin record exists; just N when CDP_ARTIFACT_DIR is absent), a WARN line when
+# N > FLEET_TAB_WARN, and `chrome tabs: unavailable` when Chrome can't be read. --json output is unchanged.
 # ACTION: park = worker AND (goal achieved OR goal stopped > 600 s) AND no unread inbox line under 3600 s old;
 # orchestrator-decides = worker with goal none; - = nothing. Orchestrator/desk/listener lanes are never parked.
 # Stopped-since time, in order: roster goalStoppedAt (epoch secs or ISO), the transcript record's timestamp
@@ -20,6 +23,7 @@
 # last activity = session.json lastModifiedAt else messages.jsonl mtime; compact = tombstone kind=summarization lines.
 # env: FLEET_STATE FLEET_TMUX_SESSION FLEET_TMUX_SOCKET FLEET_CLAUDE_HOME (~/.claude) CODEX_HOME (~/.codex)
 #      KIRO_HOME (~/.kiro)
+#      FLEET_CDP_URL (http://127.0.0.1:9222) FLEET_TAB_WARN (50) CDP_ARTIFACT_DIR (/tmp/cdp-toolkit, origin records)
 #      FLEET_BIN (path of `fleet`, default: sibling of this script) FLEET_PARK_WAIT (20 s) FLEET_COMPACT_WAIT (600 s) FLEET_QUIET_SECS (7200)
 #      FLEET_CLAUDE_BIN / FLEET_OPENCODE_BIN / FLEET_CODEX_BIN / FLEET_KIRO_BIN (kiro-cli)
 # ---
@@ -434,6 +438,40 @@ def all_facts():
     return [facts(n, r[n], act) for n in sorted(r) if isinstance(r[n], dict)]
 
 
+def chrome_tabs():
+    """Read-only count of Chrome page targets from the DevTools /json/list endpoint. Never opens or closes a tab.
+    Agent = a page with a cdp-toolkit origin record (origin-chrome-<targetId>.json in CDP_ARTIFACT_DIR).
+    Returns (n, agent_or_None) or None when Chrome can't be read (fail open)."""
+    url = os.environ.get("FLEET_CDP_URL", "http://127.0.0.1:9222").rstrip("/") + "/json/list"
+    try:
+        with urllib.request.urlopen(url, timeout=1.5) as r:
+            data = json.loads(r.read().decode("utf-8", "replace"))
+        ids = [t.get("id") or "" for t in data if isinstance(t, dict) and t.get("type") == "page"]
+    except Exception:
+        return None
+    odir = os.environ.get("CDP_ARTIFACT_DIR", "/tmp/cdp-toolkit")
+    if not os.path.isdir(odir):
+        return len(ids), None
+    safe = lambda i: re.sub(r"[^A-Za-z0-9._-]", "_", i)
+    agent = sum(1 for i in ids if os.path.exists(os.path.join(odir, "origin-chrome-%s.json" % safe(i))))
+    return len(ids), agent
+
+
+def print_chrome_tabs():
+    try:
+        warn = int(os.environ.get("FLEET_TAB_WARN", "50"))
+    except ValueError:
+        warn = 50
+    t = chrome_tabs()
+    if t is None:
+        print("chrome tabs: unavailable")
+        return
+    n, agent = t
+    print("chrome tabs: %d" % n if agent is None else "chrome tabs: %d (agent %d, other %d)" % (n, agent, n - agent))
+    if n > warn:
+        print("WARN chrome tabs %d > %d (FLEET_TAB_WARN): close tabs you opened" % (n, warn))
+
+
 def cmd_tick(args):
     fs = all_facts()
     if "--json" in args:
@@ -441,6 +479,7 @@ def cmd_tick(args):
         return
     if not fs:
         print("(no lanes)")
+        print_chrome_tabs()
         return
     rows = [("NAME", "CLI", "ROLE", "TIER", "LAST-ACTIVE", "GOAL", "UNREAD", "ACTION")]
     for f in fs:
@@ -449,6 +488,7 @@ def cmd_tick(args):
     w = [max(len(r[i]) for r in rows) for i in range(8)]
     for r in rows:
         print("  ".join(r[i].ljust(w[i]) for i in range(8)).rstrip())
+    print_chrome_tabs()
 
 
 def cmd_facts(args):

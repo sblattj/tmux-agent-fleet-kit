@@ -159,6 +159,12 @@ Desk helper `skills/running-the-decisions-desk/desk.sh` uses `fleet-goal check` 
 - `fleet tick [--json]`: read-only. Prints one row per lane: NAME CLI ROLE TIER LAST-ACTIVE GOAL UNREAD ACTION,
   where ACTION is `park` when: role is worker (never orchestrator/desk/listener) AND (goal achieved OR goal stopped
   > 600 s) AND no unread inbox line younger than 3600 s. Goal `none` workers: ACTION `orchestrator-decides`.
+  After the table (text mode only; `--json` is unchanged) tick prints `chrome tabs: N (agent A, other B)`: N = targets
+  of `type` `page` from a read-only `GET $FLEET_CDP_URL/json/list` (default `http://127.0.0.1:9222`, 1.5 s timeout);
+  A = pages with a cdp-toolkit origin record `origin-chrome-<targetId>.json` in `$CDP_ARTIFACT_DIR` (default
+  `/tmp/cdp-toolkit`), B = the rest. No such directory: just `chrome tabs: N`. N > `FLEET_TAB_WARN` (default 50) adds
+  `WARN chrome tabs N > T (FLEET_TAB_WARN): close tabs you opened`. Chrome unreachable or bad JSON: `chrome tabs:
+  unavailable`, exit status unchanged. Never opens or closes a tab.
 - `fleet park NAME [--no-compact]`: first types `/compact` and waits <= FLEET_COMPACT_WAIT (600 s) for the CLI's
   finished-compaction record (claude `compact_boundary`, codex `compacted`, opencode completed `summary` message, kiro `tombstone` line with `kind` `summarization` in messages.jsonl),
   refusing to park when it never appears or the transcript is unreadable; roster gets `compactedAt`. Then it stops the CLI cleanly (claude/codex: send `C-c` twice then wait <= 20 s for the pid to exit,

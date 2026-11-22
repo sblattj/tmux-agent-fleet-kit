@@ -12,7 +12,10 @@ export FLEET_STATE=$T/state
 export FLEET_CLAUDE_HOME=$T/claude
 export CODEX_HOME=$T/codex
 export KIRO_HOME=$T/kiro
-unset FLEET_ROLE FLEET_NAME TMUX FLEET_BIN FLEET_QUIET_SECS FLEET_PARK_WAIT
+unset FLEET_ROLE FLEET_NAME TMUX FLEET_BIN FLEET_QUIET_SECS FLEET_PARK_WAIT FLEET_TAB_WARN
+# never read the real Chrome: a closed port by default, a stub server in the chrome tabs section
+export FLEET_CDP_URL=http://127.0.0.1:1
+export CDP_ARTIFACT_DIR=$T/cdp
 W=$T/work
 mkdir -p "$FLEET_STATE" "$FLEET_CLAUDE_HOME/projects/slug" "$CODEX_HOME/sessions/2026/11/18" "$KIRO_HOME/sessions" "$W"
 SRVPID=
@@ -202,6 +205,35 @@ eq "tick: kiro orchestrator with achieved goal -> not park" "-" "$(field kOrch a
 t "tick text row shows park for wPark" bash -c '"$1" tick | grep "^wPark" | grep -q "park$"' _ "$LC"
 before=$(cksum "$FLEET_STATE/roster.json"); ticks >/dev/null; "$LC" tick >/dev/null
 eq "tick is read-only (roster unchanged)" "$before" "$(cksum "$FLEET_STATE/roster.json")"
+
+# ---------------------------------------------------------------- tick: chrome tabs line (read-only, fail open)
+tabs_txt=$("$LC" tick); rc=$?
+eq "tick with Chrome down exits 0" 0 "$rc"
+t "tick with Chrome down says unavailable" has "$tabs_txt" "chrome tabs: unavailable"
+t "tick with Chrome down still prints the table" has "$tabs_txt" "NAME"
+mkdir -p "$T/cdpsrv/json" "$CDP_ARTIFACT_DIR"
+python3 -c 'import json,sys
+pages=[{"id":"P%d"%i,"type":"page","url":"about:blank"} for i in range(3)]
+pages+=[{"id":"B1","type":"browser_ui"},{"id":"W1","type":"service_worker"}]
+json.dump(pages,open(sys.argv[1],"w"))' "$T/cdpsrv/json/list"
+: > "$CDP_ARTIFACT_DIR/origin-chrome-P0.json"
+: > "$CDP_ARTIFACT_DIR/origin-chrome-GONE.json"
+CDPPORT=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1])')
+python3 -m http.server "$CDPPORT" --bind 127.0.0.1 --directory "$T/cdpsrv" >/dev/null 2>&1 &
+CDPPID=$!
+for _ in $(seq 50); do curl -s -m 1 "http://127.0.0.1:$CDPPORT/json/list" >/dev/null 2>&1 && break; sleep 0.1; done
+tabs_txt=$(FLEET_CDP_URL=http://127.0.0.1:$CDPPORT "$LC" tick)
+t "tick counts page targets only, agent by origin record" has "$tabs_txt" "chrome tabs: 3 (agent 1, other 2)"
+t "tick: no WARN at or under the default 50" hasnt "$tabs_txt" "WARN"
+tabs_txt=$(FLEET_CDP_URL=http://127.0.0.1:$CDPPORT FLEET_TAB_WARN=2 "$LC" tick)
+t "tick: WARN when tabs > FLEET_TAB_WARN" has "$tabs_txt" "WARN chrome tabs 3 > 2"
+tabs_txt=$(FLEET_CDP_URL=http://127.0.0.1:$CDPPORT FLEET_TAB_WARN=3 "$LC" tick)
+t "tick: no WARN when tabs == FLEET_TAB_WARN" hasnt "$tabs_txt" "WARN"
+tabs_txt=$(FLEET_CDP_URL=http://127.0.0.1:$CDPPORT CDP_ARTIFACT_DIR=$T/nosuch "$LC" tick)
+t "tick: no origin dir -> just the count" bash -c 'printf "%s\n" "$1" | grep -qx "chrome tabs: 3"' _ "$tabs_txt"
+j=$(FLEET_CDP_URL=http://127.0.0.1:$CDPPORT "$LC" tick --json)
+t "tick --json stays a pure lane list" bash -c 'printf "%s" "$1" | jq -e "type==\"array\"" >/dev/null' _ "$j"
+kill "$CDPPID" 2>/dev/null; wait "$CDPPID" 2>/dev/null
 
 # ================================================================ 3. park
 reset_state
