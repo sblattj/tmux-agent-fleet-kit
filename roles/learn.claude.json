@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "deny": [
+      "Edit",
+      "Write",
+      "NotebookEdit",
+      "Bash(fleet launch:*)",
+      "Bash(fleet park:*)",
+      "Bash(fleet stop:*)",
+      "Bash(fleet reopen:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "AskUserQuestion"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "SendMessage",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -z \"${FLEET_MESH:-}\" ] || python3 \"$FLEET_MESH\" mirror >/dev/null 2>&1; exit 0",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}

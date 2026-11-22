@@ -9,7 +9,7 @@
 #   --mesh   also register the fleet-mesh MCP server (needed for mixed fleets: Claude lanes reaching Codex/OpenCode)
 #   --trust  mark DIR as trusted in ~/.claude.json (/goal needs a trusted workspace)
 #   --trust-only  with --trust: only mark the dir trusted, install nothing else
-# Placeholders come from FLEET_HUMAN / FLEET_DESK / FLEET_ORCHESTRATOR.
+# Placeholders come from FLEET_HUMAN / FLEET_DECIDE / FLEET_ROUTE.
 set -eu
 . "$(cd "$(dirname "$0")" && pwd)/common.sh"
 

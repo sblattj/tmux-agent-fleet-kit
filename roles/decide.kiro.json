@@ -1,6 +1,6 @@
 {
-  "name": "fleet-desk",
-  "description": "Fleet decisions desk: relays the human's decisions, never edits or launches. Kiro has no AskUserQuestion equivalent (UNVERIFIED); the role text routes questions.",
+  "name": "fleet-decide",
+  "description": "Fleet DECIDE desk (was desk): relays the human's decisions, never edits or launches. Kiro has no AskUserQuestion equivalent (UNVERIFIED); the role text routes questions.",
   "tools": [
     "*"
   ],

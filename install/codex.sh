@@ -8,7 +8,7 @@
 #   - symlinks bin/fleet and bin/fleet-goal into <prefix>/bin
 # Flags: --dry-run  --prefix DIR (default $HOME/.local)  --trust DIR
 #   --trust  append [projects."DIR"] trust_level = "trusted" to $CODEX_HOME/config.toml (Codex asks otherwise)
-# Placeholders come from FLEET_HUMAN / FLEET_DESK / FLEET_ORCHESTRATOR.
+# Placeholders come from FLEET_HUMAN / FLEET_DECIDE / FLEET_ROUTE.
 set -eu
 . "$(cd "$(dirname "$0")" && pwd)/common.sh"
 

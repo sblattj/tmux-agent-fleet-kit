@@ -53,9 +53,10 @@ chmod +x "$stubs"/*
 # run an installer with a given HOME; XDG vars unset so nothing can leak to the real HOME
 inst() {
   local h=$1 script=$2; shift 2
-  ( unset CODEX_HOME KIRO_HOME XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME FLEET_STATE FLEET_PREFIX
+  ( unset CODEX_HOME KIRO_HOME FLEET_AGY_HOME FLEET_AGY_BIN XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME FLEET_STATE FLEET_PREFIX
     if [ -n "${INST_CODEX_HOME:-}" ]; then export CODEX_HOME=$INST_CODEX_HOME; fi
     if [ -n "${INST_KIRO_HOME:-}" ]; then export KIRO_HOME=$INST_KIRO_HOME; fi
+    if [ -n "${INST_AGY_HOME:-}" ]; then export FLEET_AGY_HOME=$INST_AGY_HOME; fi
     export HOME="$h" PATH="$stubs:$PATH" FLEET_CLAUDE_BIN=claude FLEET_CODEX_BIN=codex
     bash "$ROOT/install/$script" "$@" )
 }
@@ -68,7 +69,7 @@ projreal=$(cd "$proj" && pwd -P)
 h=$(newhome claude)
 mkdir -p "$h/.claude"
 printf '# my notes\nkeep this line\n' > "$h/.claude/CLAUDE.md"
-export FLEET_HUMAN=Pat FLEET_DESK=DESKX FLEET_ORCHESTRATOR=ORCHX
+export FLEET_HUMAN=Pat FLEET_DECIDE=DESKX FLEET_ROUTE=ORCHX
 out=$(inst "$h" claude.sh --mesh --trust "$proj" --prefix "$h/.local" 2>&1); rc=$?
 eq "claude.sh first run exits 0" "$rc" 0
 md=$h/.claude/CLAUDE.md
@@ -98,7 +99,7 @@ eq "claude: markers still once after second run" "$(count 'fleet-rules:begin' "$
 eq "claude: mcp add ran exactly once across two runs" "$(count 'claude mcp add' "$STUB_LOG")" 1
 eq "claude: no extra backup on second run" "$(find "$h/.claude" -name 'CLAUDE.md.fleet-bak.*' | wc -l | tr -d ' ')" 1
 check "claude: second run reports unchanged" bash -c "printf '%s' \"\$1\" | grep -q unchanged" _ "$out"
-FLEET_DESK=DESKY inst "$h" claude.sh --prefix "$h/.local" >/dev/null 2>&1
+FLEET_DECIDE=DESKY inst "$h" claude.sh --prefix "$h/.local" >/dev/null 2>&1
 eq "claude: changed placeholder replaces the block (markers still once)" "$(count 'fleet-rules:begin' "$md")" 1
 check "claude: replaced block carries the new value" grep -q 'DESKY' "$md"
 eq "claude: replaced block dropped the old value" "$(count 'DESKX' "$md")" 0
@@ -147,10 +148,21 @@ eq "codex --dry-run did not run mcp add" "$(count 'codex mcp add' "$STUB_LOG")" 
 h=$(newhome opencode)
 out=$(inst "$h" opencode.sh --bypass --prefix "$h/.local" 2>&1); rc=$?
 eq "opencode.sh first run exits 0" "$rc" 0
-cdir=$h/.config/opencode; pdir=$h/.local/share/opencode-goal-pro-max-complete-plugin
+cdir=$h/.config/opencode; pdir=$h/.local/share/opencode-goal-pro-max-complete-plugin; cpdir=$h/.local/share/opencode-compact-at-token-limit
 check "opencode: git clone pinned to v1.5.3 from the plugin repo" grep -qF "git clone --depth 1 --branch v1.5.3 https://github.com/sblattj/opencode-goal-pro-max-complete-plugin $pdir" "$STUB_LOG"
-check "opencode: opencode.json lists the plugin once" jq -e --arg p "file://$pdir" '[.plugin[] | select(. == $p)] | length == 1' "$cdir/opencode.json"
-check "opencode: tui.json lists the plugin once" jq -e --arg p "file://$pdir" '[.plugin[] | select(. == $p)] | length == 1' "$cdir/tui.json"
+# One compactor: the compact plugin owns forced compaction, the goal plugin's compactAtTokens is 0.
+# goal-plugin.js v1.5.3 forcedCompactionAllowed needs compactAtTokens > 0; plugin options seed every goal.
+ONE_COMPACTOR='[.plugin[] | if type == "array" then . else [., {}] end
+  | if (.[0] | test("opencode-goal-pro-max-complete-plugin")) then (.[1].compactAtTokens // 200000) != 0
+    elif (.[0] | test("opencode-compact-at-token-limit")) then ((.[1].limit // 200000) | tostring) != "0"
+    else false end | select(.)] | length == 1'
+check "opencode: opencode.json lists the plugin once" jq -e --arg p "file://$pdir" '[.plugin[] | select(. == $p or (type == "array" and .[0] == $p))] | length == 1' "$cdir/opencode.json"
+check "opencode: goal plugin entry turns its own forced compaction off" jq -e --arg p "file://$pdir" '.plugin[0] == [$p, {"compactAtTokens":0}]' "$cdir/opencode.json"
+check "opencode: exactly one compactor is active in opencode.json" jq -e "$ONE_COMPACTOR" "$cdir/opencode.json"
+check "opencode: compact plugin cloned at v0.1.2 from its repo" grep -qF "git clone --depth 1 --branch v0.1.2 https://github.com/sblattj/opencode-compact-at-token-limit $cpdir" "$STUB_LOG"
+check "opencode: opencode.json lists the compact plugin once, after the goal plugin, with the default limit as an option" jq -e --arg g "file://$pdir" --arg c "file://$cpdir" '.plugin == [[$g, {"compactAtTokens":0}], [$c, {"limit":200000}]]' "$cdir/opencode.json"
+check "opencode: tui.json does not list the compact plugin (server plugin only)" jq -e --arg c "file://$cpdir" '(.plugin | index($c)) == null' "$cdir/tui.json"
+check "opencode: tui.json lists the plugin once, as a plain entry" jq -e --arg p "file://$pdir" '.plugin == [$p]' "$cdir/tui.json"
 check "opencode: mcp.fleet entry is local, enabled, runs fleet_mesh.py serve" jq -e --arg m "$ROOT/lib/fleet_mesh.py" '.mcp.fleet == {"type":"local","command":["python3",$m,"serve"],"enabled":true}' "$cdir/opencode.json"
 check "opencode: --bypass sets permission allow" jq -e '.permission == "allow"' "$cdir/opencode.json"
 eq "opencode: AGENTS.md begin marker once" "$(count 'fleet-rules:begin' "$cdir/AGENTS.md")" 1
@@ -160,28 +172,69 @@ before=$(cksum < "$cdir/opencode.json")
 inst "$h" opencode.sh --bypass --prefix "$h/.local" >/dev/null 2>&1; rc=$?
 eq "opencode.sh second run exits 0" "$rc" 0
 eq "opencode: second run leaves opencode.json byte-identical" "$(cksum < "$cdir/opencode.json")" "$before"
-check "opencode: plugin array still has one entry" jq -e '.plugin | length == 1' "$cdir/opencode.json"
-eq "opencode: git clone ran exactly once across two runs" "$(count 'git clone' "$STUB_LOG")" 1
+check "opencode: plugin array still has two entries" jq -e '.plugin | length == 2' "$cdir/opencode.json"
+eq "opencode: git clone ran exactly twice (goal + compact) across two runs" "$(count 'git clone' "$STUB_LOG")" 2
+out=$(inst "$h" opencode.sh --bypass --prefix "$h/.local" 2>&1)
+check "opencode: a rerun says the compact plugin is unchanged" bash -c "printf '%s' \"\$1\" | grep -q 'unchanged: compact plugin already cloned'" _ "$out"
 eq "opencode: AGENTS.md markers once after second run" "$(count 'fleet-rules:begin' "$cdir/AGENTS.md")" 1
 
 h=$(newhome opencode-nobypass)
 printf '{"theme":"x","plugin":["other"]}\n' > /dev/null
 mkdir -p "$h/.config/opencode"; printf '{"theme":"x","plugin":["other"]}\n' > "$h/.config/opencode/opencode.json"
-FLEET_OC_GOAL_PLUGIN_REF=v9.9.9 FLEET_OC_GOAL_PLUGIN_URL=https://example.invalid/p.git inst "$h" opencode.sh --prefix "$h/.local" >/dev/null 2>&1; rc=$?
+FLEET_OC_GOAL_PLUGIN_REF=v9.9.9 FLEET_OC_GOAL_PLUGIN_URL=https://example.invalid/p.git FLEET_OC_COMPACT_PLUGIN_REF=v8.8.8 FLEET_OC_COMPACT_PLUGIN_URL=https://example.invalid/c.git inst "$h" opencode.sh --prefix "$h/.local" >/dev/null 2>&1; rc=$?
 eq "opencode (no --bypass, env overrides) exits 0" "$rc" 0
 check "opencode: no permission key without --bypass" jq -e 'has("permission") | not' "$h/.config/opencode/opencode.json"
-check "opencode: existing keys preserved, plugin appended" jq -e '.theme == "x" and .plugin[0] == "other" and (.plugin | length) == 2' "$h/.config/opencode/opencode.json"
+check "opencode: existing keys preserved, plugin appended" jq -e '.theme == "x" and .plugin[0] == "other" and (.plugin | length) == 3' "$h/.config/opencode/opencode.json"
 check "opencode: ref and url overrides honored" grep -qF "git clone --depth 1 --branch v9.9.9 https://example.invalid/p.git" "$STUB_LOG"
+check "opencode: compact ref and url overrides honored" grep -qF "git clone --depth 1 --branch v8.8.8 https://example.invalid/c.git" "$STUB_LOG"
+
+# FLEET_OC_COMPACT_LIMIT writes the tuple form [ref, {limit}] in place of the plain entry
+h=$(newhome opencode-limit); oj=$h/.config/opencode/opencode.json; cref=file://$h/.local/share/opencode-compact-at-token-limit
+inst "$h" opencode.sh --prefix "$h/.local" >/dev/null 2>&1
+FLEET_OC_COMPACT_LIMIT=5k inst "$h" opencode.sh --prefix "$h/.local" >/dev/null 2>&1; rc=$?
+eq "opencode (FLEET_OC_COMPACT_LIMIT=5k) exits 0" "$rc" 0
+check "opencode: limit replaces the default in the same slot" jq -e --arg c "$cref" '(.plugin | length) == 2 and .plugin[1] == [$c, {"limit":"5k"}]' "$oj"
+check "opencode (limit 5k): exactly one compactor is active" jq -e "$ONE_COMPACTOR" "$oj"
+before=$(cksum < "$oj")
+FLEET_OC_COMPACT_LIMIT=5k inst "$h" opencode.sh --prefix "$h/.local" >/dev/null 2>&1
+eq "opencode: same limit again leaves opencode.json byte-identical" "$(cksum < "$oj")" "$before"
+FLEET_OC_COMPACT_LIMIT=150000 inst "$h" opencode.sh --prefix "$h/.local" >/dev/null 2>&1
+check "opencode: a new numeric limit replaces the tuple in place, as a number" jq -e --arg c "$cref" '(.plugin | length) == 2 and .plugin[1] == [$c, {"limit":150000}]' "$oj"
+inst "$h" opencode.sh --prefix "$h/.local" >/dev/null 2>&1
+check "opencode: no FLEET_OC_COMPACT_LIMIT keeps an existing tuple" jq -e --arg c "$cref" '.plugin[1] == [$c, {"limit":150000}]' "$oj"
+before=$(cksum < "$oj")
+out=$(FLEET_OC_COMPACT_LIMIT=lots inst "$h" opencode.sh --prefix "$h/.local" 2>&1); rc=$?
+eq "opencode: invalid FLEET_OC_COMPACT_LIMIT exits 1" "$rc" 1
+check "opencode: invalid limit names the variable" bash -c "printf '%s' \"\$1\" | grep -q 'FLEET_OC_COMPACT_LIMIT'" _ "$out"
+eq "opencode: invalid limit left opencode.json alone" "$(cksum < "$oj")" "$before"
+FLEET_OC_COMPACT_LIMIT=0 inst "$h" opencode.sh --prefix "$h/.local" >/dev/null 2>&1
+check "opencode: FLEET_OC_COMPACT_LIMIT=0 turns forced compaction off in both plugins" jq -e --arg c "$cref" '.plugin[1] == [$c, {"limit":0}] and .plugin[0][1].compactAtTokens == 0' "$oj"
+
+# an older install (plain entries) or a hand-made goal tuple: options kept, goal compaction forced off,
+# compact limit written, so OPENCODE_COMPACT_AT_TOKENS in the tmux server env never decides the limit
+h=$(newhome opencode-upgrade); oj=$h/.config/opencode/opencode.json
+g=file://$h/.local/share/opencode-goal-pro-max-complete-plugin; c=file://$h/.local/share/opencode-compact-at-token-limit
+mkdir -p "$h/.config/opencode"
+jq -n --arg g "$g" --arg c "$c" '{plugin: [[$g, {"maxTurns":5, "compactAtTokens":150000}], $c]}' > "$oj"
+inst "$h" opencode.sh --prefix "$h/.local" >/dev/null 2>&1; rc=$?
+eq "opencode (upgrade) exits 0" "$rc" 0
+check "opencode (upgrade): goal tuple keeps its options and gets compactAtTokens 0" jq -e --arg g "$g" '.plugin[0] == [$g, {"maxTurns":5, "compactAtTokens":0}]' "$oj"
+check "opencode (upgrade): plain compact entry gets the default limit option" jq -e --arg c "$c" '.plugin[1] == [$c, {"limit":200000}] and (.plugin | length) == 2' "$oj"
+check "opencode (upgrade): exactly one compactor is active" jq -e "$ONE_COMPACTOR" "$oj"
+jq -n --arg g "$g" --arg c "$c" '{plugin: [$g, $c]}' > "$oj"
+check "control: the old plain-entry config has two compactors (the check can fail)" bash -c '! jq -e "$1" "$2"' _ "$ONE_COMPACTOR" "$oj"
 
 # plugin dir filled by the plugin's own installer (package.json, no .git): reuse it, never clone over it
 h=$(newhome opencode-preinst)
 mkdir -p "$h/.local/share/opencode-goal-pro-max-complete-plugin"; echo '{}' > "$h/.local/share/opencode-goal-pro-max-complete-plugin/package.json"
+mkdir -p "$h/.local/share/opencode-compact-at-token-limit"; echo '{}' > "$h/.local/share/opencode-compact-at-token-limit/package.json"
 n=$(count 'git clone' "$STUB_LOG")
 out=$(inst "$h" opencode.sh --bypass --prefix "$h/.local" 2>&1); rc=$?
 eq "opencode (pre-installed plugin dir) exits 0" "$rc" 0
 eq "opencode (pre-installed plugin dir) ran no git clone" "$(count 'git clone' "$STUB_LOG")" "$n"
 check "opencode (pre-installed plugin dir) says already installed" bash -c "printf '%s' \"\$1\" | grep -q 'already installed'" _ "$out"
-check "opencode (pre-installed plugin dir) still lists the plugin" jq -e '.plugin | length == 1' "$h/.config/opencode/opencode.json"
+check "opencode (pre-installed plugin dir) says the compact plugin is already installed" bash -c "printf '%s' \"\$1\" | grep -q 'unchanged: compact plugin already installed'" _ "$out"
+check "opencode (pre-installed plugin dir) still lists both plugins" jq -e '.plugin | length == 2' "$h/.config/opencode/opencode.json"
 # non-empty dir with no plugin: fail loud, no clone
 h=$(newhome opencode-junk)
 mkdir -p "$h/.local/share/opencode-goal-pro-max-complete-plugin"; echo x > "$h/.local/share/opencode-goal-pro-max-complete-plugin/junk"
@@ -189,6 +242,13 @@ out=$(inst "$h" opencode.sh --bypass --prefix "$h/.local" 2>&1); rc=$?
 eq "opencode (junk plugin dir) exits 1" "$rc" 1
 check "opencode (junk plugin dir) names the dir" bash -c "printf '%s' \"\$1\" | grep -q 'holds no plugin'" _ "$out"
 eq "opencode (junk plugin dir) ran no git clone" "$(count 'git clone' "$STUB_LOG")" "$n"
+h=$(newhome opencode-junk-compact)
+mkdir -p "$h/.local/share/opencode-compact-at-token-limit"; echo x > "$h/.local/share/opencode-compact-at-token-limit/junk"
+n=$(count 'git clone' "$STUB_LOG")
+out=$(inst "$h" opencode.sh --bypass --prefix "$h/.local" 2>&1); rc=$?
+eq "opencode (junk compact plugin dir) exits 1" "$rc" 1
+check "opencode (junk compact plugin dir) names the dir" bash -c "printf '%s' \"\$1\" | grep -q 'opencode-compact-at-token-limit exists, is not empty and holds no plugin'" _ "$out"
+eq "opencode (junk compact plugin dir) cloned only the goal plugin" "$(count 'git clone' "$STUB_LOG")" "$((n + 1))"
 
 h=$(newhome opencode-dry)
 n=$(count 'git clone' "$STUB_LOG")
@@ -197,6 +257,9 @@ eq "opencode --dry-run exits 0" "$rc" 0
 eq "opencode --dry-run wrote nothing under HOME" "$(nfiles "$h")" 0
 eq "opencode --dry-run ran no git clone" "$(count 'git clone' "$STUB_LOG")" "$n"
 check "opencode --dry-run prints would-write lines" bash -c "printf '%s' \"\$1\" | grep -q 'would write'" _ "$out"
+check "opencode --dry-run prints the compact plugin clone" bash -c "printf '%s' \"\$1\" | grep -q 'would run: git clone --depth 1 --branch v0.1.2 https://github.com/sblattj/opencode-compact-at-token-limit'" _ "$out"
+out=$(inst "$h" opencode.sh --help 2>&1)
+check "opencode --help names FLEET_OC_COMPACT_LIMIT" bash -c "printf '%s' \"\$1\" | grep -q 'FLEET_OC_COMPACT_LIMIT'" _ "$out"
 
 # =========================================================== role installs (fixture roles dir)
 roles=$tmp/roles; mkdir -p "$roles"
@@ -238,7 +301,7 @@ oj=$h/.config/opencode/opencode.json
 check "opencode roles: agent fleet-alpha merged with absolute prompt path" jq -e --arg p "{file:$roles/alpha.md}" '.agent["fleet-alpha"].prompt == $p and .agent["fleet-alpha"].tools.write == false' "$oj"
 check "opencode roles: agent fleet-beta merged" jq -e --arg p "{file:$roles/beta.md}" '.agent["fleet-beta"].prompt == $p and .agent["fleet-beta"].permission.bash["fleet launch*"] == "deny"' "$oj"
 check "opencode roles: relative ./roles path is gone" bash -c "! grep -q '{file:./roles' \"\$1\"" _ "$oj"
-check "opencode roles: mcp and plugin entries survive the merge" jq -e '.mcp.fleet.enabled == true and (.plugin | length) == 1' "$oj"
+check "opencode roles: mcp and plugin entries survive the merge" jq -e '.mcp.fleet.enabled == true and (.plugin | length) == 2' "$oj"
 before=$(cksum < "$oj")
 FLEET_ROLES_DIR="$roles" inst "$h" opencode.sh --prefix "$h/.local" >/dev/null 2>&1
 eq "opencode roles: second run byte-identical" "$(cksum < "$oj")" "$before"
@@ -269,22 +332,22 @@ check "kiro: existing mcp server preserved" jq -e '.mcpServers.other.url == "htt
 eq "kiro: steering begin marker once" "$(count 'fleet-rules:begin' "$kh/steering/fleet-rules.md")" 1
 eq "kiro: steering has no unreplaced placeholders" "$(count '{{' "$kh/steering/fleet-rules.md")" 0
 check "kiro: steering placeholder substituted" grep -q 'DESKY\|DESKX' "$kh/steering/fleet-rules.md"
-for r in orchestrator desk listener worker; do
+for r in route decide watch worker; do
   af=$kh/agents/fleet-$r.json
   check "kiro: agent fleet-$r valid JSON named fleet-$r" jq -e --arg n "fleet-$r" '.name == $n and .tools == ["*"] and .includeMcpJson == true' "$af"
   check "kiro: agent fleet-$r prompt is the inline text of roles/$r.md" jq -e --rawfile p "$ROOT/roles/$r.md" '.prompt == $p and (.prompt | startswith("file:") | not)' "$af"
 done
-for r in worker desk listener; do
+for r in worker decide watch; do
   for v in launch park stop reopen; do
     check "kiro: fleet-$r denies shell 'fleet $v*'" jq -e --arg g "fleet $v*" '[.permissions.rules[] | select(.capability=="shell" and .effect=="deny" and (.match | index($g)))] | length == 1' "$kh/agents/fleet-$r.json"
   done
 done
-for r in orchestrator desk listener; do
+for r in route decide watch; do
   check "kiro: fleet-$r denies fs_write **" jq -e '[.permissions.rules[] | select(.capability=="fs_write" and .effect=="deny" and .match == ["**"])] | length == 1' "$kh/agents/fleet-$r.json"
   check "kiro: fleet-$r denies git commit and git push" jq -e '([.permissions.rules[] | select(.capability=="shell" and .effect=="deny") | .match[]] | index("git commit*") != null and index("git push*") != null)' "$kh/agents/fleet-$r.json"
 done
 check "kiro: worker has no fs_write deny" jq -e '[.permissions.rules[] | select(.capability=="fs_write")] | length == 0' "$kh/agents/fleet-worker.json"
-check "kiro: orchestrator does not deny fleet launch" jq -e '[.permissions.rules[].match[]] | index("fleet launch*") == null' "$kh/agents/fleet-orchestrator.json"
+check "kiro: route does not deny fleet launch" jq -e '[.permissions.rules[].match[]] | index("fleet launch*") == null' "$kh/agents/fleet-route.json"
 eq "kiro: bin/fleet symlink" "$(readlink "$h/.local/bin/fleet")" "$ROOT/bin/fleet"
 # CONTROL: the deny assertion must fail on an agent whose deny rule was stripped
 jq '.permissions.rules |= map(select((.match // []) | index("fleet park*") | not))' "$kh/agents/fleet-worker.json" > "$tmp/stripped-agent.json"
@@ -330,6 +393,63 @@ check "kiro roles: fixture prompt is the exact inline md text, name overwritten"
 rm -f "$fx/gamma.md"; h=$(newhome kiro-roles-nomd)
 out=$(FLEET_ROLES_DIR="$fx" inst "$h" kiro.sh --prefix "$h/.local" 2>&1); rc=$?
 eq "kiro roles: a role json without its .md fails" "$rc" 1
+
+# =========================================================== agy.sh
+# agy on PATH is a stub that only handles `mcp add` (writes $HOME/.gemini/config/mcp_config.json like agy 1.5.13)
+cat > "$stubs/agy" <<'EOF'
+#!/usr/bin/env bash
+echo "agy $*" >> "$STUB_LOG"
+if [ "${1:-}" = mcp ] && [ "${2:-}" = add ]; then
+  shift 2; n=$1; c=$2; shift 2; f=$HOME/.gemini/config/mcp_config.json; mkdir -p "$(dirname "$f")"
+  [ -s "$f" ] || echo '{}' > "$f"
+  jq --arg n "$n" --arg c "$c" --args '.mcpServers[$n] = {command:$c,args:$ARGS.positional,disabled:false}' "$@" < "$f" > "$f.t" && mv "$f.t" "$f"
+  exit 0
+fi
+exit 0
+EOF
+chmod +x "$stubs/agy"
+h=$(newhome agy); ah=$h/.gemini; mkdir -p "$ah/config" "$h/proj"
+printf '{"mcpServers":{"other":{"serverUrl":"http://127.0.0.1:1/mcp"}}}\n' > "$ah/config/mcp_config.json"
+out=$(inst "$h" agy.sh --prefix "$h/.local" --trust "$h/proj" 2>&1); rc=$?
+eq "agy.sh first run exits 0" "$rc" 0
+check "agy: fleet MCP added via agy mcp add" grep -q "^agy mcp add fleet python3 $ROOT/lib/fleet_mesh.py serve" "$STUB_LOG"
+check "agy: mcp_config.json fleet server is python3 <repo>/lib/fleet_mesh.py serve" jq -e --arg m "$ROOT/lib/fleet_mesh.py" '.mcpServers.fleet.command == "python3" and .mcpServers.fleet.args == [$m,"serve"]' "$ah/config/mcp_config.json"
+check "agy: existing mcp server preserved" jq -e '.mcpServers.other.serverUrl == "http://127.0.0.1:1/mcp"' "$ah/config/mcp_config.json"
+eq "agy: rules file starts with always_on frontmatter" "$(head -3 "$ah/config/rules/fleet-rules.md" | tr '\n' '|')" "---|trigger: always_on|---|"
+eq "agy: rules have no unreplaced placeholders" "$(count '{{' "$ah/config/rules/fleet-rules.md")" 0
+for r in route decide watch learn worker; do
+  af=$ah/config/agents/fleet-$r.md
+  check "agy: agent fleet-$r frontmatter parses with name fleet-$r, mainAgent, inheritMcp" python3 -c '
+import sys, yaml
+t = open(sys.argv[1]).read(); assert t.startswith("---\n"); fm = yaml.safe_load(t.split("---\n")[1])
+assert fm["name"] == "fleet-" + sys.argv[2] and fm["mainAgent"] is True and fm["inheritMcp"] is True and fm["subagent"] is False' "$af" "$r"
+  check "agy: agent fleet-$r body is roles/$r.md verbatim" python3 -c '
+import sys; t = open(sys.argv[1]).read(); b = open(sys.argv[2]).read(); assert t.endswith(b) and t.count("---\n") >= 2' "$af" "$ROOT/roles/$r.md"
+done
+check "agy: worker agent has write tools, decide does not" bash -c 'grep -q write_file "$1"/fleet-worker.md && ! grep -q write_file "$1"/fleet-decide.md' _ "$ah/config/agents"
+check "agy: skills copied with SKILL.md" test -f "$ah/config/skills/running-the-decisions-desk/SKILL.md"
+check "agy: --trust adds the dir to antigravity-cli/settings.json trustedWorkspaces" jq -e --arg d "$(cd "$h/proj" && pwd -P)" '.trustedWorkspaces | index($d) != null' "$ah/antigravity-cli/settings.json"
+eq "agy: bin/fleet symlink" "$(readlink "$h/.local/bin/fleet")" "$ROOT/bin/fleet"
+sumbefore=$(cat "$ah/config/mcp_config.json" "$ah"/config/agents/fleet-*.md "$ah/config/rules/fleet-rules.md" "$ah/antigravity-cli/settings.json" | cksum)
+nadd=$(grep -c '^agy mcp add' "$STUB_LOG")
+out=$(inst "$h" agy.sh --prefix "$h/.local" --trust "$h/proj" 2>&1); rc=$?
+eq "agy.sh second run exits 0" "$rc" 0
+eq "agy: second run leaves every file byte-identical" "$(cat "$ah/config/mcp_config.json" "$ah"/config/agents/fleet-*.md "$ah/config/rules/fleet-rules.md" "$ah/antigravity-cli/settings.json" | cksum)" "$sumbefore"
+eq "agy: second run does not call agy mcp add again" "$(grep -c '^agy mcp add' "$STUB_LOG")" "$nadd"
+eq "agy: trustedWorkspaces stays unique" "$(jq '.trustedWorkspaces | length' "$ah/antigravity-cli/settings.json")" 1
+
+h=$(newhome agy-dry)
+out=$(inst "$h" agy.sh --dry-run --prefix "$h/.local" 2>&1); rc=$?
+eq "agy --dry-run exits 0" "$rc" 0
+eq "agy --dry-run wrote nothing under HOME" "$(nfiles "$h")" 0
+check "agy --dry-run says it would add the fleet MCP" bash -c "printf '%s' \"\$1\" | grep -q 'would add: fleet MCP'" _ "$out"
+
+h=$(newhome agy-home); mkdir -p "$tmp/ahome"; nadd=$(grep -c '^agy mcp add' "$STUB_LOG")
+INST_AGY_HOME=$tmp/ahome inst "$h" agy.sh --prefix "$h/.local" >/dev/null 2>&1; rc=$?
+eq "agy (FLEET_AGY_HOME set) exits 0" "$rc" 0
+check "agy: FLEET_AGY_HOME honored, mcp written by jq (agy mcp add only knows HOME/.gemini)" jq -e --arg m "$ROOT/lib/fleet_mesh.py" '.mcpServers.fleet.args == [$m,"serve"]' "$tmp/ahome/config/mcp_config.json"
+eq "agy: FLEET_AGY_HOME set, agy mcp add not called" "$(grep -c '^agy mcp add' "$STUB_LOG")" "$nadd"
+check "agy: FLEET_AGY_HOME set, nothing written to HOME/.gemini" test ! -e "$h/.gemini"
 
 # ---- control: a half-marked file must make the installer fail, not corrupt the file
 h=$(newhome control); mkdir -p "$h/.codex"

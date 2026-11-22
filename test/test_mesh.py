@@ -16,7 +16,7 @@ spec = importlib.util.spec_from_file_location("fleet_mesh", MESH)
 mesh = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mesh)
 
-FAKE = "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done >> \"$0.argv\"\nprintf -- '--END--\\n' >> \"$0.argv\"\n"
+FAKE = "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done >> \"$0.argv\"\nprintf -- '--END--\\n' >> \"$0.argv\"\nif [ \"$1 $2 $3\" = \"-L testsock capture-pane\" ] && [ -f \"$0.screen\" ]; then cat \"$0.screen\"; fi\n"
 
 
 class Recorder(http.server.BaseHTTPRequestHandler):
@@ -55,7 +55,7 @@ class MeshBase(unittest.TestCase):
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
         self.env = {"FLEET_STATE": self.state, "FLEET_CODEX_BIN": self.codex,
                     "FLEET_TMUX_SOCKET": "testsock", "FLEET_NAME": "alpha",
-                    "FLEET_DESK": "DECISIONS", "FLEET_ORCHESTRATOR": "ORCHESTRATOR",
+                    "FLEET_DECIDE": "DECISIONS", "FLEET_ROUTE": "ORCHESTRATOR",
                     "PATH": self.bin + os.pathsep + os.environ.get("PATH", "")}
         self._saved = {k: os.environ.get(k) for k in self.env}
         os.environ.update(self.env)
@@ -69,6 +69,8 @@ class MeshBase(unittest.TestCase):
                    "port": None},
             "ki": {"name": "ki", "cli": "kiro", "mode": "prompt", "pane": "%4", "session_id": "sess_fake-1",
                    "port": None},
+            "ag": {"name": "ag", "cli": "agy", "mode": "prompt", "pane": "%5",
+                   "session_id": "00000000-0000-4000-8000-000000000005", "port": None},
             "DECISIONS": {"name": "DECISIONS", "cli": "claude", "mode": "desk", "pane": "%9",
                           "session_id": None, "port": None},
             "ORCHESTRATOR": {"name": "ORCHESTRATOR", "cli": "claude", "mode": "prompt", "pane": "%8",
@@ -154,6 +156,50 @@ class TestDelivery(MeshBase):
         self.assertIn("tmux send-keys", res)
         self.assertEqual(self.inbox_lines("ki")[0]["text"], "kiro secret body")
 
+    def test_send_agy(self):
+        res = mesh.deliver("alpha", "ag", "agy secret body")
+        self.assertTrue(os.path.exists(self.tmux + ".argv"), "control: fake tmux never ran")
+        self.assertEqual(calls(self.tmux), [
+            ["-L", "testsock", "capture-pane", "-p", "-t", "%5"],
+            ["-L", "testsock", "send-keys", "-t", "%5", "-l",
+             "[fleet] message from alpha: run peer_inbox to read it"],
+            ["-L", "testsock", "send-keys", "-t", "%5", "Enter"],
+        ])
+        with open(self.tmux + ".argv") as fh:
+            self.assertNotIn("agy secret body", fh.read())
+        self.assertFalse(os.path.exists(self.codex + ".argv"), "agy must not go through codex queue")
+        self.assertIn("tmux send-keys", res)
+        self.assertEqual(self.inbox_lines("ag")[0]["text"], "agy secret body")
+
+    def test_send_agy_never_types_into_a_blocking_screen(self):
+        for screen in ("Terms of Service\n[x] Yes, I agree to help improve Antigravity CLI\n",
+                       "Welcome to Antigravity CLI!\nChoose your color scheme:\n",
+                       "Do you trust the contents of this project?\n", "Waiting for authentication...\n"):
+            with open(self.tmux + ".screen", "w") as fh:
+                fh.write(screen)
+            if os.path.exists(self.tmux + ".argv"):
+                os.remove(self.tmux + ".argv")
+            res = mesh.deliver("alpha", "ag", "x")
+            self.assertIn("FAILED", res, screen)
+            self.assertIn("not typing into it", res, screen)
+            sent = [c for c in calls(self.tmux) if "send-keys" in c]
+            self.assertEqual(sent, [], "typed into %r" % screen)
+        # control: an idle agy prompt still gets the wake
+        with open(self.tmux + ".screen", "w") as fh:
+            fh.write("> \n? for shortcuts\n")
+        os.remove(self.tmux + ".argv")
+        res = mesh.deliver("alpha", "ag", "x")
+        self.assertNotIn("FAILED", res)
+        self.assertEqual(len([c for c in calls(self.tmux) if "send-keys" in c]), 2)
+
+    def test_send_agy_without_pane_fails_loud(self):
+        r = json.load(open(os.path.join(self.state, "roster.json")))
+        r["ag"]["pane"] = None
+        json.dump(r, open(os.path.join(self.state, "roster.json"), "w"))
+        res = mesh.deliver("alpha", "ag", "x")
+        self.assertIn("FAILED", res)
+        self.assertFalse(os.path.exists(self.tmux + ".argv"))
+
     def test_send_kiro_without_pane_fails_loud(self):
         r = json.load(open(os.path.join(self.state, "roster.json")))
         r["ki"]["pane"] = None
@@ -219,6 +265,83 @@ r[sys.argv[1]]["status"] = "live"
 json.dump(r, open(p, "w"))
 PY
 """
+
+
+class TestMirror(MeshBase):
+    """Native SendMessage -> mesh inbox copy (role PostToolUse hook runs `fleet_mesh.py mirror`)."""
+
+    def setUp(self):
+        super().setUp()
+        self.ccdir = os.path.join(self.tmp, "claude")
+        os.makedirs(os.path.join(self.ccdir, "sessions"))
+        os.environ["CLAUDE_CONFIG_DIR"] = self.ccdir
+        self.roster["cl"]["pid"] = 4242
+        with open(os.path.join(self.state, "roster.json"), "w") as f:
+            json.dump(self.roster, f)
+        self.sock = os.path.join(self.tmp, "4242.sock")
+        self.write_session(4242, "u-1", self.sock)
+
+    def tearDown(self):
+        os.environ.pop("CLAUDE_CONFIG_DIR", None)
+        super().tearDown()
+
+    def write_session(self, pid, sid, sock):
+        with open(os.path.join(self.ccdir, "sessions", "%d.json" % pid), "w") as f:
+            json.dump({"pid": pid, "sessionId": sid, "messagingSocketPath": sock}, f)
+
+    def hook(self, to, msg="native body", tool="SendMessage"):
+        return {"hook_event_name": "PostToolUse", "tool_name": tool,
+                "tool_input": {"to": to, "message": msg, "summary": "s"}}
+
+    def assert_no_wake(self):
+        self.assertFalse(os.path.exists(self.tmux + ".argv"), "mirror must not wake (tmux ran)")
+        self.assertFalse(os.path.exists(self.codex + ".argv"), "mirror must not wake (codex ran)")
+
+    def test_mirror_by_name(self):
+        self.assertEqual(mesh.mirror(self.hook("cl")), "mirrored alpha -> cl")
+        rec = self.inbox_lines("cl")[0]
+        self.assertEqual((rec["from"], rec["to"], rec["text"], rec["via"]), ("alpha", "cl", "native body", "native"))
+        self.assert_no_wake()
+
+    def test_mirror_strips_ref(self):
+        self.assertEqual(mesh.mirror(self.hook("cl [3fa9c1]")), "mirrored alpha -> cl")
+
+    def test_mirror_by_uds_socket(self):
+        self.assertEqual(mesh.mirror(self.hook("uds:" + self.sock)), "mirrored alpha -> cl")
+        self.assert_no_wake()
+
+    def test_uds_with_stale_session_is_not_mirrored(self):
+        self.write_session(4242, "someone-else", self.sock)  # pid reused by another session
+        self.assertTrue(mesh.mirror(self.hook("uds:" + self.sock)).startswith("skip"))
+        self.assertFalse(os.path.exists(os.path.join(self.state, "inbox", "cl.jsonl")))
+
+    def test_uds_unknown_socket_is_not_mirrored(self):
+        self.assertTrue(mesh.mirror(self.hook("uds:/tmp/cc-socks/1.sock")).startswith("skip"))
+
+    def test_non_lane_and_self_are_skipped(self):
+        self.assertTrue(mesh.mirror(self.hook("some-session")).startswith("skip"))
+        self.assertTrue(mesh.mirror(self.hook("alpha")).startswith("skip"))
+        self.assertTrue(mesh.mirror(self.hook("cl", tool="Bash")).startswith("skip"))
+        self.assertFalse(os.path.exists(os.path.join(self.state, "inbox", "cl.jsonl")))
+
+    def test_no_fleet_name_is_skipped(self):
+        os.environ.pop("FLEET_NAME")
+        self.assertTrue(mesh.mirror(self.hook("cl")).startswith("skip"))
+
+    def test_peer_inbox_marks_native_copy(self):
+        mesh.mirror(self.hook("cl"))
+        out = mesh.t_peer_inbox({"name": "cl"})
+        self.assertIn("from alpha (native copy): native body", out)
+        mesh.deliver("alpha", "cx", "mesh body")
+        self.assertNotIn("native copy", mesh.t_peer_inbox({"name": "cx"}))  # control
+
+    def test_cli_mirror_always_exits_zero(self):
+        env = dict(os.environ)
+        for stdin in (json.dumps(self.hook("cl")), "not json", "[]"):
+            p = subprocess.run([sys.executable, MESH, "mirror"], input=stdin, env=env,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+            self.assertEqual(p.returncode, 0, stdin)
+        self.assertEqual(len(self.inbox_lines("cl")), 1)
 
 
 class TestReopen(MeshBase):
@@ -392,10 +515,10 @@ class TestStdio(MeshBase):
             self.assertEqual(r["result"], {})
             r = rpc({"jsonrpc": "2.0", "id": 4, "method": "tools/list"})
             tools = r["result"]["tools"]
-            self.assertEqual(len(tools), 6)
+            self.assertEqual(len(tools), 8)
             self.assertEqual(sorted(t["name"] for t in tools),
-                             ["decision_answer", "decision_list", "decision_open",
-                              "peer_inbox", "peer_list", "peer_send"])
+                             ["decision_answer", "decision_find", "decision_list", "decision_open",
+                              "decision_report", "peer_inbox", "peer_list", "peer_send"])
             for t in tools:
                 self.assertEqual(t["inputSchema"]["type"], "object")
                 self.assertTrue(t["description"])

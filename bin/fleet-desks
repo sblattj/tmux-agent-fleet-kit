@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# fleet-desks: bring up the four standing desks in two split windows (docs/design/four-desks.md section 5.1). Dispatched as `fleet desks`.
+#
+#   fleet desks up [--cli C] [--model M] [--dir D] [--no-proof] [--dry-run]
+#
+# Builds two split windows in the fleet session, each desk an LLM lane (mode desk, never parked):
+#   deskA   ROUTE (left, role route) | DECIDE (right, role decide)
+#   deskB   WATCH (left, role watch) | LEARN (right, role learn); WATCH and LEARN get a read-only look-for-work brief
+# Every desk pane is tagged @fleet-desk <role>. Idempotent: a desk whose roster pane is live is left alone, so a rerun
+# on a live fleet prints '<D> already live' four times and changes nothing. A dead desk is relaunched into its
+# pair's window: a dead right desk splits right of the live left one, a dead left desk splits beside the live right
+# one and is swapped to the left.
+# Never touches other lanes: a live ORCHESTRATOR or DECISIONS (pre-desks names) keeps its window, pane, roster
+# entry and inbox; the new desks start beside it under their own names.
+# ---
+set -euo pipefail
+
+SESSION=${FLEET_TMUX_SESSION:-fleet}
+SOCKET=${FLEET_TMUX_SOCKET:-}
+STATE=${FLEET_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet}
+HUMAN=${FLEET_HUMAN:-the human}
+ROSTER=$STATE/roster.json
+BINDIR=$(cd "$(dirname "$0")" && pwd -P)
+FLEET=$BINDIR/fleet
+
+usage() { sed -n '2,/^# ---$/{/^# ---$/d;s/^# \{0,1\}//;p;}' "$0"; exit 2; }
+die() { printf 'FAIL %s\n' "$*" >&2; exit 1; }
+tm() { if [ -n "$SOCKET" ]; then tmux -L "$SOCKET" "$@"; else tmux "$@"; fi; }
+roster_get() { [ -s "$ROSTER" ] || return 0; jq -r --arg n "$1" --arg f "$2" '.[$n][$f] // empty' "$ROSTER" 2>/dev/null || true; }
+pane_alive() { [ -n "${1:-}" ] && tm list-panes -a -F '#{pane_id} #{pane_dead}' 2>/dev/null | grep -qx "$1 0"; }
+live() { pane_alive "$(roster_get "$1" pane)"; } # name -> 0 when its roster pane is a live tmux pane
+
+[ "${1:-}" = up ] || usage
+shift
+cli=claude model= dir= noproof=0 dry=0
+while [ $# -gt 0 ]; do
+  case $1 in
+    --cli) [ $# -ge 2 ] || usage; cli=$2; shift 2 ;;
+    --model) [ $# -ge 2 ] || usage; model=$2; shift 2 ;;
+    --dir) [ $# -ge 2 ] || usage; dir=$2; shift 2 ;;
+    --no-proof) noproof=1; shift ;;
+    --dry-run) dry=1; shift ;;
+    -h|--help) usage ;;
+    *) die "unknown argument $1" ;;
+  esac
+done
+command -v jq >/dev/null 2>&1 || die "missing dependency: jq"
+command -v tmux >/dev/null 2>&1 || die "missing dependency: tmux"
+[ -n "$dir" ] || dir=${FLEET_DIR:-$PWD}
+[ -d "$dir" ] || die "directory does not exist: $dir"
+
+lopts=(--cli "$cli" --dir "$dir")
+[ -z "$model" ] || lopts+=(--model "$model")
+[ "$noproof" = 0 ] || lopts+=(--no-proof)
+
+run() { if [ "$dry" = 1 ]; then printf 'would run:'; printf ' %q' "$@"; printf '\n'; else "$@"; fi; }
+
+created=0
+if ! tm has-session -t "=$SESSION" 2>/dev/null; then created=1; fi
+
+brief_ROUTE="You are ROUTE, the standing routing desk for $HUMAN. Follow your role file: route work, own the lane lifecycle, never edit files. Never set a /goal."
+brief_DECIDE="You are DECIDE, the standing decisions desk for $HUMAN. Load the running-the-decisions-desk skill and run it. Never set a /goal."
+brief_WATCH="You are WATCH, a standing desk for $HUMAN. Follow your role file. Look for work, read-only: peer_list for lanes that look stuck or quiet, peer_inbox for events nobody picked up. Report each finding to DECIDE in one short message (peer_send, or decision_open for an ask). Never edit files, never message ROUTE. Never set a /goal."
+brief_LEARN="You are LEARN, a standing desk for $HUMAN. Follow your role file. Look for work, read-only: read $STATE/decisions-log.jsonl and finished lanes' goal files and list what you would card, each with its source and a verbatim quote, in your pane of window deskB. Never edit files. Never set a /goal."
+
+launch_desk() { # desk [extra fleet launch args...]
+  local d=$1 r b; shift
+  r=$(printf '%s' "$d" | tr A-Z a-z); b=brief_$d
+  run "$FLEET" launch "${lopts[@]}" --role "$r" "$@" "$d" desk "${!b}"
+  [ "$dry" = 1 ] || tm set-option -p -t "$(roster_get "$d" pane)" @fleet-desk "$r"
+}
+
+pair() { # window left right: one split window, left desk | right desk
+  local w=$1 l=$2 r=$3 changed=0
+  [ "$dry" = 0 ] || echo "window $w: $l (left) | $r (right)"
+  if live "$l"; then echo "$l already live (pane $(roster_get "$l" pane))"
+  elif live "$r"; then  # half-dead pair: open the left desk beside the live right one, then swap it to the left
+    launch_desk "$l" --split-right-of "$r"
+    [ "$dry" = 1 ] || tm swap-pane -d -s "$(roster_get "$l" pane)" -t "$(roster_get "$r" pane)"
+    changed=1
+  else launch_desk "$l"; changed=1
+  fi
+  if live "$r"; then echo "$r already live (pane $(roster_get "$r" pane))"
+  else launch_desk "$r" --split-right-of "$l"; changed=1
+  fi
+  [ "$dry" = 1 ] || [ "$changed" = 0 ] || tm rename-window -t "$(roster_get "$l" pane)" "$w"
+}
+
+pair deskA ROUTE DECIDE
+pair deskB WATCH LEARN
+
+# fleet launch opened the session with a `home` window; drop it once deskA and deskB exist
+if [ "$created" = 1 ] && [ "$dry" = 0 ]; then tm kill-window -t "=$SESSION:home" 2>/dev/null || true; fi
+[ "$dry" = 1 ] || echo "OK desks up: deskA ROUTE=$(roster_get ROUTE pane) | DECIDE=$(roster_get DECIDE pane), deskB WATCH=$(roster_get WATCH pane) | LEARN=$(roster_get LEARN pane)"

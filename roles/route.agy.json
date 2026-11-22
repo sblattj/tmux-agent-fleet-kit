@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "deny": [
+      "write_file(*)",
+      "command(git commit)",
+      "command(git push)"
+    ]
+  }
+}

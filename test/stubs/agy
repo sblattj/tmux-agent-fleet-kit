@@ -1,0 +1,142 @@
+#!/usr/bin/env python3
+# stub agy (Antigravity CLI) for the fleet tests: record argv and env like stubs/kiro, then emulate agy's on-disk
+# state under $FLEET_AGY_HOME (required: the stub refuses to touch a real ~/.gemini). Synthetic data only.
+#   - `mcp add NAME CMD ARGS...` upserts $FLEET_AGY_HOME/config/mcp_config.json like agy 1.5
+#   - --log-file: "Created conversation <uuid>" (new) or "found/Streaming conversation <id>" (--conversation)
+#   - brain/<cid>/.system_generated/logs/transcript_full.jsonl and transcript.jsonl rows
+#     (USER_INPUT, MODEL PLANNER_RESPONSE, SYSTEM CHECKPOINT after /compact)
+#   - -i TEXT is a plain first prompt, never a slash command (real agy: PROVEN)
+#   - prints "? for shortcuts", then reads typed lines from the pane: "/goal X" gets the slash-command metadata
+#     and an achieved PLANNER_RESPONSE (GOAL_COMPLETE); "/compact" writes a CHECKPOINT; anything else a reply
+# Mode switches come from FLEET_NAME: *TRUST* trust dialog, *ONBOARD* first-run screen, *NOAUTH* sign-in wait.
+import json, os, signal, sys, time, uuid
+
+argv = sys.argv[1:]
+state = os.environ.get("FLEET_STATE")
+home = os.environ.get("FLEET_AGY_HOME")
+if not home:
+    print("stub agy: FLEET_AGY_HOME unset; refusing to write a real ~/.gemini", flush=True)
+    time.sleep(300)
+    sys.exit(1)
+
+if argv[:2] == ["mcp", "add"]:
+    rest = argv[2:]
+    name, cmd, args = rest[0], rest[1], rest[2:]
+    p = os.path.join(home, "config", "mcp_config.json")
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    try:
+        with open(p) as fh:
+            d = json.load(fh)
+    except (OSError, ValueError):
+        d = {}
+    d.setdefault("mcpServers", {})[name] = {"command": cmd, "args": args, "disabled": False}
+    with open(p, "w") as fh:
+        json.dump(d, fh, indent=2)
+    print('Added MCP server "%s" (stdio)' % name)
+    sys.exit(0)
+
+if not state:
+    sys.exit("stub agy: FLEET_STATE unset")
+with open(os.path.join(state, "stub-agy.argv"), "w") as fh:
+    fh.write("".join(a + "\n" for a in argv))
+with open(os.path.join(state, "stub-agy.env"), "w") as fh:
+    fh.write("".join("%s=%s\n" % kv for kv in sorted(os.environ.items())))
+
+valued = {"--agent", "--model", "--conversation", "--log-file", "--settings", "-i", "--prompt-interactive"}
+opts, i = {}, 0
+while i < len(argv):
+    a = argv[i]
+    if a in valued and i + 1 < len(argv):
+        opts[a] = argv[i + 1]; i += 2
+    else:
+        opts[a] = True; i += 1
+name = os.environ.get("FLEET_NAME", "")
+
+if "TRUST" in name:
+    print("Do you trust the contents of this project?\n> Yes, I trust this folder\n  No, exit", flush=True)
+    time.sleep(300); sys.exit(0)
+if "ONBOARD" in name:
+    print("Choose your color scheme\n> dark\n  light", flush=True)
+    time.sleep(300); sys.exit(0)
+if "NOAUTH" in name:
+    print("Waiting for authentication...", flush=True)
+    time.sleep(300); sys.exit(0)
+
+cid = opts.get("--conversation") or str(uuid.uuid4())
+logf = opts.get("--log-file")
+
+
+def log(msg):
+    if logf:
+        with open(logf, "a") as fh:
+            fh.write("I1120 00:00:00.000000 1 %s\n" % msg)
+
+
+ldir = os.path.join(home, "antigravity-cli", "brain", cid, ".system_generated", "logs")
+os.makedirs(ldir, exist_ok=True)
+step = [0]
+for n in ("transcript_full.jsonl",):
+    p = os.path.join(ldir, n)
+    if os.path.exists(p):
+        with open(p) as fh:
+            step[0] = sum(1 for _ in fh)
+
+
+def ts():
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def row(source, typ, content, **kw):
+    r = {"step_index": str(step[0]), "source": source, "type": typ, "status": "DONE", "created_at": ts(),
+         "content": content}
+    r.update(kw)
+    step[0] += 1
+    for n in ("transcript_full.jsonl", "transcript.jsonl"):
+        with open(os.path.join(ldir, n), "a") as fh:
+            fh.write(json.dumps(r) + "\n")
+
+
+def user(text, meta=""):
+    row("USER_EXPLICIT", "USER_INPUT", "<USER_REQUEST>\n%s\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\n%s"
+        "The current local time is: stub.\n</ADDITIONAL_METADATA>" % (text, meta))
+
+
+GOAL_META = ("/goal is a [Slash Command]. Work until the goal is complete. Once complete, include "
+             "<!-- GOAL_COMPLETE --> in your response; to cancel include <!-- GOAL_CANCELLED -->.\n")
+
+
+def turn(text):
+    text = text.strip()
+    if not text:
+        return
+    if text.startswith("/goal "):
+        user(text, GOAL_META)
+        row("MODEL", "PLANNER_RESPONSE", "stub goal done\n<!-- GOAL_COMPLETE -->", model="stub")
+    elif text == "/compact":
+        user(text)
+        row("SYSTEM", "CHECKPOINT", "# Resuming from a compaction\n\nstub summary")
+    else:
+        user(text)
+        row("MODEL", "PLANNER_RESPONSE", "stub reply", model="stub",
+            tool_calls=[{"name": "write_file", "args": {"TargetFile": "/tmp/stub-agy-file.txt"}}])
+
+
+if opts.get("--conversation"):
+    log("server.go:1300] GetConversationDetail: found conversation %s" % cid)
+    log("server.go:1310] Streaming conversation %s" % cid)
+else:
+    log("server.go:1265] Created conversation %s (backend=local)" % cid)
+first = opts.get("-i") or opts.get("--prompt-interactive")
+if isinstance(first, str):
+    turn(first)  # plain text, even when it starts with /goal
+
+signal.signal(signal.SIGINT, lambda *_: os._exit(0))
+print("stub agy: conversation " + cid, flush=True)
+print("? for shortcuts", flush=True)
+end = time.time() + 300
+while time.time() < end:
+    line = sys.stdin.readline()
+    if not line:
+        break
+    turn(line)
+    print("? for shortcuts", flush=True)

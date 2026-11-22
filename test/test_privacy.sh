@@ -11,7 +11,7 @@ emdash=$(printf '\342\200\224')
 scan() { # label, fixed-string pattern (case-insensitive when $3 = i)
   local label=$1 pat=$2 ci=${3:-} hits flags=-rInF
   [ "$ci" = i ] && flags=-rInFi
-  hits=$(cd "$ROOT" && grep $flags --exclude-dir=.git --exclude="$(basename "$self")" -e "$pat" . 2>/dev/null | grep -v "^\./$self:" || true)
+  hits=$(cd "$ROOT" && grep $flags --exclude-dir=.git --exclude=.git --exclude="$(basename "$self")" -e "$pat" . 2>/dev/null | grep -v "^\./$self:" || true)
   if [ -n "$hits" ]; then
     printf 'FAIL privacy: %s\n' "$label"
     printf '%s\n' "$hits" | sed 's/^/    /'

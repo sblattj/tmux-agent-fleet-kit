@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Tests for bin/fleet. Private tmux server, temp state, stub CLIs. Exit 1 on any FAIL.
 set -u
+# Run inside a fleet lane too: drop the lane's own FLEET_* env (FLEET_ROLE=worker trips the role guard,
+# FLEET_STATE/FLEET_NAME point at the live fleet) before setting the test's own.
+for v in $(env | sed -n 's/^\(FLEET_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$v"; done
 HERE=$(cd "$(dirname "$0")" && pwd -P)
 FLEET=$HERE/../bin/fleet
 T=$(mktemp -d "${TMPDIR:-/tmp}/fleettest.XXXXXX")
@@ -66,7 +69,7 @@ t "worker goal lane blocks Workflow, ScheduleWakeup, ReportFindings" has "$(dry 
 t "goal keepTools [Workflow] keeps Workflow" has "$(dry claude --dir "$T" W2 goal "$T/cw.txt")" '--disallowed-tools=AskUserQuestion,ScheduleWakeup,ReportFindings '
 t "--keep-tools adds to the goal's keepTools" has "$(dry claude --keep-tools ReportFindings --dir "$T" W3 goal "$T/cw.txt")" '--disallowed-tools=AskUserQuestion,ScheduleWakeup '
 t "--keep-tools all restores the old deny list" has "$(dry claude --keep-tools all --dir "$T" W4 prompt "$T/prompt.txt")" '--disallowed-tools=AskUserQuestion '
-t "orchestrator role keeps every tool" has "$(dry claude --role orchestrator --dir "$T" W5 goal "$T/c0.txt")" '--disallowed-tools=AskUserQuestion '
+t "route role keeps every tool" has "$(dry claude --role route --dir "$T" W5 goal "$T/c0.txt")" '--disallowed-tools=AskUserQuestion '
 t "desk role keeps every tool" has "$(dry claude --dir "$T" W6 desk)" '--disallowed-tools=AskUserQuestion '
 out=$(dry claude --keep-tools Bogus --dir "$T" W7 prompt "$T/prompt.txt"); rc=$?
 t "--keep-tools with an unknown tool fails loud" bash -c '[ "$1" != 0 ] && printf "%s" "$2" | grep -q "^FAIL"' _ "$rc" "$out"
@@ -290,6 +293,67 @@ t "control setup was real: a child lease held by a KCHILDONLY pane descendant ex
 t "fleet stop K1 succeeds" "$FLEET" stop K1
 for i in 1 2 3 4 5 6 7 8 9 10; do [ -e "$KIRO_HOME/session-leases/$k1sid.lease" ] || break; sleep 0.5; done
 t "stopping K1 removes its lease (stub cleanup like real Kiro)" test ! -e "$KIRO_HOME/session-leases/$k1sid.lease"
+
+# ---- (9) agy: scratch FLEET_AGY_HOME, python stub that writes the log and brain transcript like agy 1.5.13 (test/stubs/agy)
+export FLEET_AGY_HOME=$T/ah FLEET_AGY_BIN=$HERE/stubs/agy
+mkdir -p "$FLEET_AGY_HOME"
+chmod +x "$HERE/stubs/agy"
+ASID=00000000-0000-4000-8000-0000000000a1
+out=$(dry agy --dir "$T" A0 prompt "$T/prompt.txt"); rc=$?
+t "agy dry-run exits 0" test $rc -eq 0
+t "agy dry-run has --dangerously-skip-permissions --settings <lane json> --log-file" bash -c 'printf "%s" "$1" | grep -Eq -- "--dangerously-skip-permissions --settings [^ ]*/launch/A0\.agy-settings\.json --log-file [^ ]*/log/A0\.agy\.log"' _ "$out"
+t "agy dry-run prompt mode passes -i with the prompt file" has "$out" '-i "$(cat '
+t "agy dry-run without the agent file warns" has "$out" 'warn: agy agent fleet-worker not installed'
+t "agy dry-run without the agent file has no --agent" bash -c '! printf "%s" "$1" | grep -q -- "--agent fleet-"' _ "$out"
+t "agy dry-run prints the lane settings: always-proceed, the dir trusted, worker deny rules" bash -c '
+  printf "%s\n" "$1" | sed -n "/^## settings /,/^}/p" | sed 1d | jq -e --arg d "$2" ".toolPermission==\"always-proceed\" and .artifactReviewPolicy==\"always-proceed\" and (.trustedWorkspaces|index(\$d)!=null) and (.permissions.deny|index(\"command(fleet launch)\")!=null)"' _ "$out" "$(cd "$T" && pwd -P)"
+t "agy window script exports FLEET_AGY_HOME and FLEET_AGY_BIN" bash -c 'printf "%s" "$1" | grep -qF "FLEET_AGY_HOME=$2" && printf "%s" "$1" | grep -qF "FLEET_AGY_BIN=$3"' _ "$out" "$FLEET_AGY_HOME" "$FLEET_AGY_BIN"
+t "agy window script truncates the lane log before agy starts" bash -c 'printf "%s" "$1" | grep -Eq "^: > [^ ]*/log/A0\.agy\.log$"' _ "$out"
+mkdir -p "$FLEET_AGY_HOME/config/agents"; printf -- '---\nname: fleet-worker\n---\nx\n' > "$FLEET_AGY_HOME/config/agents/fleet-worker.md"
+out=$(dry agy --dir "$T" --model m1 A0 prompt "$T/prompt.txt")
+t "agy dry-run with the agent file has --agent fleet-worker --model m1" has "$out" '--agent fleet-worker --model m1 -i "$(cat '
+t "agy dry-run with the agent file does not warn" bash -c '! printf "%s" "$1" | grep -q "^warn:"' _ "$out"
+out=$(dry agy --dir "$T" A0 goal "$T/good.txt")
+t "agy goal mode passes no -i (agy would send /goal as plain text)" bash -c '! printf "%s" "$1" | grep -q -- " -i "' _ "$out"
+t "agy goal mode types the /goal line after the idle prompt, pause, then Enter" bash -c 'printf "%s" "$1" | grep -qF "? for shortcuts" && printf "%s" "$1" | grep -q "send-keys -t \"\$TMUX_PANE\" -l" && printf "%s" "$1" | grep -q "^agy_type &$"' _ "$out"
+out=$(dry agy --dir "$T" A0 prompt "$T/prompt.txt")
+t "control: agy prompt mode has no /goal typer" bash -c '! printf "%s" "$1" | grep -q agy_type' _ "$out"
+out=$(dry agy --dir "$T" A0 resume "$ASID")
+t "agy dry-run resume has --conversation SID and no -i" bash -c 'printf "%s" "$1" | grep -q -- "--conversation $2" && ! printf "%s" "$1" | grep -q -- " -i "' _ "$out" "$ASID"
+rej "agy resume rejects a non-uuid id" "conversation uuid" --cli agy A0 resume ses_abc123
+
+rm -f "$FLEET_STATE/stub-agy.argv" "$FLEET_STATE/stub-agy.env"
+out=$("$FLEET" launch --cli agy --dir "$T" A1 prompt "$T/prompt.txt" 2>&1); rc=$?
+t "agy launch A1 (proof on) prints one OK line with a conversation uuid" bash -c 'test "$2" -eq 0 && printf "%s\n" "$1" | grep -Eqx "OK A1 cli=agy mode=prompt pane=%[0-9]+ session=[0-9a-f-]{36} goal=n/a"' _ "$out" "$rc" \
+  || printf '    launcher said: %s\n' "$out"
+a1sid=$(jq -r '.A1.session_id // empty' "$R")
+t "roster A1 session_id has a brain transcript under FLEET_AGY_HOME" test -s "$FLEET_AGY_HOME/antigravity-cli/brain/$a1sid/.system_generated/logs/transcript_full.jsonl"
+argv=$(cat "$FLEET_STATE/stub-agy.argv" 2>/dev/null)
+t "agy stub argv starts with --dangerously-skip-permissions" bash -c 'test "$(printf "%s\n" "$1" | head -1)" = --dangerously-skip-permissions' _ "$argv"
+t "agy stub argv has --agent then fleet-worker" bash -c 'printf "%s\n" "$1" | grep -A1 -x -e --agent | grep -qx fleet-worker' _ "$argv"
+t "agy stub argv has -i then the prompt text" bash -c 'printf "%s\n" "$1" | grep -A1 -x -e -i | grep -qx "Do the thing."' _ "$argv"
+t "agy --settings file on disk is the lane JSON" bash -c 'f=$(printf "%s\n" "$1" | grep -A1 -x -e --settings | tail -1); jq -e ".toolPermission==\"always-proceed\"" "$f"' _ "$argv"
+t "agy window env has FLEET_AGY_HOME and FLEET_NAME=A1" bash -c 'grep -qx "FLEET_AGY_HOME=$2" "$1" && grep -qx FLEET_NAME=A1 "$1"' _ "$FLEET_STATE/stub-agy.env" "$FLEET_AGY_HOME"
+
+out=$("$FLEET" launch --cli agy --dir "$T" A2 goal "$T/good.txt" 2>&1); rc=$?
+t "agy goal A2 exits 0 with goal=active" bash -c 'test "$2" -eq 0 && printf "%s\n" "$1" | grep -Eqx "OK A2 cli=agy mode=goal pane=%[0-9]+ session=[0-9a-f-]{36} goal=active"' _ "$out" "$rc" \
+  || printf '    launcher said: %s\n' "$out"
+a2sid=$(jq -r '.A2.session_id // empty' "$R")
+t "agy A2 transcript has the typed /goal with slash-command metadata" bash -c 'grep -F "/goal is a [Slash Command]" "$1" | grep -qF "Work from goal.json"' _ "$FLEET_AGY_HOME/antigravity-cli/brain/$a2sid/.system_generated/logs/transcript_full.jsonl"
+t "agy A2 stub argv has no -i" bash -c '! grep -qx -e -i "$1"' _ "$FLEET_STATE/stub-agy.argv"
+
+out=$("$FLEET" launch --cli agy --dir "$T" A3 resume "$a1sid" 2>&1); rc=$?
+t "agy resume A3 prints OK session=<A1 conversation>" bash -c 'test "$2" -eq 0 && printf "%s\n" "$1" | grep -Eqx "OK A3 cli=agy mode=resume pane=%[0-9]+ session=$3 goal=n/a"' _ "$out" "$rc" "$a1sid" \
+  || printf '    launcher said: %s\n' "$out"
+t "agy stub argv has --conversation then the A1 id" bash -c 'grep -A1 -x -e --conversation "$1" | grep -qx "$2"' _ "$FLEET_STATE/stub-agy.argv" "$a1sid"
+
+out=$(FLEET_PROOF_TIMEOUT=5 "$FLEET" launch --cli agy --dir "$T" ATRUST prompt "$T/prompt.txt" 2>&1); rc=$?
+t "agy trust dialog: launch exits 1 with FAIL naming the dialog" bash -c 'test "$2" -eq 1 && printf "%s" "$1" | grep -q "^FAIL agy workspace trust dialog in pane"' _ "$out" "$rc" \
+  || printf '    launcher said: %s\n' "$out"
+out=$(FLEET_PROOF_TIMEOUT=5 "$FLEET" launch --cli agy --dir "$T" ANOAUTH prompt "$T/prompt.txt" 2>&1); rc=$?
+t "agy sign-in wait: launch exits 1 with FAIL naming sign-in" bash -c 'test "$2" -eq 1 && printf "%s" "$1" | grep -q "^FAIL agy is waiting for sign-in"' _ "$out" "$rc" \
+  || printf '    launcher said: %s\n' "$out"
+t "control: the failed agy launches recorded no session_id" bash -c 'test "$(jq -r ".ATRUST.session_id, .ANOAUTH.session_id" "$1" | sort -u)" = null' _ "$R"
 
 echo
 if [ "$FAILS" -eq 0 ]; then echo "ALL PASS"; else echo "$FAILS FAILED"; exit 1; fi

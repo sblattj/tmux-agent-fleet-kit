@@ -5,7 +5,7 @@ description: "Start a new lane (any CLI) inside an active goal locked to a livin
 
 # launching-a-goal-lane
 
-The orchestrator owns launching: other roles ask it (`fleet launch` is refused for any `FLEET_ROLE` other than orchestrator). Default role is `worker`; pick one with `--role orchestrator|desk|listener|worker`.
+ROUTE owns launching: other roles ask it (`fleet launch` is refused for any `FLEET_ROLE` other than route). Default role is `worker`; pick one with `--role route|decide|watch|learn|worker`.
 
 Every lane starts inside a goal whose condition points at a living goal JSON. The goal file is the state; the condition just binds the session to it.
 

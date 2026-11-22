@@ -7,5 +7,19 @@
       "Bash(fleet reopen:*)",
       "AskUserQuestion"
     ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "SendMessage",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -z \"${FLEET_MESH:-}\" ] || python3 \"$FLEET_MESH\" mirror >/dev/null 2>&1; exit 0",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
   }
 }

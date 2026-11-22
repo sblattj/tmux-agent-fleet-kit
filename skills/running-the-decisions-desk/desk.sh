@@ -9,6 +9,7 @@
 #   desk.sh revise <id> <new question text>            recommendation changed mid-call
 #   desk.sh relayto <id> add|set <session...>          second asker (add), or asker stopped (set ORCHESTRATOR)
 # Env: FLEET_DESK_GOAL  the desk goal file (default: $FLEET_STATE/desk.goal.json)
+#      FLEET_DECISION_EXTRA  JSON object merged into the answer's decisions-log line (default none)
 #      FLEET_GOAL_BIN   the validator (default: fleet-goal on PATH, else ../../bin/fleet-goal next to this repo)
 #      FLEET_STATE      default ${XDG_STATE_HOME:-$HOME/.local/state}/fleet
 set -euo pipefail
@@ -55,8 +56,10 @@ case $cmd in
           "(.openForHuman[]|select(.id==\$id)) |= (.status=\"answered\"|.answer=\$a|.answeredAt=\$now) | .decisions += [{id:\"D\(.decisions|length+1)\",at:\$now,item:\$id,decision:\$a,answer:\$a,relayedTo:\$rt}] $log" || exit $?
         # shared append-only log the orchestrator reads (same line shape as fleet_mesh decision_answer)
         mkdir -p "$state"
-        jq -cn --arg id "$id" --arg at "$now" --arg asker "$asker" --arg a "$a" --argjson rt "$rt" \
-          '{id:$id,at:$at,asker:$asker,verbatim:$a,relayedTo:$rt}' >> "$state/decisions-log.jsonl" ;;
+        # FLEET_DECISION_EXTRA: optional JSON object merged into the log line (the DECISIONS UI adds via, kind, delivery)
+        extra=${FLEET_DECISION_EXTRA:-}; [ -n "$extra" ] || extra='{}'
+        jq -cn --arg id "$id" --arg at "$now" --arg asker "$asker" --arg a "$a" --argjson rt "$rt" --argjson x "$extra" \
+          '{id:$id,at:$at,asker:$asker,verbatim:$a,relayedTo:$rt} + $x' >> "$state/decisions-log.jsonl" ;;
   elsewhere) id=$1 a=$2
         apply --arg id "$id" --arg a "$a" --arg chg "$id closed: answered in another session" --arg why "not re-asked" \
           "(.openForHuman[]|select(.id==\$id)) |= (.status=\"answered-elsewhere\"|.answer=\$a|.answeredAt=\$now) $log" ;;
@@ -70,5 +73,5 @@ case $cmd in
         case $mode in add) expr='.relayTo=((.relayTo//[])+$rt|unique)';; set) expr='.relayTo=$rt';; *) echo "mode must be add|set"; exit 2;; esac
         apply --arg id "$id" --argjson rt "$rt" --arg chg "Relay targets for $id: $mode $*" --arg why "duplicate asker or stopped session" \
           "(.openForHuman[]|select(.id==\$id)) |= ($expr) $log" ;;
-  *) sed -n '2,12p' "$0"; exit 2 ;;
+  *) sed -n '2,13p' "$0"; exit 2 ;;
 esac

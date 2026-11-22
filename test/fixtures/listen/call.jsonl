@@ -1,0 +1,10 @@
+{"at": "2026-01-01T15:22:50Z", "speaker": "Alice_Example", "text": "can we get the retry", "final": false}
+{"at": "2026-01-01T15:22:58Z", "speaker": "Alice_Example", "text": "can we get the retry change into this week?", "final": true}
+{"at": "2026-01-01T15:23:02Z", "speaker": "Carol_Example", "text": "the weather is nice today", "final": true}
+{"at": "2026-01-01T15:23:10Z", "speaker": "Bob_Example", "text": "I'll need the staging numbers before Friday", "final": true}
+{"start": 813.0, "end": 815.5, "speaker": "SPEAKER_00", "text": "the deploy key is sk-test-FAKE0123456789abcdefFAKE0123", "completed": true}
+{"at": "2026-01-01T15:23:31Z", "speaker": "Alice_Example", "text": "what was the p95 after the cache change?", "final": true}
+{"at": "2026-01-01T15:23:40Z", "speaker": "Bob_Example", "text": "ok, let's bundle it with the cache work", "final": true}
+{"at": "2026-01-01T15:23:44Z", "speaker": "Alice_Example", "text": "can we get the retry change into this week?", "final": true}
+{"at": "2026-01-01T15:23:50Z", "speaker": "Bob_Example", "text": "somebody should follow up on the flaky test maybe", "final": true}
+{"at": "2026-01-01T15:23:55Z", "speaker": "Alice_Example", "text": "and the dashboard", "final": false}

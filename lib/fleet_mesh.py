@@ -2,7 +2,7 @@
 """fleet-mesh: stdio MCP server + CLI for peer messaging and decisions between fleet lanes.
 
 Python 3.8+ stdlib only. See INTERFACES.md for the contract.
-  fleet_mesh.py serve | send <from> <to> <text> | inbox <name> | roster
+  fleet_mesh.py serve | send <from> <to> <text> | inbox <name> | roster | mirror (hook JSON on stdin)
 """
 import datetime
 import fcntl
@@ -27,11 +27,13 @@ def state_dir():
 
 
 def desk_name():
-    return os.environ.get("FLEET_DESK") or "DECISIONS"
+    """DECIDE desk lane: $FLEET_DECIDE, else DECIDE."""
+    return os.environ.get("FLEET_DECIDE") or "DECIDE"
 
 
 def orch_name():
-    return os.environ.get("FLEET_ORCHESTRATOR") or "ORCHESTRATOR"
+    """ROUTE desk lane: $FLEET_ROUTE, else ROUTE."""
+    return os.environ.get("FLEET_ROUTE") or "ROUTE"
 
 
 def now():
@@ -165,6 +167,22 @@ def _run(argv):
     return True, "ok"
 
 
+# agy screens a typed wake must never land on: its Enter would answer the screen for the human (agy's Terms of Service
+# screen has a data-sharing opt-in pre-checked, so Enter would accept both). Same strings as bin/fleet agy_screen.
+AGY_BLOCKING_SCREENS = ("Do you trust the contents", "Choose your color scheme", "Terms of Service",
+                        "Waiting for authentication")
+
+
+def _pane_text(pane):
+    """capture-pane -p for pane; returns the text, or None when tmux fails."""
+    try:
+        p = subprocess.run(_tmux_argv("capture-pane", "-p", "-t", pane), stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, timeout=15, universal_newlines=True)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    return p.stdout if p.returncode == 0 else None
+
+
 def _tmux_argv(*args):
     argv = ["tmux"]
     sock = os.environ.get("FLEET_TMUX_SOCKET")
@@ -196,10 +214,17 @@ def wake(frm, to, text, entry):
             return "opencode prompt_async", 200 <= code < 300, "http %s" % code
         except Exception as e:
             return "opencode prompt_async", False, str(e)
-    if cli in ("claude", "kiro"):  # kiro: typed text + a separate Enter starts a turn on an idle lane (PROVEN)
+    if cli in ("claude", "kiro", "agy"):  # kiro, agy: typed text + a separate Enter starts a turn on an idle lane (PROVEN)
         pane = entry.get("pane")
         if not pane:
             return "tmux send-keys", False, "roster entry lacks pane"
+        if cli == "agy":  # look before typing; fail closed when the pane can't be read
+            screen = _pane_text(pane)
+            if screen is None:
+                return "tmux send-keys", False, "could not read agy pane %s; not typing into it" % pane
+            hit = next((m for m in AGY_BLOCKING_SCREENS if m in screen), None)
+            if hit:
+                return "tmux send-keys", False, "agy pane %s shows a %r screen; not typing into it" % (pane, hit)
         note = "[fleet] message from %s: run peer_inbox to read it" % frm
         ok, detail = _run(_tmux_argv("send-keys", "-t", pane, "-l", note))
         if ok:
@@ -255,6 +280,72 @@ def deliver(frm, to, text):
     return "%sdelivered %s -> %s (inbox written; wake via %s FAILED: %s)" % (prefix, frm, to, how, detail)
 
 
+# ---------------------------------------------------------------- mirror (native SendMessage -> mesh)
+
+def claude_sessions_dir():
+    return os.path.join(os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude"),
+                        "sessions")
+
+
+def _lane_by_socket(path, roster):
+    """Roster lane whose Claude session advertises messaging socket `path` (matched by session id), or None."""
+    want = os.path.realpath(path)
+    for name, e in roster.items():
+        if e.get("cli") != "claude" or not e.get("pid"):
+            continue
+        try:
+            with open(os.path.join(claude_sessions_dir(), "%s.json" % int(e["pid"]))) as f:
+                sess = json.load(f)
+        except (OSError, ValueError, TypeError):
+            continue
+        if e.get("session_id") and sess.get("sessionId") != e.get("session_id"):
+            continue
+        sock = sess.get("messagingSocketPath")
+        if sock and os.path.realpath(sock) == want:
+            return name
+    return None
+
+
+def mirror_target(to, roster):
+    """Map a SendMessage `to` (a lane name, `name [ref]`, or `uds:<socket>`) to a roster lane name, else None."""
+    if not isinstance(to, str) or not to.strip():
+        return None
+    to = to.strip()
+    if to.startswith("uds:"):
+        return _lane_by_socket(to[4:], roster)
+    name = to.split(" [", 1)[0].strip()
+    return name if name in roster else None
+
+
+def mirror(payload):
+    """PostToolUse hook body for native SendMessage: append a copy to the mesh inbox of the fleet lane it went to.
+
+    No wake and no reopen (the native message already reached the lane). Returns a result string; never raises."""
+    try:
+        if payload.get("tool_name") != "SendMessage":
+            return "skip: tool %r" % (payload.get("tool_name"),)
+        ti = payload.get("tool_input") or {}
+        text = ti.get("message")
+        frm = os.environ.get("FLEET_NAME")
+        if not frm:
+            return "skip: FLEET_NAME unset (not a fleet lane)"
+        if not isinstance(text, str) or not text:
+            return "skip: no message body"
+        to = mirror_target(ti.get("to"), load_roster())
+        if not to or to == frm:
+            return "skip: %r is not another fleet lane" % (ti.get("to"),)
+        _check_name(to)
+        ts = now()
+        rec = {"id": "%s-%s-%d" % (ts, to, len(_read_lines(_inbox_path(to))) + 1), "at": ts, "from": frm,
+               "to": to, "text": text, "via": "native"}
+        _append_line(_inbox_path(to), json.dumps(rec))
+        log("mirror %s -> %s (native SendMessage)" % (frm, to))
+        return "mirrored %s -> %s" % (frm, to)
+    except Exception as e:
+        log("mirror error: %s" % e)
+        return "mirror error: %s" % e
+
+
 # ---------------------------------------------------------------- decisions
 
 def _decisions_path():
@@ -301,8 +392,12 @@ def t_peer_inbox(args):
     msgs = read_inbox(name, bool(args.get("all")))
     if not msgs:
         return "no unread messages"
-    return "\n".join("[%s] from %s: %s" % (m.get("at", ""), m.get("from", "?"), m.get("text", ""))
+    return "\n".join("[%s] from %s%s: %s" % (m.get("at", ""), m.get("from", "?"),
+                                          " (native copy)" if m.get("via") == "native" else "", m.get("text", ""))
                      for m in msgs)
+
+
+ALLOW_TYPES = ("pick", "edit", "own", "snooze", "refuse")
 
 
 def t_decision_open(args):
@@ -313,6 +408,11 @@ def t_decision_open(args):
     opts = args.get("options") or []
     if not isinstance(opts, list):
         raise ValueError("`options` must be a list of strings")
+    allow = args.get("allow")
+    if allow is not None:
+        if not isinstance(allow, list) or not set(allow) <= set(ALLOW_TYPES):
+            raise ValueError("`allow` must be a list drawn from %s" % ", ".join(ALLOW_TYPES))
+        allow = [str(a) for a in allow]
     path = _decisions_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "a+") as f:
@@ -323,6 +423,8 @@ def t_decision_open(args):
             rec = {"id": "Q%d" % n, "at": now(), "from": asker, "question": q,
                    "options": [str(o) for o in opts], "status": "open",
                    "answer": None, "answeredAt": None}
+            if allow is not None:
+                rec["allow"] = allow
             f.seek(0, 2)
             f.write(json.dumps(rec) + "\n")
             f.flush()
@@ -351,11 +453,13 @@ def t_decision_list(args):
     return "\n".join(out)
 
 
-def t_decision_answer(args):
-    did, answer = args.get("id"), args.get("answer")
-    if not did or not answer:
-        raise ValueError("`id` and `answer` are required")
+def mark_decision(did, answer, extra=None, only_open=False):
+    """Mark decision `did` answered in decisions.jsonl under its file lock. Returns the updated record.
+
+    only_open=True refuses an id that is no longer open (raises AlreadyAnswered), so two front ends racing on the
+    same call relay once. `extra` fields (answerKind, via, ...) are merged into the record."""
     path = _decisions_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "a+") as f:
         fcntl.flock(f.fileno(), fcntl.LOCK_EX)
         try:
@@ -373,20 +477,96 @@ def t_decision_answer(args):
                     target = r
             if target is None:
                 raise ValueError("no such decision: %s" % did)
+            if only_open and target.get("status") != "open":
+                raise AlreadyAnswered("%s is already %s" % (did, target.get("status")))
             target.update({"status": "answered", "answer": answer, "answeredAt": now()})
+            if extra:
+                target.update(extra)
             f.seek(0)
             f.truncate()
             f.write("".join(json.dumps(r) + "\n" for r in rows))
             f.flush()
         finally:
             fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+    return target
+
+
+class AlreadyAnswered(ValueError):
+    pass
+
+
+def decisions_log_path():
+    return os.path.join(state_dir(), "decisions-log.jsonl")
+
+
+def reports_path():
+    return os.path.join(state_dir(), "decisions-reports.jsonl")
+
+
+def t_decision_answer(args):
+    did, answer = args.get("id"), args.get("answer")
+    if not did or not answer:
+        raise ValueError("`id` and `answer` are required")
+    target = mark_decision(did, answer)
     frm = os.environ.get("FLEET_NAME") or desk_name()
     asker = target.get("from")
-    _append_line(os.path.join(state_dir(), "decisions-log.jsonl"), json.dumps(
+    _append_line(decisions_log_path(), json.dumps(
         {"id": did, "at": now(), "asker": asker, "verbatim": answer, "relayedTo": [asker] if asker else []}))
     if not asker:
         return "answered %s; no asker to deliver to" % did
     return "answered %s; %s" % (did, deliver(frm, asker, "[answer %s] %s" % (did, answer)))
+
+
+def t_decision_report(args):
+    """The asker reports whether it acted on an answer: appends decisions-reports.jsonl."""
+    did = args.get("id")
+    ok = args.get("ok")
+    if not did or not isinstance(ok, bool):
+        raise ValueError("`id` and boolean `ok` are required")
+    rec = {"id": did, "at": now(), "from": _sender(args), "ok": ok, "note": str(args.get("note") or "")}
+    _append_line(reports_path(), json.dumps(rec))
+    return "reported %s %s" % (did, "acted on" if ok else "act failed")
+
+
+def _norm(text):
+    return " ".join("".join(c.lower() if c.isalnum() else " " for c in (text or "")).split())
+
+
+def find_decisions(text):
+    """Answered decisions whose question matches `text`: exact (normalized) repeats first, then substring hits.
+
+    Returns [{id, question, verbatim, at, asker, exact}] from decisions.jsonl joined with decisions-log.jsonl."""
+    want = _norm(text)
+    if not want:
+        return []
+    latest = {}
+    for rec in _parse_lines(decisions_log_path()):
+        if rec.get("id"):
+            latest[rec["id"]] = rec
+    hits = []
+    for d in decisions():
+        if d.get("status") != "answered":
+            continue
+        q = _norm(d.get("question"))
+        exact = q == want
+        if not exact and want not in q and q not in want:
+            continue
+        lg = latest.get(d.get("id")) or {}
+        hits.append({"id": d.get("id"), "question": d.get("question"), "verbatim": lg.get("verbatim") or d.get("answer"),
+                     "at": lg.get("at") or d.get("answeredAt"), "asker": d.get("from"), "exact": exact})
+    hits.sort(key=lambda h: (not h["exact"], h.get("at") or ""), reverse=False)
+    return hits
+
+
+def t_decision_find(args):
+    text = args.get("text")
+    if not text:
+        raise ValueError("`text` is required")
+    hits = find_decisions(text)
+    if not hits:
+        return "no past decision matches"
+    return "\n".join('%s%s [%s] %s -> "%s"' % (h["id"], " (exact repeat)" if h["exact"] else "", h.get("at"),
+                                              h.get("question"), h.get("verbatim")) for h in hits)
 
 
 def _schema(props, required=()):
@@ -401,12 +581,17 @@ TOOLS = [
     ("peer_inbox", "Read unread messages (advances cursor); all=true returns everything.",
      _schema({"name": _S, "all": {"type": "boolean"}}), t_peer_inbox),
     ("decision_open", "Open a decision and deliver it to the decisions desk.",
-     _schema({"question": _S, "options": {"type": "array", "items": _S}, "from": _S}, ["question"]),
+     _schema({"question": _S, "options": {"type": "array", "items": _S}, "from": _S,
+              "allow": {"type": "array", "items": {"type": "string", "enum": list(ALLOW_TYPES)}}}, ["question"]),
      t_decision_open),
     ("decision_list", "List decisions, optionally filtered by status (open|answered).",
      _schema({"status": {"type": "string", "enum": ["open", "answered"]}}), t_decision_list),
     ("decision_answer", "Answer a decision; delivers to the asker only and appends decisions-log.jsonl.",
      _schema({"id": _S, "answer": _S}, ["id", "answer"]), t_decision_answer),
+    ("decision_report", "Report whether you acted on an answer (ok=true acted on, false act failed).",
+     _schema({"id": _S, "ok": {"type": "boolean"}, "note": _S, "from": _S}, ["id", "ok"]), t_decision_report),
+    ("decision_find", "Search past answered decisions before opening a call; an exact repeat returns its quote.",
+     _schema({"text": _S}, ["text"]), t_decision_find),
 ]
 TOOL_MAP = {t[0]: t for t in TOOLS}
 
@@ -487,10 +672,17 @@ def main(argv):
         for m in read_inbox(argv[2]):
             print("[%s] from %s: %s" % (m.get("at", ""), m.get("from", "?"), m.get("text", "")))
         return 0
+    if cmd == "mirror":  # PostToolUse hook: stdin is the hook JSON; always exit 0 so a hook never blocks a send
+        try:
+            payload = json.load(sys.stdin)
+        except ValueError:
+            payload = {}
+        print(mirror(payload if isinstance(payload, dict) else {}))
+        return 0
     if cmd == "roster":
         print(json.dumps(load_roster(), indent=2, sort_keys=True))
         return 0
-    sys.stderr.write("usage: fleet_mesh.py serve | send <from> <to> <text> | inbox <name> | roster\n")
+    sys.stderr.write("usage: fleet_mesh.py serve | send <from> <to> <text> | inbox <name> | roster | mirror\n")
     return 2
 
 

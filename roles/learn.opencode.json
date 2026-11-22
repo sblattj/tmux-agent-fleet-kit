@@ -1,0 +1,19 @@
+{
+  "description": "Fleet LEARN desk: keeps the ledger and quizzes the human, writes only through fleet learn",
+  "mode": "primary",
+  "prompt": "{file:./roles/learn.md}",
+  "tools": {
+    "write": false,
+    "edit": false
+  },
+  "permission": {
+    "bash": {
+      "fleet launch*": "deny",
+      "fleet park*": "deny",
+      "fleet stop*": "deny",
+      "fleet reopen*": "deny",
+      "git commit*": "deny",
+      "git push*": "deny"
+    }
+  }
+}

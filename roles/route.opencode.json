@@ -1,7 +1,7 @@
 {
-  "description": "Fleet orchestrator: routes work, owns lane lifecycle, never edits files",
+  "description": "Fleet ROUTE desk (was orchestrator): routes work, owns lane lifecycle, never edits files",
   "mode": "primary",
-  "prompt": "{file:./roles/orchestrator.md}",
+  "prompt": "{file:./roles/route.md}",
   "tools": {
     "write": false,
     "edit": false

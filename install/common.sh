@@ -7,8 +7,8 @@ FC_DRY=0
 FC_PREFIX=${FLEET_PREFIX:-$HOME/.local}
 FC_TRUST=""
 FC_HUMAN=${FLEET_HUMAN:-the human}
-FC_DESK=${FLEET_DESK:-DECISIONS}
-FC_ORCH=${FLEET_ORCHESTRATOR:-ORCHESTRATOR}
+FC_DESK=${FLEET_DECIDE:-DECIDE}
+FC_ORCH=${FLEET_ROUTE:-ROUTE}
 FC_TMP=""
 # Role files (roles/<role>.codex.toml, roles/<role>.opencode.json); override for tests.
 FC_ROLES_DIR=${FLEET_ROLES_DIR:-$FC_REPO/roles}
@@ -207,4 +207,22 @@ fc_install_kiro_roles() {
       '$a[0] | .name = $n | .prompt = $p'
   done
   if [ "$found" = 0 ]; then fc_say "no role agents found in $FC_ROLES_DIR (roles/*.kiro.json); skipping"; fi
+}
+
+# Write $1/fleet-<role>.md (agy agents dir) from each roles/<role>.agy.md (YAML frontmatter: name, tools,
+# inheritMcp) followed by the text of roles/<role>.md as the agent's system prompt. Idempotent.
+# The deny rules are not here: fleet launch passes roles/<role>.agy.json as the lane's --settings.
+fc_install_agy_roles() {
+  local dir=$1 f role found=0
+  for f in "$FC_ROLES_DIR"/*.agy.md; do
+    [ -f "$f" ] || continue
+    found=1
+    role=$(basename "$f" .agy.md)
+    [ -f "$FC_ROLES_DIR/$role.md" ] || fc_die "missing $FC_ROLES_DIR/$role.md (prompt text for agy agent fleet-$role)"
+    head -1 "$f" | grep -qx -- '---' || fc_die "$f does not start with a --- frontmatter line"
+    fc_mktemp
+    { cat "$f"; printf '\n'; cat "$FC_ROLES_DIR/$role.md"; } > "$FC_TMP"
+    fc_commit "$FC_TMP" "$dir/fleet-$role.md" "agy agent fleet-$role"
+  done
+  if [ "$found" = 0 ]; then fc_say "no role agents found in $FC_ROLES_DIR (roles/*.agy.md); skipping"; fi
 }

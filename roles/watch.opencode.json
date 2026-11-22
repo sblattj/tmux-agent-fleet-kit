@@ -1,7 +1,7 @@
 {
-  "description": "Fleet decisions desk: relays the human's decisions, never edits or launches",
+  "description": "Fleet WATCH desk (was listener): turns feed events into messages to DECIDE, never acts",
   "mode": "primary",
-  "prompt": "{file:./roles/desk.md}",
+  "prompt": "{file:./roles/watch.md}",
   "tools": {
     "write": false,
     "edit": false

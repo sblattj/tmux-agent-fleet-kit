@@ -8,7 +8,7 @@
 #   - symlinks bin/fleet and bin/fleet-goal into <prefix>/bin
 # Flags: --dry-run  --prefix DIR (default $HOME/.local)
 # Env: KIRO_HOME (default $HOME/.kiro); FLEET_ROLES_DIR overrides the roles dir.
-# Placeholders come from FLEET_HUMAN / FLEET_DESK / FLEET_ORCHESTRATOR.
+# Placeholders come from FLEET_HUMAN / FLEET_DECIDE / FLEET_ROUTE.
 set -eu
 . "$(cd "$(dirname "$0")" && pwd)/common.sh"
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# fleet: launch and manage a fleet of coding-agent CLIs (claude, codex, opencode, kiro) as tmux windows/panes.
+# fleet: launch and manage a fleet of coding-agent CLIs (claude, codex, opencode, kiro, agy) as tmux windows/panes.
 #
 #   fleet launch [opts] <name> goal   <condition.txt>   first prompt is a /goal condition (living goal JSON)
 #   fleet launch [opts] <name> prompt <text|file>       plain first prompt
@@ -7,18 +7,26 @@
 #   fleet launch [opts] <name> resume <session-id>      resume a saved session under the same name
 #   fleet ls                                            roster and liveness, one line per lane
 #   fleet attach                                        tmux attach to the fleet session
+#   fleet decisions serve|tui|pick|ask|find|report|refresh   DECISIONS UI (lib/fleet_decisions.py; `fleet decisions -h`)
 #   fleet layout                                        print the tmux window/pane map
 #   fleet stop <name>                                   kill that lane's pane
 #   fleet send <to> <text>                              message a lane (reopens it if parked), sender is $FLEET_NAME
+#   fleet listen [--source NAME [ARG]] [--speakers "A,B"] [--page] [--pane-right-of NAME | --here]
+#                                                       WATCH UI pane: follow a call, route asks/actions (lib/fleet_listen.py)
+#   fleet desks up [--cli C] [--model M] [--dir D] [--no-proof] [--dry-run]
+#                                                       the standing desks: windows deskA (ROUTE|DECIDE), deskB (WATCH|LEARN) (bin/fleet-desks)
 #   fleet tick|park|reopen|cleanup|handoff ...          lifecycle, handled by bin/fleet-lifecycle
 #
 # launch opts:
-#   --cli claude|codex|opencode|kiro  which CLI (default claude)
+#   --cli claude|codex|opencode|kiro|agy  which CLI (default claude; agy = Antigravity CLI)
 #   --model M                     model (claude default: opus; others: the CLI default)
 #   --dir D                       working dir (default $FLEET_DIR, else $PWD)
 #   --split-right-of NAME         open as a pane right of NAME's pane instead of a new window
-#   --role orchestrator|desk|listener|worker
-#                                 role context + deny list (default worker; desk mode defaults to desk)
+#   --role route|decide|watch|learn|worker
+#                                 role context + deny list (default worker; desk mode defaults to decide)
+#                                 the old names orchestrator, desk and listener are refused in every mode (renamed route, decide, watch)
+#                                 except in resume mode, which fleet reopen uses for live pre-desks lanes;
+#                                 probe is reserved (phase 4)
 #   --keep-tools LIST             claude worker lanes only: comma list of tools to keep out of the worker
 #                                 block (Workflow,ScheduleWakeup,ReportFindings, or "all"). By default a claude
 #                                 worker lane also disallows those three (about 6k tokens of schemas a lane
@@ -34,6 +42,7 @@
 # env: FLEET_TMUX_SESSION (fleet)  FLEET_TMUX_SOCKET (-L socket)  FLEET_STATE (~/.local/state/fleet)
 #      FLEET_DIR  FLEET_HUMAN  FLEET_CLAUDE_BIN / FLEET_CODEX_BIN / FLEET_OPENCODE_BIN / FLEET_KIRO_BIN (kiro-cli)
 #      KIRO_HOME (~/.kiro; passed to kiro lanes when set)  FLEET_KIRO_GOAL_MAX (20; kiro goal mode sends /goal --max N)
+#      FLEET_AGY_BIN (agy)  FLEET_AGY_HOME (~/.gemini: agy's config/ and antigravity-cli/ data; passed to agy lanes when set)
 #      FLEET_PROOF_TIMEOUT (90 seconds; also bounds the codex UI wait at 30 and opencode/kiro session wait at 60)
 # Every lane runs in bypass/no-approval mode. Failure prints "FAIL <reason>" to stderr and exits 1.
 # ---
@@ -45,6 +54,7 @@ STRIP="CLAUDE_CODE_CHILD_SESSION CLAUDECODE CLAUDE_CODE_SESSION_ID CLAUDE_CODE_A
 SESSION=${FLEET_TMUX_SESSION:-fleet}
 SOCKET=${FLEET_TMUX_SOCKET:-}
 STATE=${FLEET_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet}
+AGY_HOME=${FLEET_AGY_HOME:-$HOME/.gemini}
 HUMAN=${FLEET_HUMAN:-the human}
 PROOF_T=${FLEET_PROOF_TIMEOUT:-90}
 ROSTER=$STATE/roster.json
@@ -60,8 +70,8 @@ die() { printf 'FAIL %s\n' "$*" >&2; exit 1; }
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 tm() { if [ -n "$SOCKET" ]; then tmux -L "$SOCKET" "$@"; else tmux "$@"; fi; }
 flog() { mkdir -p "$STATE/log"; printf '%s %s\n' "$(now)" "$*" >> "$STATE/log/fleet.log"; }
-role_guard() { # verb : only an unset FLEET_ROLE (the human) or the orchestrator may do lane lifecycle
-  case "${FLEET_ROLE:-}" in ""|orchestrator) ;; *) die "role $FLEET_ROLE can't $1" ;; esac
+role_guard() { # verb : only an unset FLEET_ROLE (the human) or ROUTE may do lane lifecycle
+  case "${FLEET_ROLE:-}" in ""|route) ;; *) die "role $FLEET_ROLE can't $1" ;; esac
 }
 need() { command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1"; }
 
@@ -157,11 +167,17 @@ cmd_launch() {
   [ $# -ge 2 ] || usage
   local name=$1 mode=$2 arg=${3:-}
   printf '%s' "$name" | grep -Eq '^[A-Za-z0-9._-]+$' || die "name must match [A-Za-z0-9._-]+: $name"
-  case $cli in claude|codex|opencode|kiro) ;; *) die "unknown --cli $cli (claude|codex|opencode|kiro)" ;; esac
+  case $cli in claude|codex|opencode|kiro|agy) ;; *) die "unknown --cli $cli (claude|codex|opencode|kiro|agy)" ;; esac
   need jq
   role_guard launch
-  if [ -z "$role" ]; then if [ "$mode" = desk ]; then role=desk; else role=worker; fi; fi
-  case $role in orchestrator|desk|listener|worker) ;; *) die "unknown --role $role (orchestrator|desk|listener|worker)" ;; esac
+  if [ -z "$role" ]; then if [ "$mode" = desk ]; then role=decide; else role=worker; fi; fi
+  case $role in
+    orchestrator) die "role orchestrator is renamed route (--role route)" ;;  # every mode, resume included (Q110 c)
+    desk) die "role desk is renamed decide (--role decide)" ;;
+    listener) die "role listener is renamed watch (--role watch)" ;;
+    probe) die "role probe is reserved for DECIDE's read-only probe lanes (not built yet, docs/design/four-desks.md 2.5)" ;;
+  esac
+  case $role in route|decide|watch|learn|worker) ;; *) die "unknown --role $role (route|decide|watch|learn|worker)" ;; esac
 
   [ -n "$dir" ] || dir=${FLEET_DIR:-$PWD}
   [ -d "$dir" ] || die "directory does not exist: $dir"
@@ -196,6 +212,8 @@ cmd_launch() {
         printf '%s' "$arg" | grep -Eq '^[0-9a-f-]{36}$' || die "claude resume needs a session uuid"
       elif [ "$cli" = kiro ]; then
         printf '%s' "$arg" | grep -Eq '^sess_[0-9A-Fa-f-]{36}$' || die "kiro resume needs a session id like sess_<uuid>: $arg"
+      elif [ "$cli" = agy ]; then
+        printf '%s' "$arg" | grep -Eq '^[0-9a-f-]{36}$' || die "agy resume needs a conversation uuid: $arg"
       else
         printf '%s' "$arg" | grep -Eq '^[A-Za-z0-9_.-]+$' || die "bad session id: $arg"
       fi
@@ -210,6 +228,7 @@ cmd_launch() {
     codex) binvar=${FLEET_CODEX_BIN:-codex} ;;
     opencode) binvar=${FLEET_OPENCODE_BIN:-opencode} ;;
     kiro) binvar=${FLEET_KIRO_BIN:-kiro-cli} ;;
+    agy) binvar=${FLEET_AGY_BIN:-agy} ;;
   esac
   bin=$(command -v "$binvar" 2>/dev/null || true)
   if [ -z "$bin" ]; then
@@ -244,11 +263,13 @@ cmd_launch() {
 
   local rdir=$ROOT/roles
   [ -f "$rdir/$role.md" ] || die "role file missing: $rdir/$role.md"
-  local first= cmd= extra= exports= rflags=
+  local first= cmd= extra= exports= rflags= pre=
   case $cli in
     claude)
       [ -f "$rdir/$role.claude.json" ] || die "role file missing: $rdir/$role.claude.json"
-      rflags=" --settings $(printf '%q' "$rdir/$role.claude.json") --append-system-prompt-file $(printf '%q' "$rdir/$role.md")" ;;
+      rflags=" --settings $(printf '%q' "$rdir/$role.claude.json") --append-system-prompt-file $(printf '%q' "$rdir/$role.md")"
+      # fleet-mesh per launch: peer_inbox is every lane's mailbox; nothing is written to the user's Claude config
+      rflags="$rflags --mcp-config $(printf '%q' "$(jq -cn --arg m "$ROOT/lib/fleet_mesh.py" '{mcpServers:{fleet:{command:"python3",args:[$m,"serve"]}}}')")" ;;
     codex)
       if [ -f "${CODEX_HOME:-$HOME/.codex}/fleet-$role.config.toml" ]; then rflags=" -p fleet-$role"
       else printf 'warn: codex profile fleet-%s not installed (%s/fleet-%s.config.toml); launching without role %s (run install/codex.sh)\n' "$role" "${CODEX_HOME:-$HOME/.codex}" "$role" "$role" >&2; fi ;;
@@ -258,6 +279,10 @@ cmd_launch() {
     kiro)
       if [ -f "${KIRO_HOME:-$HOME/.kiro}/agents/fleet-$role.json" ]; then rflags=" --agent fleet-$role"
       else printf 'warn: kiro agent fleet-%s not installed (%s/agents/fleet-%s.json); launching without role %s (run install/kiro.sh)\n' "$role" "${KIRO_HOME:-$HOME/.kiro}" "$role" "$role" >&2; fi ;;
+    agy)
+      [ -f "$rdir/$role.agy.json" ] || die "role file missing: $rdir/$role.agy.json"
+      if [ -f "$AGY_HOME/config/agents/fleet-$role.md" ]; then rflags=" --agent fleet-$role"
+      else printf 'warn: agy agent fleet-%s not installed (%s/config/agents/fleet-%s.md); launching without role %s context (deny rules still apply; run install/agy.sh)\n' "$role" "$AGY_HOME" "$role" "$role" >&2; fi ;;
   esac
   if [ "$resume" = 0 ]; then first=" \"\$(cat $q_txt)\""; fi
   local deny=AskUserQuestion blocked= kept=
@@ -265,9 +290,15 @@ cmd_launch() {
     worker_block "$mode" "$text" "$keep"
     [ -z "$blocked" ] || deny="$deny,$blocked"
   fi
+  local agyset= agylog= agytype=
+  if [ "$cli" = agy ]; then
+    agyset=$ldir/$name.agy-settings.json agylog=$STATE/log/$name.agy.log
+    # goal mode types /goal into the TUI: agy sends an -i first prompt as plain text, never as a slash command (PROVEN)
+    [ "$mode" != goal ] || agytype=1
+  fi
   case $cli in
     claude)
-      exports="export $SKIPVAR=1"
+      exports="export $SKIPVAR=1 FLEET_MESH=$(printf '%q' "$ROOT/lib/fleet_mesh.py")"  # role hook mirrors SendMessage
       if [ "$resume" = 1 ]; then
         cmd="$q_bin --dangerously-skip-permissions -n $name --model $model --disallowed-tools=$deny$rflags --resume $sid"
       else
@@ -286,11 +317,41 @@ cmd_launch() {
       cmd="$q_bin chat --agent-engine v3 --trust-all-tools --trust-workspace$rflags"
       [ -z "$model" ] || cmd="$cmd --model $(printf '%q' "$model")"
       if [ "$resume" = 1 ]; then cmd="$cmd --resume-id $sid"; else cmd="$cmd$first"; fi ;;
+    agy)
+      # per-lane --settings (never saved): trust the dir, no prompts, role deny rules; --log-file names the conversation
+      cmd="$q_bin --dangerously-skip-permissions --settings $(printf '%q' "$agyset") --log-file $(printf '%q' "$agylog")$rflags"
+      [ -z "$model" ] || cmd="$cmd --model $(printf '%q' "$model")"
+      if [ "$resume" = 1 ]; then cmd="$cmd --conversation $sid"
+      elif [ -z "$agytype" ]; then cmd="$cmd -i \"\$(cat $q_txt)\""; fi ;;
   esac
   [ -z "$SOCKET" ] || extra="$extra FLEET_TMUX_SOCKET=$(printf '%q' "$SOCKET")"
   [ -z "${FLEET_CODEX_BIN:-}" ] || extra="$extra FLEET_CODEX_BIN=$(printf '%q' "$FLEET_CODEX_BIN")"
   [ -z "${FLEET_KIRO_BIN:-}" ] || extra="$extra FLEET_KIRO_BIN=$(printf '%q' "$FLEET_KIRO_BIN")"
   [ -z "${KIRO_HOME:-}" ] || extra="$extra KIRO_HOME=$(printf '%q' "$KIRO_HOME")"
+  [ -z "${FLEET_AGY_BIN:-}" ] || extra="$extra FLEET_AGY_BIN=$(printf '%q' "$FLEET_AGY_BIN")"
+  [ -z "${FLEET_AGY_HOME:-}" ] || extra="$extra FLEET_AGY_HOME=$(printf '%q' "$FLEET_AGY_HOME")"
+  if [ "$cli" = agy ]; then
+    pre=": > $(printf '%q' "$agylog")"   # a fresh log per launch, so the proof never reads a stale conversation id
+    if [ -n "$agytype" ]; then
+      # wait for agy's idle prompt in this pane, type the /goal line, pause so the slash picker settles, then Enter
+      pre="$pre
+agy_type() {
+  local i
+  for i in \$(seq 1 120); do
+    sleep 1
+    if tmux capture-pane -p -t \"\$TMUX_PANE\" 2>/dev/null | grep -qF '? for shortcuts'; then
+      tmux send-keys -t \"\$TMUX_PANE\" -l \"\$(tr '\\n' ' ' < $q_txt | sed 's/ *\$//')\"
+      sleep 1
+      tmux send-keys -t \"\$TMUX_PANE\" Enter
+      fl \"$name typed its /goal\"
+      return 0
+    fi
+  done
+  fl \"$name: agy prompt not ready after 120 s; /goal not typed\"
+}
+agy_type &"
+    fi
+  fi
 
   local body
   body=$(cat <<EOF
@@ -303,6 +364,7 @@ $exports
 mkdir -p $q_logdir
 fl() { printf '%s %s\n' "\$(date -u +%Y-%m-%dT%H:%M:%SZ)" "\$*" >> $q_log; }
 fl "$name started cli=$cli mode=$mode role=$role session=${sid:-unknown}"
+$pre
 $cmd
 rc=\$?
 fl "$name exited rc=\$rc"
@@ -327,6 +389,7 @@ EOF
   if [ "$dry" = 1 ]; then
     printf '## script %s\n%s\n' "$sh" "$body"
     if [ -n "$text" ]; then printf '## prompt %s (%s chars)\n%s\n' "$txt" "${#text}" "$text"; fi
+    if [ "$cli" = agy ]; then printf '## settings %s\n' "$agyset"; agy_settings "$rdir/$role.agy.json" "$dir"; fi
     printf '## tmux %s\n' "$tmcmd"
     return 0
   fi
@@ -334,6 +397,7 @@ EOF
   need tmux
   mkdir -p "$ldir" "$STATE/log"
   if [ -n "$text" ]; then printf '%s\n' "$text" > "$txt"; fi
+  [ "$cli" != agy ] || agy_settings "$rdir/$role.agy.json" "$dir" > "$agyset" || die "could not write $agyset"
   printf '%s\n' "$body" > "$sh"; chmod +x "$sh"
 
   local marker=
@@ -370,6 +434,7 @@ EOF
       codex) proof_codex "$name" "$pane" "$dir" "$mode" "$marker" ;;
       opencode) proof_opencode "$name" "$port" "$dir" "$mode" ;;
       kiro) proof_kiro "$name" "$pane" "${panepid:-}" "$mode" "$sid" ;;
+      agy) proof_agy "$name" "$pane" "$mode" "$sid" "$agylog" ;;
     esac
     [ "$mode" != goal ] || goal=active
     sid=$(roster_get "$name" session_id)
@@ -609,6 +674,100 @@ proof_kiro() { # name pane pane_pid mode resume-sid
   fi
 }
 
+agy_settings() { # role.agy.json dir -> per-lane agy --settings JSON on stdout (role keys win; never saved by agy)
+  jq --arg d "$2" '{toolPermission:"always-proceed", artifactReviewPolicy:"always-proceed",
+    allowNonWorkspaceAccess:true, trustedWorkspaces:[$d]} + .' "$1"
+}
+
+agy_screen() { # pane -> 2 trust dialog, 3 first-run onboarding, 4 sign-in wait; 1 none of these
+  local s
+  s=$(tm capture-pane -p -t "$1" 2>/dev/null || true)
+  case $s in
+    *"Do you trust the contents"*) return 2 ;;
+    *"Choose your color scheme"*|*"Terms of Service"*) return 3 ;;
+    *"Waiting for authentication"*) return 4 ;;
+  esac
+  return 1
+}
+
+agy_logged() { # log [want] -> print the conversation id the log names (resume: only when it names want)
+  [ -f "$1" ] || return 1
+  local id
+  if [ -n "${2:-}" ]; then
+    grep -Eq "(found|Streaming) conversation $2" "$1" && { printf '%s\n' "$2"; return 0; }
+    return 1
+  fi
+  id=$(grep -Eo 'Created conversation [0-9a-f-]{36}' "$1" | head -1 | awk '{print $3}')
+  [ -n "$id" ] && printf '%s\n' "$id"
+}
+
+agy_probe() { # user|goal AGY_HOME CID -> exit 0 when the transcript shows it
+  python3 - "$@" <<'PY'
+import json, os, sys
+op, home, cid = sys.argv[1:4]
+d = os.path.join(home, "antigravity-cli", "brain", cid, ".system_generated", "logs")
+rows = []
+for n in ("transcript_full.jsonl", "transcript.jsonl"):
+    p = os.path.join(d, n)
+    if os.path.exists(p):
+        with open(p, errors="replace") as fh:
+            for raw in fh:
+                try:
+                    rows.append(json.loads(raw))
+                except ValueError:
+                    pass
+        break
+users = [r for r in rows if r.get("type") == "USER_INPUT"]
+if op == "user":  # a submitted prompt AND a model step: the prompt was not just queued behind a startup screen
+    sys.exit(0 if users and any(r.get("source") == "MODEL" for r in rows) else 1)
+if op == "goal":  # agy expands a typed /goal into the slash-command metadata of the USER_INPUT row
+    sys.exit(0 if any("/goal is a [Slash Command]" in (r.get("content") or "") for r in users) else 1)
+sys.exit(2)
+PY
+}
+
+proof_agy() { # name pane mode resume-sid log
+  local name=$1 pane=$2 mode=$3 want=$4 log=$5 sid= rc=0 t
+  need python3
+  local hint2="agy workspace trust dialog in pane $pane; the lane passes trustedWorkspaces in $STATE/launch/$name.agy-settings.json, so check that file, then fleet stop $name and relaunch"
+  local hint3="agy first-run screens (color scheme / terms) in pane $pane; run agy once by hand to finish onboarding, then fleet stop $name and relaunch"
+  local hint4="agy is waiting for sign-in in pane $pane; run agy once by hand to sign in, then fleet stop $name and relaunch"
+  t=$(min 60 "$PROOF_T")
+  if [ "$mode" = resume ]; then
+    poll 'agy_screen "$pane"; r=$?; [ $r = 1 ] || return $r; sid=$(agy_logged "$log" "$want" || true); [ -n "$sid" ]' "$t" || rc=$?
+  else
+    poll 'agy_screen "$pane"; r=$?; [ $r = 1 ] || return $r; sid=$(agy_logged "$log" || true); [ -n "$sid" ]' "$t" || rc=$?
+  fi
+  case $rc in
+    0) ;;
+    2) die "$hint2" ;;
+    3) die "$hint3" ;;
+    4) die "$hint4" ;;
+    *) if [ "$mode" = resume ]; then die "agy lane $name did not open conversation $want after ${t}s (no 'found conversation $want' in $log); look at pane $pane"
+       else die "no agy conversation for $name after ${t}s (no 'Created conversation <uuid>' in $log); look at pane $pane"; fi ;;
+  esac
+  roster_merge "$name" "$(jq -n --arg s "$sid" '{session_id:$s}')"
+  if [ "$mode" = resume ]; then
+    # the log names the conversation before the TUI takes input; a wake typed earlier is lost, so wait for the idle footer
+    poll 'tm capture-pane -p -t "$pane" 2>/dev/null | grep -qF "? for shortcuts"' "$t" \
+      || die "agy lane $name opened conversation $want but its prompt never went idle ('? for shortcuts') after ${t}s; look at pane $pane"
+    return 0
+  fi
+  rc=0
+  poll 'agy_screen "$pane"; r=$?; [ $r = 1 ] || return $r; agy_probe user "$AGY_HOME" "$sid"' "$PROOF_T" || rc=$?
+  case $rc in
+    0) ;;
+    2) die "$hint2" ;;
+    3) die "$hint3" ;;
+    4) die "$hint4" ;;
+    *) die "agy conversation $sid for $name has no user turn answered by the model after ${PROOF_T}s; look at pane $pane" ;;
+  esac
+  if [ "$mode" = goal ]; then
+    poll 'agy_probe goal "$AGY_HOME" "$sid"' "$PROOF_T" \
+      || die "agy goal for $name not started: no /goal slash-command turn in $AGY_HOME/antigravity-cli/brain/$sid after ${PROOF_T}s; look at pane $pane"
+  fi
+}
+
 # ---------------------------------------------------------------- other commands
 cmd_ls() {
   [ -s "$ROSTER" ] || { echo "(no lanes)"; return 0; }
@@ -649,9 +808,12 @@ case $sub in
   attach) cmd_attach ;;
   layout) cmd_layout ;;
   stop) cmd_stop "$@" ;;
+  decisions) exec python3 "$ROOT/lib/fleet_decisions.py" "$@" ;;  # DECISIONS UI: serve|tui|pick|ask|find|report|refresh
   send)
     [ $# -ge 2 ] || usage
-    exec python3 "$ROOT/lib/fleet_mesh.py" send "${FLEET_NAME:-${FLEET_ORCHESTRATOR:-ORCHESTRATOR}}" "$1" "${*:2}" ;;
+    exec python3 "$ROOT/lib/fleet_mesh.py" send "${FLEET_NAME:-${FLEET_ROUTE:-ROUTE}}" "$1" "${*:2}" ;;
+  listen) exec python3 "$ROOT/lib/fleet_listen.py" "$@" ;;
+  desks) role_guard desks; exec bash "$BINDIR/fleet-desks" "$@" ;;
   tick|park|reopen|cleanup|handoff)
     case $sub in
       park|reopen) role_guard "$sub" ;;

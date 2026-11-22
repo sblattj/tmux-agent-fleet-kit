@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>DECISIONS</title>
+<style>
+  :root { --bg:#0f1418; --card:#18212a; --line:#2a3642; --fg:#e6edf3; --dim:#8b98a5; --rec:#3fb68b;
+          --warn:#e3b341; --bad:#f85149; --info:#58a6ff; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:var(--bg);
+         color:var(--fg); }
+  header { position:sticky; top:0; z-index:2; display:flex; gap:12px; align-items:center; padding:12px 20px;
+           background:#0b1014ee; border-bottom:1px solid var(--line); }
+  header h1 { font-size:17px; margin:0; letter-spacing:.06em; }
+  header .meta { color:var(--dim); font-size:13px; }
+  header .sp { flex:1; }
+  button { font:inherit; color:var(--fg); background:#223040; border:1px solid var(--line); border-radius:8px;
+           padding:7px 12px; cursor:pointer; }
+  button:hover:not(:disabled) { border-color:var(--info); }
+  button:disabled { opacity:.38; cursor:default; }
+  main { max-width:980px; margin:0 auto; padding:18px 20px 80px; }
+  h2 { font-size:13px; text-transform:uppercase; letter-spacing:.1em; color:var(--dim); margin:26px 0 10px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px 16px;
+          margin:0 0 12px; animation: slidein .45s ease-out both; }
+  .card.target { border-color:var(--info); box-shadow:0 0 0 2px #58a6ff55; }
+  .card.done { opacity:.45; }
+  @keyframes slidein { from { opacity:0; transform:translateX(-26px); } to { opacity:1; transform:none; } }
+  .top { display:flex; gap:10px; align-items:baseline; flex-wrap:wrap; color:var(--dim); font-size:13px; }
+  .top .id { color:var(--fg); font-weight:700; font-size:14px; }
+  .also { color:var(--warn); }
+  .q { margin:6px 0 10px; font-size:16px; white-space:pre-wrap; }
+  .opt { display:flex; width:100%; text-align:left; gap:10px; align-items:baseline; margin:6px 0; padding:9px 12px; }
+  .opt .l { font-weight:700; min-width:1.2em; }
+  .opt.rec { border-color:var(--rec); }
+  .tag { font-size:11px; padding:1px 7px; border-radius:99px; border:1px solid var(--rec); color:var(--rec); }
+  .down { color:var(--dim); font-size:13px; margin-left:auto; padding-left:14px; }
+  .row { display:flex; gap:8px; margin-top:10px; }
+  .row input { flex:1; font:inherit; color:var(--fg); background:#0f1418; border:1px solid var(--line);
+               border-radius:8px; padding:8px 10px; }
+  .status { margin-top:8px; font-size:13px; color:var(--dim); }
+  .spin { display:inline-block; width:11px; height:11px; border:2px solid var(--dim); border-top-color:transparent;
+          border-radius:50%; animation: spin .8s linear infinite; vertical-align:-1px; margin-right:6px; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  td, th { text-align:left; padding:8px 6px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--dim); font-weight:500; font-size:12px; }
+  .badge { font-size:12px; padding:2px 8px; border-radius:99px; white-space:nowrap; border:1px solid; }
+  .b-relayed { color:var(--rec); } .b-queued { color:var(--warn); } .b-reopened { color:var(--info); }
+  .b-failed { color:var(--bad); } .b-acted { color:var(--rec); } .b-actfail { color:var(--bad); }
+  .empty { color:var(--dim); padding:20px 0; }
+  .ab { display:grid; grid-template-columns: 1fr 1fr; gap:10px; }
+  .ab .side { border:1px solid var(--line); border-radius:8px; padding:10px; }
+  .ab .side.sel { border-color:var(--info); }
+  .quote { font-style:italic; white-space:pre-wrap; }
+  .err { color:var(--bad); }
+  nav a { color:var(--info); margin-right:14px; cursor:pointer; text-decoration:none; }
+  nav a.on { color:var(--fg); font-weight:700; }
+</style>
+</head>
+<body>
+<header>
+  <h1>DECISIONS</h1>
+  <span class="meta" id="meta">connecting...</span>
+  <span class="sp"></span>
+  <nav><a id="nav-calls" class="on">Calls</a><a id="nav-refresh">Refresh results</a></nav>
+  <button id="btn-notify" title="Desktop notifications for new calls">Notify</button>
+  <button id="btn-refresh" title="Ask every live lane to re-sync, then look for answers given elsewhere">Refresh all</button>
+</header>
+<main>
+  <section id="view-calls">
+    <h2 id="h-open">Open</h2>
+    <div id="open"></div>
+    <h2 id="h-called">Called</h2>
+    <table><thead><tr><th>call</th><th>answer</th><th>to</th><th>relay</th><th>acted</th><th></th></tr></thead>
+      <tbody id="called"></tbody></table>
+  </section>
+  <section id="view-refresh" hidden>
+    <h2>Refresh results: keep A (leave the call open) or use B (relay the found answer)</h2>
+    <div class="status" id="refresh-meta"></div>
+    <div id="refresh-rows"></div>
+  </section>
+</main>
+<script>
+"use strict";
+// Every string that came from a lane is rendered with textContent, never as HTML.
+const TOKEN = new URLSearchParams(location.search).get("t") || "";
+const $ = (id) => document.getElementById(id);
+const known = new Set();
+let first = true, state = null, pending = {};
+
+function el(tag, attrs, ...kids) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "class") n.className = v;
+    else if (k === "text") n.textContent = v;
+    else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
+    else if (v !== null && v !== undefined && v !== false) n.setAttribute(k, v === true ? "" : v);
+  }
+  for (const k of kids) if (k) n.appendChild(typeof k === "string" ? document.createTextNode(k) : k);
+  return n;
+}
+function clear(n) { n.innerHTML = ''; }
+
+async function api(path, body) {
+  const r = await fetch(path + (body ? "" : "?t=" + encodeURIComponent(TOKEN)), {
+    method: body ? "POST" : "GET", headers: { "X-Fleet-Token": TOKEN, "Content-Type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || ("http " + r.status));
+  return j;
+}
+
+function badgeText(c) {
+  return { relayed: "relayed " + c.time, queued: "queued (no live lane)", reopened: "reopened",
+           failed: "relay FAILED" }[c.badge] || c.badge;
+}
+
+function card(c) {
+  const allow = new Set(c.conflict ? ["snooze"] : (c.allow || []));  // an id that names two calls: desk pane only
+  const node = el("div", { class: "card", id: c.id });
+  if (location.hash === "#" + c.id) node.classList.add("target");
+  const status = el("div", { class: "status" });
+  const buttons = [];
+  const lock = (label) => { buttons.forEach((b) => b.disabled = true); node.classList.add("done");
+    clear(status); status.appendChild(el("span", { class: "spin" })); status.appendChild(document.createTextNode(label)); };
+  const send = async (body, label) => {
+    if (pending[c.id]) return;          // idempotent on the client too: one click, one request
+    pending[c.id] = true; lock(label);
+    try {
+      const r = await api("/api/pick", Object.assign({ id: c.id }, body));
+      clear(status); status.textContent = "sent: " + r.verbatim + "  [" + r.status + "]";
+    } catch (e) {
+      clear(status); status.appendChild(el("span", { class: "err", text: String(e.message) }));
+      if (!/already/.test(e.message)) { pending[c.id] = false; buttons.forEach((b) => b.disabled = false);
+        node.classList.remove("done"); }
+    }
+  };
+  node.appendChild(el("div", { class: "top" },
+    el("span", { class: "id", text: c.id }), el("span", { text: "from " + c.from }), el("span", { text: c.ago }),
+    c.alsoAskedBy.length ? el("span", { class: "also", text: "also asked by " + c.alsoAskedBy.join(", ") }) : null,
+    c.dupIds.length ? el("span", { text: "(dups: " + c.dupIds.join(", ") + ")" }) : null));
+  node.appendChild(el("div", { class: "q", text: c.question }));
+  if (c.conflict) node.appendChild(el("div", { class: "err", text: c.conflict + "; answer it in the desk pane" }));
+  if (allow.has("pick")) for (const o of c.options) {
+    const b = el("button", { class: "opt" + (o.rec ? " rec" : ""), onclick: () => send({ option: o.letter }, "relaying " + o.letter + "...") },
+      el("span", { class: "l", text: o.letter }), el("span", { text: o.text }),
+      o.rec ? el("span", { class: "tag", text: "rec" }) : null,
+      o.downside ? el("span", { class: "down", text: "downside: " + o.downside }) : null);
+    buttons.push(b); node.appendChild(b);
+  }
+  const row = el("div", { class: "row" });
+  if (allow.has("own") || allow.has("edit")) {
+    const inp = el("input", { placeholder: "own answer (Enter sends)", "aria-label": "own answer for " + c.id });
+    const recOpt = c.options.find((o) => o.rec);
+    if (allow.has("edit") && recOpt) inp.title = "edit: start from the rec option with the Edit rec button";
+    inp.addEventListener("keydown", (ev) => { if (ev.key === "Enter" && inp.value.trim())
+      send({ text: inp.value, kind: inp.dataset.kind || "own" }, "relaying own answer..."); });
+    buttons.push(inp); row.appendChild(inp);
+    if (allow.has("edit") && recOpt) { const eb = el("button", { text: "Edit rec", onclick: () => {
+      inp.value = recOpt.text; inp.dataset.kind = "edit"; inp.focus(); } }); buttons.push(eb); row.appendChild(eb); }
+  }
+  if (allow.has("refuse")) { const rb = el("button", { text: "Refuse", onclick: () => send({ refuse: true }, "refusing...") });
+    buttons.push(rb); row.appendChild(rb); }
+  if (allow.has("snooze")) { const sb = el("button", { text: "Snooze 30m", onclick: async () => {
+      sb.disabled = true; try { await api("/api/snooze", { id: c.id, minutes: 30 }); } catch (e) { status.textContent = e.message; } } });
+    buttons.push(sb); row.appendChild(sb); }
+  node.appendChild(row); node.appendChild(status);
+  if (pending[c.id]) lock("relaying...");
+  return node;
+}
+
+function calledRow(c) {
+  const st = el("span", { class: "badge b-" + c.badge, text: badgeText(c), title: Object.entries(c.delivery || {})
+    .map(([k, v]) => k + ": " + v).join("\n") });
+  const acted = c.acted ? el("span", { class: "badge " + (c.acted === "acted on" ? "b-acted" : "b-actfail"),
+    text: c.acted, title: c.actedNote || "" }) : null;
+  const retry = c.retry ? el("button", { text: "Retry", onclick: async (ev) => { ev.target.disabled = true;
+    try { await api("/api/retry", { id: c.id }); } catch (e) { ev.target.title = e.message; ev.target.disabled = false; } } }) : null;
+  return el("tr", {}, el("td", {}, el("b", { text: c.id }), document.createTextNode(" " + (c.question || ""))),
+    el("td", { class: "quote", text: c.verbatim || "" }), el("td", { text: (c.relayedTo || []).join(", ") }),
+    el("td", {}, st), el("td", {}, acted), el("td", {}, retry));
+}
+
+function render(s) {
+  state = s;
+  const open = $("open"), fresh = [];
+  clear(open);
+  if (!s.open.length) open.appendChild(el("div", { class: "empty", text: "No open calls." }));
+  for (const c of s.open) { const n = card(c); if (!first && !known.has(c.id)) fresh.push(c); else if (known.has(c.id)) n.style.animation = "none";
+    known.add(c.id); open.appendChild(n); }
+  const called = $("called"); clear(called);
+  for (const c of s.called) called.appendChild(calledRow(c));
+  $("h-open").textContent = "Open (" + s.openCount + ")" + (s.snoozed ? "  +" + s.snoozed + " snoozed" : "");
+  $("h-called").textContent = "Called (" + s.calledCount + ")";
+  document.title = (s.openCount ? "(" + s.openCount + ") " : "") + "DECISIONS";
+  $("meta").textContent = s.openCount + " open, " + s.calledCount + " called, desk " + s.desk;
+  for (const c of fresh) notify(c);
+  first = false;
+  if (location.hash && !pending._scrolled) { const t = document.querySelector(location.hash.replace(/[^#\w-]/g, ""));
+    if (t) { t.scrollIntoView({ block: "center" }); pending._scrolled = true; } }
+}
+
+function notify(c) {
+  if (!("Notification" in window) || Notification.permission !== "granted" || (state && state.notify === false)) return;
+  const n = new Notification("DECISIONS: " + c.id + " from " + c.from, { body: c.question.slice(0, 180), tag: c.id });
+  n.onclick = () => { window.focus(); location.hash = c.id; const t = $(c.id); if (t) t.scrollIntoView({ block: "center" }); n.close(); };
+}
+$("btn-notify").onclick = () => { if ("Notification" in window) Notification.requestPermission(); };
+
+// Refresh all + the A/B approval page. B needs a choose click, then a second confirm click; the server enforces both.
+async function loadRefresh() {
+  const d = await api("/api/refresh");
+  const box = $("refresh-rows"); clear(box);
+  $("refresh-meta").textContent = d.at ? ("ran " + d.at + ", " + d.rows.length + " found, ungrounded: " + d.ungrounded +
+    (d.errors && d.errors.length ? ", errors: " + d.errors.join("; ") : "")) : "no refresh yet: press Refresh all";
+  for (const r of d.rows) {
+    const status = el("div", { class: "status", text: r.state === "applied" ? "applied" : (r.choice ? "chose " + r.choice : "unapproved: stays open") });
+    const a = el("div", { class: "side" + (r.choice === "A" ? " sel" : "") }, el("b", { text: "A: keep open" }), el("div", { text: r.question }));
+    const b = el("div", { class: "side" + (r.choice === "B" ? " sel" : "") }, el("b", { text: "B: " + r.b.kind + " from " + r.b.source + (r.b.at ? " (" + r.b.at + ")" : "") }),
+      el("div", { class: "quote", text: "“" + r.b.quote + "”" }));
+    const done = r.state !== "pending";
+    const choose = (x) => async () => { try { await api("/api/refresh/choose", { id: r.id, choice: x }); loadRefresh(); } catch (e) { status.textContent = e.message; } };
+    const conf = el("button", { text: "Confirm B", disabled: done || r.choice !== "B", onclick: async (ev) => {
+      ev.target.disabled = true; try { await api("/api/refresh/confirm", { id: r.id }); loadRefresh(); } catch (e) { status.textContent = e.message; } } });
+    box.appendChild(el("div", { class: "card" }, el("div", { class: "top" }, el("span", { class: "id", text: r.id }), el("span", { text: "from " + r.from })),
+      el("div", { class: "ab" }, a, b),
+      el("div", { class: "row" }, el("button", { text: "Keep A", disabled: done, onclick: choose("A") }),
+        el("button", { text: "Use B", disabled: done, onclick: choose("B") }), conf), status));
+  }
+}
+function show(view) { $("view-calls").hidden = view !== "calls"; $("view-refresh").hidden = view !== "refresh";
+  $("nav-calls").className = view === "calls" ? "on" : ""; $("nav-refresh").className = view === "refresh" ? "on" : "";
+  if (view === "refresh") loadRefresh().catch((e) => $("refresh-meta").textContent = e.message); }
+$("nav-calls").onclick = () => show("calls"); $("nav-refresh").onclick = () => show("refresh");
+$("btn-refresh").onclick = async (ev) => { ev.target.disabled = true; ev.target.textContent = "Refreshing...";
+  try { await api("/api/refresh", {}); show("refresh"); } catch (e) { $("meta").textContent = e.message; }
+  ev.target.disabled = false; ev.target.textContent = "Refresh all"; };
+
+// Live updates: SSE, with a 1 s poll fallback.
+let polling = null;
+function poll() { if (polling) return; polling = setInterval(() => api("/api/state").then(render).catch(() => {}), 1000); }
+function connect() {
+  if (!window.EventSource) return poll();
+  const es = new EventSource("/events?t=" + encodeURIComponent(TOKEN));
+  es.addEventListener("state", (ev) => { if (polling) { clearInterval(polling); polling = null; }
+    render(JSON.parse(ev.data)); if (!$("view-refresh").hidden) loadRefresh().catch(() => {}); });
+  es.onerror = () => { poll(); };
+}
+if (location.pathname === "/refresh") show("refresh");
+api("/api/state").then(render).catch((e) => $("meta").textContent = e.message);
+connect();
+</script>
+</body>
+</html>

@@ -12,7 +12,8 @@ export FLEET_STATE=$T/state
 export FLEET_CLAUDE_HOME=$T/claude
 export CODEX_HOME=$T/codex
 export KIRO_HOME=$T/kiro
-unset FLEET_ROLE FLEET_NAME TMUX FLEET_BIN FLEET_QUIET_SECS FLEET_PARK_WAIT FLEET_TAB_WARN
+export FLEET_AGY_HOME=$T/agy
+unset FLEET_ROLE FLEET_NAME FLEET_AGY_BIN TMUX FLEET_BIN FLEET_QUIET_SECS FLEET_PARK_WAIT FLEET_TAB_WARN
 # never read the real Chrome: a closed port by default, a stub server in the chrome tabs section
 export FLEET_CDP_URL=http://127.0.0.1:1
 export CDP_ARTIFACT_DIR=$T/cdp
@@ -65,6 +66,11 @@ kfix() { # fixture sid [no-session-json]: a kiro session dir under KIRO_HOME (cw
   local d=$KIRO_HOME/sessions/h$(printf '%s' "$2" | cksum | cut -d' ' -f1)/$2
   mkdir -p "$d"; cp "$FIX/$1.jsonl" "$d/messages.jsonl"
   [ -n "${3:-}" ] || sed "s/sess_KSID/$2/" "$FIX/kiro-session.json" > "$d/session.json"
+  printf '%s' "$d"
+}
+afix() { # fixture cid: an agy conversation transcript under FLEET_AGY_HOME (both file names, like agy 1.5)
+  local d=$FLEET_AGY_HOME/antigravity-cli/brain/$2/.system_generated/logs
+  mkdir -p "$d"; cp "$FIX/$1.jsonl" "$d/transcript_full.jsonl"; cp "$FIX/$1.jsonl" "$d/transcript.jsonl"
   printf '%s' "$d"
 }
 epoch() { python3 -c 'import sys,calendar,time;print(calendar.timegm(time.strptime(sys.argv[1],"%Y-%m-%dT%H:%M:%SZ")))' "$1"; }
@@ -160,6 +166,19 @@ eq "kiro stopped-since is the run_complete timestamp" "$(epoch 2026-01-01T10:04:
 eq "kiro last activity = session.json lastModifiedAt" "$(epoch 2026-01-01T10:05:00Z)" "$(field kA lastActive)"
 t "kiro mtime fallback differs from a session.json lastModifiedAt (control)" test "$(field kD lastActive)" != "$(field kA lastActive)"
 eq "kiro mtime fallback is what tick reports" "$(field kD lastActive)" "$(python3 -c 'import os,glob,sys;print(int(os.path.getmtime(glob.glob(sys.argv[1]+"/sessions/*/sess_kd/messages.jsonl")[0])))' "$KIRO_HOME")"
+afix agy-goal-achieved "$(uid 61)" >/dev/null; afix agy-goal-active "$(uid 62)" >/dev/null
+afix agy-goal-cancelled "$(uid 63)" >/dev/null; afix agy-none "$(uid 64)" >/dev/null
+TZ=UTC touch -t 202601020000 "$FLEET_AGY_HOME/antigravity-cli/brain/$(uid 64)/.system_generated/logs/transcript_full.jsonl"
+addlane aA agy worker "$(uid 61)" %901; addlane aB agy worker "$(uid 62)" %901; addlane aC agy worker "$(uid 63)" %901
+addlane aD agy worker "$(uid 64)" %901; addlane aE agy worker "$(uid 65)" %901
+eq "agy /goal then PLANNER_RESPONSE GOAL_COMPLETE -> achieved" achieved "$(field aA goalState)"
+eq "agy /goal only (markers quoted in its own metadata) -> active" active "$(field aB goalState)"
+eq "agy PLANNER_RESPONSE GOAL_CANCELLED -> stopped" stopped "$(field aC goalState)"
+eq "agy no /goal -> none" none "$(field aD goalState)"
+eq "agy transcript missing -> none (roster fallback)" none "$(field aE goalState)"
+eq "agy stopped-since is the cancelling row's created_at" "$(epoch 2026-01-01T10:01:00Z)" "$(field aC goalStoppedAt)"
+eq "agy last activity = transcript mtime" "$(epoch 2026-01-02T00:00:00Z)" "$(field aD lastActive)"
+t "agy last activity differs between conversations (control)" test "$(field aD lastActive)" != "$(field aA lastActive)"
 eq "claude stopped-since comes from the transcript record timestamp" 1767262200 "$(field cC goalStoppedAt)"
 tick_txt=$("$LC" tick)
 t "tick table has the header" has "$tick_txt" "NAME"
@@ -327,6 +346,31 @@ pane=$(mkwin knt "python3 $HERE/stubs/compactor never $T/knt")
 addlane knt kiro worker sess_nodir "$pane"
 out=$("$LC" park knt 2>&1); rc=$?
 t "kiro park refuses when the transcript can't be found" bash -c '[ "$1" != 0 ] && printf "%s" "$2" | grep -q "transcript of knt"' _ "$rc" "$out"
+# agy: SYSTEM CHECKPOINT "# Resuming from a compaction" in transcript_full.jsonl
+AD=$(afix agy-goal-achieved "$(uid 66)"); AF=$AD/transcript_full.jsonl
+pane=$(mkwin apk "python3 $HERE/stubs/compactor agy $AF")
+addlane apk agy worker "$(uid 66)" "$pane"
+out=$("$LC" park apk 2>&1); rc=$?
+eq "agy park exits 0 after the CHECKPOINT row" 0 "$rc"
+t "agy park typed /compact into the lane" grep -qx /compact "$AF.typed"
+eq "agy transcript gained exactly one compaction CHECKPOINT" 1 "$(grep -c 'Resuming from a compaction' "$AF")"
+t "agy park says it compacted" has "$out" "OK compacted apk"
+eq "agy lane parked" parked "$(jq -r .apk.status "$FLEET_STATE/roster.json")"
+eq "agy park records the resume command with --conversation" "agy --dangerously-skip-permissions --conversation $(uid 66)" "$(jq -r .apk.resume "$FLEET_STATE/roster.json")"
+eq "agy park records goalState" achieved "$(jq -r .apk.goalState "$FLEET_STATE/roster.json")"
+t "agy park killed the stub window" bash -c '! tmux -L "$1" list-panes -a -F "#{pane_id}" | grep -qx "$2"' _ "$FLEET_TMUX_SOCKET" "$pane"
+# CONTROL: an agy lane whose transcript only gains a typed /compact USER_INPUT (no CHECKPOINT) must refuse to park
+AD2=$(afix agy-goal-achieved "$(uid 67)"); AF2=$AD2/transcript_full.jsonl
+pane=$(mkwin anc "python3 $HERE/stubs/compactor never $AF2")
+addlane anc agy worker "$(uid 67)" "$pane"
+printf '%s\n' '{"step_index":"9","source":"SYSTEM","type":"CHECKPOINT","status":"DONE","created_at":"2026-01-01T11:00:00Z","content":"# Checkpoint of another kind"}' >> "$AF2"
+out=$(FLEET_COMPACT_WAIT=3 "$LC" park anc 2>&1); rc=$?
+t "agy control: a CHECKPOINT that is not a compaction does not let park through" bash -c '[ "$1" != 0 ] && printf "%s" "$2" | grep -q "compact of anc not confirmed"' _ "$rc" "$out"
+t "agy control: refused park left the pane alive" bash -c 'tmux -L "$1" list-panes -a -F "#{pane_id}" | grep -qx "$2"' _ "$FLEET_TMUX_SOCKET" "$pane"
+pane=$(mkwin ant "python3 $HERE/stubs/compactor never $T/ant")
+addlane ant agy worker "$(uid 68)" "$pane"
+out=$("$LC" park ant 2>&1); rc=$?
+t "agy park refuses when the transcript can't be found" bash -c '[ "$1" != 0 ] && printf "%s" "$2" | grep -q "transcript of ant"' _ "$rc" "$out"
 # stubborn process: ignores C-c, so park must fall through to the kill path
 pane=$(mkwin stub "bash -c 'trap \"\" INT; sleep 300'")
 addlane stub claude worker "$(uid 31)" "$pane"
@@ -369,6 +413,20 @@ t "handoff (kiro, list content blocks) carries the assistant text" grep -q "Hell
 addlane h6 kiro worker sess_missing %901 '{"status":"parked"}'
 out=$("$LC" handoff h6 2>&1); rc=$?
 t "handoff (kiro) with no session dir fails loud" bash -c '[ "$1" != 0 ] && printf "%s" "$2" | grep -q "^FAIL"' _ "$rc" "$out"
+addlane h7 agy worker "$(uid 71)" %901 '{"status":"parked"}'
+afix agy-goal-achieved "$(uid 71)" >/dev/null
+"$LC" handoff h7 >/dev/null 2>&1
+eq "handoff (agy) first line" "Was: h7" "$(head -1 "$FLEET_STATE/handoff/h7.md")"
+t "handoff (agy) goal is the /goal text without the command" bash -c 'grep -qx "rename the widget module to gadget and stop after 5 turns" "$1"' _ "$FLEET_STATE/handoff/h7.md"
+t "handoff (agy) assistant text without the GOAL_COMPLETE marker" bash -c 'grep -q "Renamed widget to gadget" "$1" && ! grep -q "GOAL_COMPLETE" "$1"' _ "$FLEET_STATE/handoff/h7.md"
+t "handoff (agy) lists written and edited files, not read ones" bash -c 'grep -q /work/src/gadget.py "$1" && grep -q /work/src/app.py "$1" && ! grep -q /work/src/widget.py "$1"' _ "$FLEET_STATE/handoff/h7.md"
+addlane h8 agy worker "$(uid 72)" %901 '{"status":"parked"}'
+afix agy-none "$(uid 72)" >/dev/null
+"$LC" handoff h8 >/dev/null 2>&1
+t "handoff (agy) user requests kept, fleet wake pointers dropped" bash -c 'grep -q "Say hello." "$1" && ! grep -q "run peer_inbox to read it" "$1"' _ "$FLEET_STATE/handoff/h8.md"
+addlane h9 agy worker "$(uid 73)" %901 '{"status":"parked"}'
+out=$("$LC" handoff h9 2>&1); rc=$?
+t "handoff (agy) with no transcript fails loud" bash -c '[ "$1" != 0 ] && printf "%s" "$2" | grep -q "^FAIL"' _ "$rc" "$out"
 out=$("$LC" handoff nosuch 2>&1); rc=$?
 t "handoff of an unknown lane fails loud" bash -c '[ "$1" != 0 ] && printf "%s" "$2" | grep -q "^FAIL"' _ "$rc" "$out"
 
@@ -383,17 +441,20 @@ chmod +x "$T/fakefleet"
 export FLEET_BIN=$T/fakefleet
 cfix claude-achieved "$(uid 51)"
 addlane rc claude worker "$(uid 51)" %901 '{"status":"parked"}'
-addlane rx codex orchestrator cx-r %901 '{"status":"parked"}'
+addlane rx codex route cx-r %901 '{"status":"parked"}'
 addlane ro opencode worker ses_oa %901 '{"status":"done","model":null}'
 addlane rl claude worker "$(uid 51)" %901 '{"status":"live"}'
 "$LC" reopen rc >/dev/null 2>&1
 eq "reopen claude runs fleet launch ... resume <id>" "launch --cli claude --model opus --role worker --dir $W --keep-tools all rc resume $(uid 51)" "$(tail -1 "$T/fake.log")"
 "$LC" reopen rx >/dev/null 2>&1
-eq "reopen codex keeps the role and resumes the thread" "launch --cli codex --model opus --role orchestrator --dir $W --keep-tools all rx resume cx-r" "$(tail -1 "$T/fake.log")"
+eq "reopen codex keeps the role and resumes the thread" "launch --cli codex --model opus --role route --dir $W --keep-tools all rx resume cx-r" "$(tail -1 "$T/fake.log")"
 addlane rk kiro worker sess_rk %901 '{"status":"parked"}'
 "$LC" reopen rk >/dev/null 2>&1
 eq "reopen kiro resumes the session id through fleet launch" "launch --cli kiro --model opus --role worker --dir $W --keep-tools all rk resume sess_rk" "$(tail -1 "$T/fake.log")"
 eq "reopen kiro flips the roster status to live" live "$(jq -r .rk.status "$FLEET_STATE/roster.json")"
+addlane ra agy worker "$(uid 74)" %901 '{"status":"parked"}'
+"$LC" reopen ra >/dev/null 2>&1
+eq "reopen agy resumes the conversation id through fleet launch" "launch --cli agy --model opus --role worker --dir $W --keep-tools all ra resume $(uid 74)" "$(tail -1 "$T/fake.log")"
 "$LC" reopen ro >/dev/null 2>&1
 eq "reopen opencode (status done, model null: no --model) resumes the ses_ id" "launch --cli opencode --role worker --dir $W --keep-tools all ro resume ses_oa" "$(tail -1 "$T/fake.log")"
 eq "reopen flips the roster status to live" live "$(jq -r .rc.status "$FLEET_STATE/roster.json")"
@@ -422,9 +483,11 @@ reset_state
 cfix claude-achieved "$(uid 61)"; cfix claude-none "$(uid 62)"
 p1=$(mkwin live1); addlane live1 claude worker "$(uid 61)" "$p1"
 p2=$(mkwin quiet1 "python3 $HERE/stubs/compactor claude $FLEET_CLAUDE_HOME/projects/slug/$(uid 62).jsonl"); addlane quiet1 claude worker "$(uid 62)" "$p2"
-p3=$(mkwin deskl); addlane deskl claude desk "$(uid 62)" "$p3"
+p3=$(mkwin deskl); addlane deskl claude decide "$(uid 62)" "$p3"
 addlane ghost claude worker "$(uid 61)" %9999
 mkwin stray >/dev/null
+pL=$(mkwin oldlisten); tm set-option -p -t "$pL" @fleet-listener 1   # retired tag (pre-four-desks fleet listen): no longer skipped
+pW=$(mkwin WATCH); tm set-option -p -t "$pW" @fleet-desk watch      # new tag (fleet listen, fleet desks up)
 mkdir -p "$FLEET_STATE/launch"
 printf '#!/usr/bin/env bash\nsleep 300\n:\n' > "$FLEET_STATE/launch/ghost.sh"
 bash "$FLEET_STATE/launch/ghost.sh" >/dev/null 2>&1 &
@@ -440,6 +503,8 @@ t "cleanup dry run lists a cli process whose argv names a pane-less lane" has "$
 t "cleanup dry run: control, a healthy lane is not reported" hasnt "$dry" "live1"
 t "cleanup dry run: control, a quiet desk is never reported" hasnt "$dry" "deskl"
 t "cleanup dry run: control, the home window is not an orphan" hasnt "$dry" "ORPHAN-WINDOW home"
+t "cleanup dry run: a window whose only pane has the retired @fleet-listener tag is an orphan" has "$dry" "ORPHAN-WINDOW oldlisten"
+t "cleanup dry run: a window with an @fleet-desk pane is not an orphan" hasnt "$dry" "ORPHAN-WINDOW WATCH"
 eq "cleanup dry run writes nothing (state files and windows unchanged)" "$before" "$(snap)"
 t "cleanup dry run created no archive" test ! -d "$FLEET_STATE/archive"
 cp "$FLEET_STATE/roster.json" "$T/roster.before"

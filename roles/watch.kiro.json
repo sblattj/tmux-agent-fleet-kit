@@ -1,6 +1,6 @@
 {
-  "name": "fleet-listener",
-  "description": "Fleet listener: turns feed events into messages, never acts. Kiro has no AskUserQuestion equivalent (UNVERIFIED); the role text routes questions.",
+  "name": "fleet-watch",
+  "description": "Fleet WATCH desk (was listener): turns feed events into messages to DECIDE, never acts. Kiro has no AskUserQuestion equivalent (UNVERIFIED); the role text routes questions.",
   "tools": [
     "*"
   ],

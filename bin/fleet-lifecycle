@@ -15,17 +15,21 @@
 # type page; agent = a cdp-toolkit origin record exists; just N when CDP_ARTIFACT_DIR is absent), a WARN line when
 # N > FLEET_TAB_WARN, and `chrome tabs: unavailable` when Chrome can't be read. --json output is unchanged.
 # ACTION: park = worker AND (goal achieved OR goal stopped > 600 s) AND no unread inbox line under 3600 s old;
-# orchestrator-decides = worker with goal none; - = nothing. Orchestrator/desk/listener lanes are never parked.
+# orchestrator-decides = worker with goal none; - = nothing. Only workers are parked: route/decide/watch/learn (and any roster entry still carrying a retired role) never are.
 # Stopped-since time, in order: roster goalStoppedAt (epoch secs or ISO), the transcript record's timestamp
 # (claude), the goals db row's updated_at else db mtime (codex), session time.updated (opencode), else file mtime.
 # kiro (Kiro CLI): transcript ${KIRO_HOME:-~/.kiro}/sessions/*/<sid>/{session.json,messages.jsonl}; goal = the
 # `goal` workflow's run_start/run_complete markers in messages.jsonl (completed = achieved, any other end = stopped);
 # last activity = session.json lastModifiedAt else messages.jsonl mtime; compact = tombstone kind=summarization lines.
+# agy (Antigravity CLI): transcript ${FLEET_AGY_HOME:-~/.gemini}/antigravity-cli/brain/<cid>/.system_generated/logs/
+# transcript_full.jsonl (else transcript.jsonl); goal = a USER_INPUT carrying the /goal slash-command metadata, achieved
+# when a later PLANNER_RESPONSE contains <!-- GOAL_COMPLETE -->, stopped on <!-- GOAL_CANCELLED -->; last activity =
+# transcript mtime; compact = SYSTEM CHECKPOINT steps starting "# Resuming from a compaction".
 # env: FLEET_STATE FLEET_TMUX_SESSION FLEET_TMUX_SOCKET FLEET_CLAUDE_HOME (~/.claude) CODEX_HOME (~/.codex)
-#      KIRO_HOME (~/.kiro)
+#      KIRO_HOME (~/.kiro)  FLEET_AGY_HOME (~/.gemini)
 #      FLEET_CDP_URL (http://127.0.0.1:9222) FLEET_TAB_WARN (50) CDP_ARTIFACT_DIR (/tmp/cdp-toolkit, origin records)
 #      FLEET_BIN (path of `fleet`, default: sibling of this script) FLEET_PARK_WAIT (20 s) FLEET_COMPACT_WAIT (600 s) FLEET_QUIET_SECS (7200)
-#      FLEET_CLAUDE_BIN / FLEET_OPENCODE_BIN / FLEET_CODEX_BIN / FLEET_KIRO_BIN (kiro-cli)
+#      FLEET_CLAUDE_BIN / FLEET_OPENCODE_BIN / FLEET_CODEX_BIN / FLEET_KIRO_BIN (kiro-cli) / FLEET_AGY_BIN (agy)
 # ---
 set -euo pipefail
 
@@ -83,7 +87,7 @@ poll() {
 has_lane() { [ -s "$ROSTER" ] && jq -e --arg n "$1" 'has($n)' "$ROSTER" >/dev/null 2>&1; }
 
 role_guard() { # verb
-  if [ -n "${FLEET_ROLE:-}" ] && [ "$FLEET_ROLE" != orchestrator ]; then die "role $FLEET_ROLE can't $1"; fi
+  if [ -n "${FLEET_ROLE:-}" ] && [ "$FLEET_ROLE" != route ]; then die "role $FLEET_ROLE can't $1"; fi
 }
 
 resume_cmd() { # name -> native command that resumes the lane's session
@@ -95,6 +99,7 @@ resume_cmd() { # name -> native command that resumes the lane's session
     codex) printf '%s resume %s' "${FLEET_CODEX_BIN:-codex}" "$sid" ;;
     opencode) printf '%s -s %s %s' "${FLEET_OPENCODE_BIN:-opencode}" "$sid" "$dir" ;;
     kiro) printf '%s chat --agent-engine v3 --trust-all-tools --trust-workspace --resume-id %s' "${FLEET_KIRO_BIN:-kiro-cli}" "$sid" ;;
+    agy) printf '%s --dangerously-skip-permissions --conversation %s' "${FLEET_AGY_BIN:-agy}" "$sid" ;;
   esac
 }
 
@@ -108,6 +113,7 @@ SESSION = os.environ.get("FLEET_TMUX_SESSION", "fleet")
 CLAUDE_HOME = os.environ["FLEET_CLAUDE_HOME"]
 CODEX_HOME = os.environ["CODEX_HOME"]
 KIRO_HOME = os.environ.get("KIRO_HOME") or os.path.join(os.path.expanduser("~"), ".kiro")
+AGY_HOME = os.environ.get("FLEET_AGY_HOME") or os.path.join(os.path.expanduser("~"), ".gemini")
 NOW = time.time()
 YOUNG = 3600
 STOP_AFTER = 600
@@ -323,6 +329,61 @@ def kiro_activity(sid):
     return os.path.getmtime(f) if os.path.exists(f) else 0
 
 
+def agy_file(sid):
+    if not sid or not re.match(r"^[0-9a-f-]{36}$", sid):
+        return None
+    d = os.path.join(AGY_HOME, "antigravity-cli", "brain", sid, ".system_generated", "logs")
+    for n in ("transcript_full.jsonl", "transcript.jsonl"):
+        f = os.path.join(d, n)
+        if os.path.exists(f):
+            return f
+    return None
+
+
+def agy_rows(f):
+    with open(f, errors="replace") as fh:
+        for line in fh:
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(r, dict):
+                yield r
+
+
+AGY_GOAL_META = "/goal is a [Slash Command]"
+
+
+def agy_request(r):
+    """The user's own text of a USER_INPUT step (inside <USER_REQUEST>), else the raw content."""
+    c = r.get("content") or ""
+    m = re.search(r"<USER_REQUEST>\n?(.*?)\n?</USER_REQUEST>", c, re.S)
+    return (m.group(1) if m else c).strip()
+
+
+def agy_goal(sid):
+    f = agy_file(sid)
+    if not f:
+        return None
+    state, since, mt = "none", 0, os.path.getmtime(f)
+    for r in agy_rows(f):
+        c = r.get("content") or ""
+        if r.get("type") == "USER_INPUT" and AGY_GOAL_META in c:
+            state, since = "active", 0
+        elif r.get("type") == "PLANNER_RESPONSE" and state == "active":
+            # only model rows: the /goal USER_INPUT itself quotes both markers in its injected metadata
+            if "<!-- GOAL_COMPLETE -->" in c:
+                state, since = "achieved", 0
+            elif "<!-- GOAL_CANCELLED -->" in c:
+                state, since = "stopped", (to_epoch(r.get("created_at")) or mt)
+    return state, since
+
+
+def agy_activity(sid):
+    f = agy_file(sid)
+    return os.path.getmtime(f) if f else 0
+
+
 def goal_state(e):
     cli, sid = e.get("cli"), e.get("session_id")
     r = None
@@ -334,6 +395,8 @@ def goal_state(e):
         r = opencode_goal(e)
     elif cli == "kiro":
         r = kiro_goal(sid)
+    elif cli == "agy":
+        r = agy_goal(sid)
     if r is None:
         r = (e.get("goalState") or "none", 0)
     state, since = r
@@ -404,6 +467,8 @@ def facts(name, e, act):
         last = max(last, claude_busy(e.get("session_id")))
     elif e.get("cli") == "kiro":
         last = max(last, kiro_activity(e.get("session_id")))
+    elif e.get("cli") == "agy":
+        last = max(last, agy_activity(e.get("session_id")))
     un, young = inbox(name)
     action = "-"
     if status == "live" and role == "worker":
@@ -514,8 +579,15 @@ def cmd_scan(args):
             p = ln.split("\t")
             if len(p) == 3:
                 wins.setdefault(p[0], (p[1], set()))[1].add(p[2])
+    # desk panes that may never write the roster (fleet listen, fleet desks up) carry `@fleet-desk <role>`
+    rc2, out2 = tm("list-panes", "-s", "-t", "=" + SESSION + ":", "-F", "#{pane_id}\t#{@fleet-desk}")
+    desk_panes = set()
+    for ln in (out2.splitlines() if rc2 == 0 else []):
+        p = ln.split("\t")
+        if len(p) == 2 and p[1]:
+            desk_panes.add(p[0])
     for wid, (wname, panes) in sorted(wins.items()):
-        if wname == "home" or wname in names or (panes & live_panes):
+        if wname == "home" or wname in names or (panes & live_panes) or (panes & desk_panes):
             continue
         orphans.append({"window": wid, "name": wname})
     procs = []
@@ -684,6 +756,38 @@ def collect_kiro(sid):
     return goal, users, asst, []
 
 
+AGY_WRITE_KEYS = ("TargetFile", "AbsolutePath", "FilePath", "Path", "File")
+
+
+def collect_agy(sid):
+    f = agy_file(sid)
+    if not f:
+        return None
+    goal, users, asst, files = None, [], [], []
+    for r in agy_rows(f):
+        t = r.get("type")
+        if t == "USER_INPUT":
+            tx = agy_request(r)
+            if AGY_GOAL_META in (r.get("content") or "") and tx.startswith("/goal"):
+                goal = tx[len("/goal"):].strip() or goal
+            elif tx and not tx.startswith("/") and not tx.startswith("[fleet]"):
+                users.append(tx)
+        elif t == "PLANNER_RESPONSE":
+            tx = (r.get("content") or "").replace("<!-- GOAL_COMPLETE -->", "").replace("<!-- GOAL_CANCELLED -->", "").strip()
+            if tx:
+                asst.append(tx)
+            for tc in r.get("tool_calls") or []:
+                n = str((tc or {}).get("name") or "")
+                a = (tc or {}).get("args") or {}
+                if ("write" in n or "edit" in n or "replace" in n) and isinstance(a, dict):
+                    for k in AGY_WRITE_KEYS:
+                        v = a.get(k)
+                        if isinstance(v, str) and v and v not in files:
+                            files.append(v)
+                            break
+    return goal, users, asst, files
+
+
 def cmd_handoff(args):
     name, out = args[0], args[1]
     e = load_roster().get(name)
@@ -699,6 +803,8 @@ def cmd_handoff(args):
         res = collect_codex(sid)
     elif cli == "kiro":
         res = collect_kiro(sid)
+    elif cli == "agy":
+        res = collect_agy(sid)
     else:
         res = collect_opencode(e)
     if res is None:
@@ -746,7 +852,8 @@ def compact_count(e):
     claude: system records with subtype compact_boundary (written when /compact completes)
     codex:  rollout records with type compacted (written with the replacement history)
     opencode: assistant messages with summary true and time.completed set
-    kiro: messages.jsonl payloads with type tombstone and kind summarization (appended when /compact finishes)"""
+    kiro: messages.jsonl payloads with type tombstone and kind summarization (appended when /compact finishes)
+    agy:  SYSTEM CHECKPOINT steps whose content starts "# Resuming from a compaction" (written when /compact finishes)"""
     cli, sid = e.get("cli"), e.get("session_id")
     if not sid:
         return -1
@@ -785,6 +892,14 @@ def compact_count(e):
             return -1
         for p, _ in kiro_events(f):
             if p.get("type") == "tombstone" and p.get("kind") == "summarization":
+                n += 1
+        return n
+    if cli == "agy":
+        f = agy_file(sid)
+        if not f:
+            return -1
+        for r in agy_rows(f):
+            if r.get("type") == "CHECKPOINT" and (r.get("content") or "").startswith("# Resuming from a compaction"):
                 n += 1
         return n
     if cli == "opencode":
