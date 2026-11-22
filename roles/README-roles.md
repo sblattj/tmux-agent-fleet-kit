@@ -14,5 +14,5 @@ Note: the OpenCode v1 agent schema (`description`, `mode`, `prompt`, `tools`, `p
 against a real OpenCode install; JSON has no comments, so the caveat lives here. `prompt` uses `{file:...}` relative
 to the config, so the installer should rewrite it to an absolute path.
 
-Every role denies AskUserQuestion at launch (`--disallowed-tools`). Only the orchestrator, or an unset `FLEET_ROLE`
+Every role denies AskUserQuestion at launch (`--disallowed-tools`). Claude worker lanes also deny Workflow, ScheduleWakeup and ReportFindings, except tools named in the goal's `keepTools` or `--keep-tools`. Only the orchestrator, or an unset `FLEET_ROLE`
 (the human's own shell), may launch, park, stop or reopen lanes.

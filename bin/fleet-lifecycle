@@ -841,7 +841,7 @@ cmd_park() {
 }
 
 cmd_reopen() {
-  local name= fresh=0 cli role dir sid status fb file model
+  local name= fresh=0 cli role dir sid status fb file model keep
   while [ $# -gt 0 ]; do
     case $1 in
       --fresh) fresh=1; shift ;;
@@ -861,6 +861,13 @@ cmd_reopen() {
   set -- --cli "$cli"
   [ -z "$model" ] || set -- "$@" --model "$model"   # keep the lane's model; fleet launch would default claude to opus
   set -- "$@" --role "$role" --dir "$dir"
+  # Keep the lane's tool set: a lane launched before the worker tool block has no blockedTools
+  # in the roster and had every tool, so it keeps all of them.
+  if [ "$(jq -r --arg n "$name" '.[$n] | has("blockedTools")' "$ROSTER" 2>/dev/null)" = true ]; then
+    keep=$(roster_get "$name" keepTools); [ -z "$keep" ] || set -- "$@" --keep-tools "$keep"
+  else
+    set -- "$@" --keep-tools all
+  fi
   fb=${FLEET_BIN:-$HERE/fleet}
   [ -n "$dir" ] || die "lane $name has no dir in the roster"
   if [ "$fresh" = 1 ]; then

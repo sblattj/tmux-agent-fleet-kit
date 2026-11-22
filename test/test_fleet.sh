@@ -57,6 +57,20 @@ for cli in claude codex opencode; do
   done
 done
 t "dry-run desk default text names the desk skill" has "$(dry claude --dir "$T" D1 desk)" 'standing decisions desk'
+# ---- (1b) worker tool block (context-diet trim 1): opt-in keep via --keep-tools or the goal's keepTools
+printf '{"goal":"x"}' > "$T/g0.json"
+printf '{"goal":"x","keepTools":["Workflow"]}' > "$T/gw.json"
+printf '/goal Work the living goal file %s; the file wins, or stop after 5 turns.\n' "$T/g0.json" > "$T/c0.txt"
+printf '/goal Work the living goal file %s; the file wins, or stop after 5 turns.\n' "$T/gw.json" > "$T/cw.txt"
+t "worker goal lane blocks Workflow, ScheduleWakeup, ReportFindings" has "$(dry claude --dir "$T" W1 goal "$T/c0.txt")" '--disallowed-tools=AskUserQuestion,Workflow,ScheduleWakeup,ReportFindings '
+t "goal keepTools [Workflow] keeps Workflow" has "$(dry claude --dir "$T" W2 goal "$T/cw.txt")" '--disallowed-tools=AskUserQuestion,ScheduleWakeup,ReportFindings '
+t "--keep-tools adds to the goal's keepTools" has "$(dry claude --keep-tools ReportFindings --dir "$T" W3 goal "$T/cw.txt")" '--disallowed-tools=AskUserQuestion,ScheduleWakeup '
+t "--keep-tools all restores the old deny list" has "$(dry claude --keep-tools all --dir "$T" W4 prompt "$T/prompt.txt")" '--disallowed-tools=AskUserQuestion '
+t "orchestrator role keeps every tool" has "$(dry claude --role orchestrator --dir "$T" W5 goal "$T/c0.txt")" '--disallowed-tools=AskUserQuestion '
+t "desk role keeps every tool" has "$(dry claude --dir "$T" W6 desk)" '--disallowed-tools=AskUserQuestion '
+out=$(dry claude --keep-tools Bogus --dir "$T" W7 prompt "$T/prompt.txt"); rc=$?
+t "--keep-tools with an unknown tool fails loud" bash -c '[ "$1" != 0 ] && printf "%s" "$2" | grep -q "^FAIL"' _ "$rc" "$out"
+t "codex lane is untouched by the worker block" bash -c '! printf "%s" "$1" | grep -q Workflow' _ "$(dry codex --dir "$T" W8 goal "$T/c0.txt")"
 t "dry-run touches no state" test ! -e "$FLEET_STATE/roster.json" -a ! -d "$FLEET_STATE/launch"
 t "dry-run starts no tmux server" bash -c '! tmux -L "$1" has-session 2>/dev/null' _ "$FLEET_TMUX_SOCKET"
 

@@ -29,6 +29,11 @@ expect_not "new refuses to overwrite an existing file" "$GOAL" new "$g" --goal "
 expect "new records reportTo" jq -e '.reportTo == "ORCHESTRATOR"' "$g"
 expect "new has all required keys" jq -e 'has("goal") and has("phases") and has("nextAction") and has("done") and has("openForHuman") and has("decisions") and has("gates") and has("mustNot") and has("changelog")' "$g"
 
+jq '.keepTools=["Workflow"]' "$g" > "$g.kt" && expect "check accepts keepTools [Workflow]" "$GOAL" check "$g.kt"
+jq '.keepTools=["Bogus"]' "$g" > "$g.kt" && expect_not "check refuses an unknown keepTools entry" "$GOAL" check "$g.kt"
+jq '.keepTools="Workflow"' "$g" > "$g.kt" && expect_not "check refuses a non-list keepTools" "$GOAL" check "$g.kt"
+rm -f "$g.kt"
+
 # --- condition lint
 cond=$("$GOAL" condition "$g" --report-to ORCHESTRATOR --turns 40 2>&1); rc=$?
 [ $rc -eq 0 ] && pass "condition exits 0" || fail "condition exits 0 ($cond)"

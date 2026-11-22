@@ -355,24 +355,30 @@ addlane rx codex orchestrator cx-r %901 '{"status":"parked"}'
 addlane ro opencode worker ses_oa %901 '{"status":"done","model":null}'
 addlane rl claude worker "$(uid 51)" %901 '{"status":"live"}'
 "$LC" reopen rc >/dev/null 2>&1
-eq "reopen claude runs fleet launch ... resume <id>" "launch --cli claude --model opus --role worker --dir $W rc resume $(uid 51)" "$(tail -1 "$T/fake.log")"
+eq "reopen claude runs fleet launch ... resume <id>" "launch --cli claude --model opus --role worker --dir $W --keep-tools all rc resume $(uid 51)" "$(tail -1 "$T/fake.log")"
 "$LC" reopen rx >/dev/null 2>&1
-eq "reopen codex keeps the role and resumes the thread" "launch --cli codex --model opus --role orchestrator --dir $W rx resume cx-r" "$(tail -1 "$T/fake.log")"
+eq "reopen codex keeps the role and resumes the thread" "launch --cli codex --model opus --role orchestrator --dir $W --keep-tools all rx resume cx-r" "$(tail -1 "$T/fake.log")"
 addlane rk kiro worker sess_rk %901 '{"status":"parked"}'
 "$LC" reopen rk >/dev/null 2>&1
-eq "reopen kiro resumes the session id through fleet launch" "launch --cli kiro --model opus --role worker --dir $W rk resume sess_rk" "$(tail -1 "$T/fake.log")"
+eq "reopen kiro resumes the session id through fleet launch" "launch --cli kiro --model opus --role worker --dir $W --keep-tools all rk resume sess_rk" "$(tail -1 "$T/fake.log")"
 eq "reopen kiro flips the roster status to live" live "$(jq -r .rk.status "$FLEET_STATE/roster.json")"
 "$LC" reopen ro >/dev/null 2>&1
-eq "reopen opencode (status done, model null: no --model) resumes the ses_ id" "launch --cli opencode --role worker --dir $W ro resume ses_oa" "$(tail -1 "$T/fake.log")"
+eq "reopen opencode (status done, model null: no --model) resumes the ses_ id" "launch --cli opencode --role worker --dir $W --keep-tools all ro resume ses_oa" "$(tail -1 "$T/fake.log")"
 eq "reopen flips the roster status to live" live "$(jq -r .rc.status "$FLEET_STATE/roster.json")"
 n=$(wc -l < "$T/fake.log" | tr -d ' ')
 out=$("$LC" reopen rl 2>&1); rc=$?
 t "reopen refuses a live lane and launches nothing" bash -c '[ "$1" != 0 ] && [ "$2" = "$3" ]' _ "$rc" "$n" "$(wc -l < "$T/fake.log" | tr -d ' ')"
+addlane rw claude worker "$(uid 51)" %901 '{"status":"parked","keepTools":"Workflow","blockedTools":"ScheduleWakeup,ReportFindings"}'
+"$LC" reopen rw >/dev/null 2>&1
+eq "reopen keeps a lane's recorded keepTools" "launch --cli claude --model opus --role worker --dir $W --keep-tools Workflow rw resume $(uid 51)" "$(tail -1 "$T/fake.log")"
+addlane rb claude worker "$(uid 51)" %901 '{"status":"parked","keepTools":"","blockedTools":"Workflow,ScheduleWakeup,ReportFindings"}'
+"$LC" reopen rb >/dev/null 2>&1
+eq "reopen of a lane launched with the full worker block passes no --keep-tools" "launch --cli claude --model opus --role worker --dir $W rb resume $(uid 51)" "$(tail -1 "$T/fake.log")"
 roster_set() { jq --arg n "$1" '.[$n].status="parked"' "$FLEET_STATE/roster.json" > "$T/r.tmp" && mv "$T/r.tmp" "$FLEET_STATE/roster.json"; }
 roster_set rc
 rm -f "$FLEET_STATE/handoff/rc.md"
 "$LC" reopen rc --fresh >/dev/null 2>&1
-eq "reopen --fresh launches with prompt <handoff file>" "launch --cli claude --model opus --role worker --dir $W rc prompt $FLEET_STATE/handoff/rc.md" "$(tail -1 "$T/fake.log")"
+eq "reopen --fresh launches with prompt <handoff file>" "launch --cli claude --model opus --role worker --dir $W --keep-tools all rc prompt $FLEET_STATE/handoff/rc.md" "$(tail -1 "$T/fake.log")"
 eq "reopen --fresh generated the missing handoff (Was: rc)" "Was: rc" "$(head -1 "$FLEET_STATE/handoff/rc.md" 2>/dev/null)"
 roster_set rc
 out=$(FLEET_ROLE=desk "$LC" reopen rc 2>&1); rc=$?

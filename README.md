@@ -69,7 +69,7 @@ Try anything first with `fleet launch --dry-run ...` (prints the window script, 
 | listener | watches and reports | same as desk |
 | worker | runs one goal, reports to the orchestrator, asks the desk | `fleet launch`, `park`, `stop`, `reopen` |
 
-Every role denies AskUserQuestion. Role files live in `roles/` (`<role>.md`, `<role>.claude.json`, `<role>.codex.toml`, `<role>.opencode.json`, `<role>.kiro.json`). Separately, `fleet launch|park|stop|reopen|cleanup --apply` refuse with `FAIL role <r> can't <verb>` when `FLEET_ROLE` is set to anything but `orchestrator`; a human shell with `FLEET_ROLE` unset is allowed.
+Every role denies AskUserQuestion. Claude worker lanes also deny Workflow, ScheduleWakeup and ReportFindings unless the goal file lists them in `keepTools` (or `fleet launch --keep-tools`). Role files live in `roles/` (`<role>.md`, `<role>.claude.json`, `<role>.codex.toml`, `<role>.opencode.json`, `<role>.kiro.json`). Separately, `fleet launch|park|stop|reopen|cleanup --apply` refuse with `FAIL role <r> can't <verb>` when `FLEET_ROLE` is set to anything but `orchestrator`; a human shell with `FLEET_ROLE` unset is allowed.
 
 ### How each CLI enforces a role
 

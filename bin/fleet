@@ -19,6 +19,12 @@
 #   --split-right-of NAME         open as a pane right of NAME's pane instead of a new window
 #   --role orchestrator|desk|listener|worker
 #                                 role context + deny list (default worker; desk mode defaults to desk)
+#   --keep-tools LIST             claude worker lanes only: comma list of tools to keep out of the worker
+#                                 block (Workflow,ScheduleWakeup,ReportFindings, or "all"). By default a claude
+#                                 worker lane also disallows those three (about 6k tokens of schemas a lane
+#                                 rarely uses). A goal-mode launch also reads keepTools from the goal JSON the
+#                                 condition names (for example "keepTools": ["Workflow"] for a goal that
+#                                 permits a workflow). Recorded in the roster so fleet reopen keeps it.
 #   --dry-run                     print the window script, prompt and tmux command; touch nothing
 #   --no-proof                    skip the pid / goal / session waits (tests with stub CLIs); roster is still written
 #
@@ -106,9 +112,33 @@ poll() {
 
 min() { if [ "$1" -lt "$2" ]; then echo "$1"; else echo "$2"; fi; }
 
+# Worker-lane tool block (claude): schemas a worker lane rarely uses, about 6k tokens per lane start
+# (context-diet 2026-11-20, trim 1). Kept tools come from --keep-tools and, in goal mode, the goal
+# JSON's keepTools array. Sets $blocked (comma list, may be empty) and $kept (comma list).
+WORKER_BLOCK="Workflow ScheduleWakeup ReportFindings"
+worker_block() { # mode condition-text keep-flag
+  local mode=$1 text=$2 flag=$3 gfile= gkeep= t k all
+  kept= blocked=
+  if [ "$mode" = goal ]; then
+    gfile=$(printf '%s' "$text" | grep -oE '(~|/)[^ "]*\.json' | head -1 || true)
+    case $gfile in "~"/*) gfile=$HOME/${gfile#"~"/} ;; esac
+    if [ -n "$gfile" ] && [ -r "$gfile" ]; then
+      gkeep=$(jq -r 'if (.keepTools|type)=="array" then .keepTools|map(tostring)|join(",") else "" end' "$gfile" 2>/dev/null) \
+        || die "goal file $gfile is not valid JSON"
+    fi
+  fi
+  all=",$flag,$gkeep,"
+  for k in $(printf '%s' "$flag,$gkeep" | tr ',' ' '); do
+    case $k in all|Workflow|ScheduleWakeup|ReportFindings) ;; *) die "--keep-tools/keepTools: unknown tool $k (Workflow|ScheduleWakeup|ReportFindings|all)" ;; esac
+  done
+  for t in $WORKER_BLOCK; do
+    case $all in *",all,"*|*",$t,"*) kept="${kept:+$kept,}$t" ;; *) blocked="${blocked:+$blocked,}$t" ;; esac
+  done
+}
+
 # ---------------------------------------------------------------- launch
 cmd_launch() {
-  local cli=claude model= dir= split= dry=0 noproof=0 role=
+  local cli=claude model= dir= split= dry=0 noproof=0 role= keep=
   while [ $# -gt 0 ]; do
     case $1 in
       --cli) [ $# -ge 2 ] || usage; cli=$2; shift 2 ;;
@@ -116,6 +146,7 @@ cmd_launch() {
       --dir) [ $# -ge 2 ] || usage; dir=$2; shift 2 ;;
       --split-right-of) [ $# -ge 2 ] || usage; split=$2; shift 2 ;;
       --role) [ $# -ge 2 ] || usage; role=$2; shift 2 ;;
+      --keep-tools) [ $# -ge 2 ] || usage; keep=$2; shift 2 ;;
       --dry-run) dry=1; shift ;;
       --no-proof) noproof=1; shift ;;
       -h|--help) usage ;;
@@ -229,13 +260,18 @@ cmd_launch() {
       else printf 'warn: kiro agent fleet-%s not installed (%s/agents/fleet-%s.json); launching without role %s (run install/kiro.sh)\n' "$role" "${KIRO_HOME:-$HOME/.kiro}" "$role" "$role" >&2; fi ;;
   esac
   if [ "$resume" = 0 ]; then first=" \"\$(cat $q_txt)\""; fi
+  local deny=AskUserQuestion blocked= kept=
+  if [ "$cli" = claude ] && [ "$role" = worker ]; then
+    worker_block "$mode" "$text" "$keep"
+    [ -z "$blocked" ] || deny="$deny,$blocked"
+  fi
   case $cli in
     claude)
       exports="export $SKIPVAR=1"
       if [ "$resume" = 1 ]; then
-        cmd="$q_bin --dangerously-skip-permissions -n $name --model $model --disallowed-tools=AskUserQuestion$rflags --resume $sid"
+        cmd="$q_bin --dangerously-skip-permissions -n $name --model $model --disallowed-tools=$deny$rflags --resume $sid"
       else
-        cmd="$q_bin --dangerously-skip-permissions -n $name --model $model --disallowed-tools=AskUserQuestion$rflags --session-id $sid --$first"
+        cmd="$q_bin --dangerously-skip-permissions -n $name --model $model --disallowed-tools=$deny$rflags --session-id $sid --$first"
       fi ;;
     codex)
       cmd="$q_bin --dangerously-bypass-approvals-and-sandbox$rflags"
@@ -319,8 +355,8 @@ EOF
 
   roster_merge "$name" "$(jq -n --arg name "$name" --arg cli "$cli" --arg mode "$mode" --arg role "$role" --arg pane "$pane" \
     --arg sid "$sid" --argjson port "${port:-null}" --arg dir "$dir" --arg model "$model" \
-    --argjson pid "${panepid:-null}" --arg at "$at" \
-    '{name:$name,cli:$cli,mode:$mode,role:$role,pane:$pane,session_id:(if $sid=="" then null else $sid end),port:$port,dir:$dir,model:(if $model=="" then null else $model end),pid:$pid,at:$at}')"
+    --argjson pid "${panepid:-null}" --arg at "$at" --arg kept "$kept" --arg blocked "$blocked" \
+    '{name:$name,cli:$cli,mode:$mode,role:$role,pane:$pane,session_id:(if $sid=="" then null else $sid end),port:$port,dir:$dir,model:(if $model=="" then null else $model end),pid:$pid,at:$at,keepTools:$kept,blockedTools:$blocked}')"
   flog "$name launched cli=$cli mode=$mode pane=$pane"
   jq -n --arg name "$name" --arg mode "$mode" --arg cli "$cli" --arg sid "$sid" --arg script "$sh" --arg pane "$pane" --arg at "$at" \
     '{name:$name,cli:$cli,mode:$mode,pane:$pane,sessionId:$sid,script:$script,at:$at}' > "$ldir/$name.launch.json"
