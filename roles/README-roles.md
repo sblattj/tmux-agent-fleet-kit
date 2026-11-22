@@ -16,3 +16,13 @@ to the config, so the installer should rewrite it to an absolute path.
 
 Every role denies AskUserQuestion at launch (`--disallowed-tools`). Claude worker lanes also deny Workflow, ScheduleWakeup and ReportFindings, except tools named in the goal's `keepTools` or `--keep-tools`. Only the orchestrator, or an unset `FLEET_ROLE`
 (the human's own shell), may launch, park, stop or reopen lanes.
+
+## Note for the coming `watch` role (replaces `listener`)
+
+A watcher that reads a chat web app (for example Teams in the browser) through CDP should expect its tab to "hop":
+the app reopens itself as a new tab and closes the old one, often within 1 to 10 seconds of opening. A target id
+grabbed right after `new_page` can be gone a moment later. So a watcher should:
+
+- wait about 10 seconds after opening the app before it reads anything;
+- then re-find its tab with `list_pages` (by URL or title), not by the id it opened;
+- keep and reuse one tab per lane, and re-find it the same way whenever a call reports the target missing.
