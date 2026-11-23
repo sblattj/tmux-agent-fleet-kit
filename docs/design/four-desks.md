@@ -1,6 +1,6 @@
 # Four desks: Decide, Route, Watch, Learn
 
-Status: design record. Phase 1 (roles, names, `fleet desks up`) shipped in v0.1.0; the later phases are not built.
+Status: design record. Phase 1 (roles, names, `fleet desks up`) shipped in v0.1.0, phases 2 to 7 in v0.2.0.
 "Today" below means the kit before v0.1.0 (base `main` at a05a595), and some early calls changed later: the DECIDE
 role is `decide`, not `desk`, and no old name is an alias (Q110). Q85 to Q92 and Q98 to Q101 are answered. The one
 part still marked **PROVISIONAL** is the LEARN -> DECIDE loop below.

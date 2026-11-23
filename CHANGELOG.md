@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.2.0 (unreleased)
+## v0.2.0 (2026-11-22)
 
 Phases 2 to 7 of the four desks (`docs/design/four-desks.md`).
 
