@@ -1,4 +1,4 @@
-"""Tests for lib/fleet_listen.py (the LISTENER UI). Stdlib unittest, temp FLEET_STATE, synthetic fixtures only.
+"""Tests for lib/fleet_listen.py (the WATCH UI). Stdlib unittest, temp FLEET_STATE, synthetic fixtures only.
 
 Run: python3 -m unittest test.test_listen   (from the repo root)
 """
@@ -255,7 +255,7 @@ class RoutingTest(Base):
     def test_render_layout(self):
         lis = self.replay(self.cfg(title="weekly sync"))
         out = L.render(lis, 100, 40)
-        for part in ("LISTENER: weekly sync", "filter:", "SAY THIS", "routed: 1 ask, 1 action", "unsure: 1",
+        for part in ("WATCH: weekly sync", "filter:", "SAY THIS", "routed: 1 ask, 1 action", "unsure: 1",
                      "-> ASK  sent to DECISIONS as Q1", "-> ACTION  sent to ORCHESTRATOR (owner: unresolved)"):
             self.assertIn(part, out)
 

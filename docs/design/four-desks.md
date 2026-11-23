@@ -1,7 +1,9 @@
 # Four desks: Decide, Route, Watch, Learn
 
-Status: DESIGN, not built. Base: `main` at a05a595. Q85 to Q92 and Q98 to Q101 are answered. The one part still
-marked **PROVISIONAL** is the LEARN -> DECIDE loop below.
+Status: design record. Phase 1 (roles, names, `fleet desks up`) shipped in v0.1.0; the later phases are not built.
+"Today" below means the kit before v0.1.0 (base `main` at a05a595), and some early calls changed later: the DECIDE
+role is `decide`, not `desk`, and no old name is an alias (Q110). Q85 to Q92 and Q98 to Q101 are answered. The one
+part still marked **PROVISIONAL** is the LEARN -> DECIDE loop below.
 
 Today the kit has two standing desks (ORCHESTRATOR and DECISIONS), a listener and goal lanes. The next major version
 has four standing desks, in the human's order (Q85, answered: "THE ORDER IS DECIDE->ROUTE->WATCH->LEARN->"):

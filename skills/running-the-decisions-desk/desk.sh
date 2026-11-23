@@ -7,7 +7,7 @@
 #   desk.sh elsewhere <id> <answer-with-source>        answered in another session: close, no decision
 #   desk.sh amend <id> <addendum>                      the human added to an answer already given
 #   desk.sh revise <id> <new question text>            recommendation changed mid-call
-#   desk.sh relayto <id> add|set <session...>          second asker (add), or asker stopped (set ORCHESTRATOR)
+#   desk.sh relayto <id> add|set <session...>          second asker (add), or asker stopped (set ROUTE)
 # Env: FLEET_DESK_GOAL  the desk goal file (default: $FLEET_STATE/desk.goal.json)
 #      FLEET_DECISION_EXTRA  JSON object merged into the answer's decisions-log line (default none)
 #      FLEET_GOAL_BIN   the validator (default: fleet-goal on PATH, else ../../bin/fleet-goal next to this repo)
@@ -54,7 +54,7 @@ case $cmd in
         asker=$(jq -r --arg id "$id" '(.openForHuman // [])[]|select(.id==$id)|.from // empty' "$f" | head -1)
         apply --arg id "$id" --arg a "$a" --argjson rt "$rt" --arg chg "Recorded and relayed $id" --arg why "human typed answer" \
           "(.openForHuman[]|select(.id==\$id)) |= (.status=\"answered\"|.answer=\$a|.answeredAt=\$now) | .decisions += [{id:\"D\(.decisions|length+1)\",at:\$now,item:\$id,decision:\$a,answer:\$a,relayedTo:\$rt}] $log" || exit $?
-        # shared append-only log the orchestrator reads (same line shape as fleet_mesh decision_answer)
+        # shared append-only log ROUTE reads (same line shape as fleet_mesh decision_answer)
         mkdir -p "$state"
         # FLEET_DECISION_EXTRA: optional JSON object merged into the log line (the DECISIONS UI adds via, kind, delivery)
         extra=${FLEET_DECISION_EXTRA:-}; [ -n "$extra" ] || extra='{}'

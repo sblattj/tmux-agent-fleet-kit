@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""fleet-listen: the LISTENER UI. A tmux pane that follows a live call or chat and routes what it hears.
+"""fleet-listen: the WATCH UI. A tmux pane that follows a live call or chat and routes what it hears.
 
-Python 3.8+ stdlib only. Contract in INTERFACES.md ("Listener UI").
+Python 3.8+ stdlib only. Contract in INTERFACES.md ("WATCH UI").
 
   fleet_listen.py [--source file|stdin|command|replay] [ARG] [--speakers "A,B"] [--config FILE]
                   [--speed N] [--poll SEC] [--title T] [--name NAME] [--page] [--port N]
@@ -10,10 +10,10 @@ Python 3.8+ stdlib only. Contract in INTERFACES.md ("Listener UI").
 A source adapter yields one utterance per line: JSON {"at","speaker","text","final"} (WhisperLive-style
 {"start","end","speaker","text","completed"} and whosaid-style {"clock","name"|"who","text"} also parse)
 or a text line "[hh:mm:ss] Speaker: text". Only final lines are routed:
-  asks of the human   -> DECISIONS via decision_open (quote, speaker, time)
-  action items        -> ORCHESTRATOR via the mesh inbox (owner or "owner: unresolved"), batched
-  decided on the call -> ORCHESTRATOR + decisions-log.jsonl as decided-on-call (never closes a desk call)
-  uncertain           -> ORCHESTRATOR, marked uncertain
+  asks of the human   -> DECIDE via decision_open (quote, speaker, time)
+  action items        -> ROUTE via the mesh inbox (owner or "owner: unresolved"), batched
+  decided on the call -> ROUTE + decisions-log.jsonl as decided-on-call (never closes a desk call)
+  uncertain           -> ROUTE, marked uncertain
   things to say       -> the SAY THIS box (and the --page explainer)
   secrets             -> nowhere; the pane says one appeared and the text is dropped
 """
@@ -646,7 +646,7 @@ class Listener:
             opts = [o.strip() for o in (f.get("options") or "yes; no; not now").split(";") if o.strip()]
             r = f.get("rec")
             opts = [o + " (Recommended)" if r and o == r else o for o in opts]
-            q = "Heard on the call: %s asked \"%s\" (%s). Listener reading, check before answering." % (
+            q = "Heard on the call: %s asked \"%s\" (%s). WATCH reading, check before answering." % (
                 u["speaker"], quote, u["clock"] or "time unknown")
             try:
                 res = mesh.t_decision_open({"from": self.name, "question": q, "options": opts})
@@ -758,7 +758,7 @@ def render(lis, width, height, color=True, edit=None, paused_at=None, help_on=Fa
     row = lambda s: "|" + _fit(" " + s, w) + "|"  # noqa: E731
     with lis.lock:
         el = int(time.time() - lis.started)
-        title = " LISTENER: %s " % lis.cfg["title"]
+        title = " WATCH: %s " % lis.cfg["title"]
         clock = " %02d:%02d:%02d " % (el // 3600, (el % 3600) // 60, el % 60)
         out.append("+" + ("--" + title).ljust(w - len(clock), "-")[:w - len(clock)] + clock + "+")
         if edit is not None:
@@ -823,13 +823,13 @@ def render(lis, width, height, color=True, edit=None, paused_at=None, help_on=Fa
 
 # ---------------------------------------------------------------- explainer page (loopback only)
 
-PAGE_HTML = """<!doctype html><html><head><meta charset="utf-8"><title>Listener: %(title)s</title>
+PAGE_HTML = """<!doctype html><html><head><meta charset="utf-8"><title>WATCH: %(title)s</title>
 <style>body{font:15px/1.45 system-ui,sans-serif;margin:24px;max-width:980px;color:#1b1b1b}
 h1{font-size:20px}h2{font-size:15px;margin-top:22px;text-transform:uppercase;letter-spacing:.05em}
 .say li{background:#eef8f2;margin:4px 0;padding:6px 8px;border-radius:6px;list-style:none}
 .line{font-family:ui-monospace,monospace;font-size:13px;white-space:pre-wrap}.note{color:#666}
 button{margin:8px 0}</style></head><body>
-<h1>Listener: %(title)s</h1>
+<h1>WATCH: %(title)s</h1>
 <h2>SAY THIS</h2><ul class="say" id="say"></ul>
 <h2>What is being discussed</h2><ul id="exp"></ul>
 <h2>Calls and actions created</h2><ul id="routed"></ul>
@@ -1163,7 +1163,7 @@ def place_in_tmux(argv, right_of, name):
 
 def build_parser():
     ap = argparse.ArgumentParser(prog="fleet listen", allow_abbrev=False,
-                                 description="LISTENER UI: follow a live call, route asks, actions and things to say.")
+                                 description="WATCH UI: follow a live call, route asks, actions and things to say.")
     ap.add_argument("--source", choices=("file", "stdin", "command", "replay"))
     ap.add_argument("arg", nargs="?", help="path (file, replay) or shell command (command)")
     ap.add_argument("--speakers", help='comma list, e.g. "Alice_Example,Bob_Example"; empty = everyone')
@@ -1232,7 +1232,7 @@ def main(argv):
     except KeyboardInterrupt:
         signal.signal(signal.SIGHUP, signal.SIG_IGN)
         src.close()
-        lis.close()  # flushes the batched actions to the orchestrator
+        lis.close()  # flushes the batched actions to ROUTE
     finally:
         if page:
             page.stop()

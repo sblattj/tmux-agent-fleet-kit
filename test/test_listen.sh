@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# test_listen.sh: the LISTENER UI in a real tmux pane. Private tmux server (-L), temp FLEET_STATE,
+# test_listen.sh: the WATCH UI in a real tmux pane. Private tmux server (-L), temp FLEET_STATE,
 # synthetic feeds with made-up names only. Exit 1 on any FAIL.
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd -P)
@@ -50,7 +50,7 @@ check "fleet listen --pane-right-of prints OK with a pane id" test -n "$lp"
 check "listener pane shares the lane's window" test "$(tm display -p -t "$lp" '#{window_id}')" = "$(tm display -p -t "$lanepane" '#{window_id}')"
 check "pane shows the SAY THIS answer" wait_for "$lp" "p95 went from 840 ms to 310 ms" 30
 screen=$(cap "$lp")
-for s in "LISTENER: weekly sync" "filter: (everyone)" "SAY THIS" "Alice_Example" "-> ASK  sent to DECIDE as Q1" \
+for s in "WATCH: weekly sync" "filter: (everyone)" "SAY THIS" "Alice_Example" "-> ASK  sent to DECIDE as Q1" \
          "-> ACTION  sent to ROUTE (owner: unresolved)" "routed: 1 ask"; do
   check "pane shows '$s'" bash -c 'printf "%s" "$1" | grep -qF -- "$2"' _ "$screen" "$s"
 done

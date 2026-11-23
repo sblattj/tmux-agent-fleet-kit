@@ -50,8 +50,8 @@ fc_render_rules() {
   [ -f "$FC_REPO/rules/fleet-rules.md" ] || fc_die "missing $FC_REPO/rules/fleet-rules.md"
   fc_mktemp
   sed -e "s|{{HUMAN}}|$(fc_esc "$FC_HUMAN")|g" \
-      -e "s|{{DESK}}|$(fc_esc "$FC_DESK")|g" \
-      -e "s|{{ORCHESTRATOR}}|$(fc_esc "$FC_ORCH")|g" \
+      -e "s|{{DECIDE}}|$(fc_esc "$FC_DESK")|g" \
+      -e "s|{{ROUTE}}|$(fc_esc "$FC_ORCH")|g" \
       "$FC_REPO/rules/fleet-rules.md" > "$FC_TMP"
 }
 

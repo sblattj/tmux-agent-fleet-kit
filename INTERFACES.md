@@ -135,7 +135,7 @@ fleet decisions refresh [--json] | refresh choose <id> A|B | refresh confirm <id
 - Badge = worst of the delivery results: `FAILED` anywhere -> failed, `queued` -> queued, `reopened` -> reopened,
   `delivered` -> relayed. `retry` re-wakes failed/queued targets (`fleet_mesh.wake`, reopening parked ones) without a
   second inbox line, and appends a new log line with `retry: true` and the new results.
-- Log rows without an `id` (the listener's `kind: "decided-on-call"` rows) belong to no call: the UI, `find` and refresh
+- Log rows without an `id` (the WATCH UI's `kind: "decided-on-call"` rows) belong to no call: the UI, `find` and refresh
   skip them.
 - `decisions-reports.jsonl`: `{id, at, from, ok, note}` from `decision_report`; the latest per id sets `acted`.
 - `decisions-ui-state.json`: `{snoozed: {id: untilISO}, closed: {id: verbatim}}`. `decisions-refresh.json`: `{at, request, rows:[{id, from,
@@ -280,7 +280,7 @@ Desk helper `skills/running-the-decisions-desk/desk.sh` uses `fleet-goal check` 
 - `fleet_mesh.deliver` to a roster entry with status parked: run `fleet reopen <to>` (subprocess, timeout 180 s),
   then deliver. Result text says `reopened`.
 - Shared decisions log `$FLEET_STATE/decisions-log.jsonl`, append-only: `{"id","at","asker","verbatim","relayedTo"}`.
-  `decision_answer` appends to it and delivers only to the asker (no orchestrator message). desk.sh `answer` appends too.
+  `decision_answer` appends to it and delivers only to the asker (no ROUTE message). desk.sh `answer` appends too.
 - Installers: codex.sh writes `$CODEX_HOME/fleet-<role>.config.toml` from roles/*.codex.toml; opencode.sh merges
   roles/*.opencode.json into `agent.fleet-<role>` and lists the goal and compact plugins in `plugin`
   (goal as `[ref, {"compactAtTokens": 0}]`, compact as `[ref, {"limit": N}]`, N from `FLEET_OC_COMPACT_LIMIT`, default
@@ -343,7 +343,7 @@ finding and calling each other. Fleet lanes are tmux panes on one Mac that alrea
 adds discovery and transport they do not need. If a remote or third-party agent ever has to join, the path is an A2A
 gateway lane that turns incoming A2A tasks into `peer_send` and replies from `peer_inbox`, leaving the mesh unchanged.
 
-## Listener UI (lib/fleet_listen.py)
+## WATCH UI (lib/fleet_listen.py)
 
 `fleet listen ...` execs `python3 lib/fleet_listen.py ...` (stdlib only). Flags: `--source file|stdin|command|replay`
 `[ARG]`, `--speakers "A,B"`, `--config FILE`, `--speed N`, `--poll SEC`, `--title T`, `--name NAME` (default
@@ -366,11 +366,11 @@ is drawn and served (at draw time) as well as to routing.
   "me","maxTokens","labels"}` (+ `"watcher"` for watchers); stdout lines `KIND: text [| key: value]... [| uncertain]`,
   KIND in `ASK ACTION SAY DECIDED NOTE`; anything else is counted as ignored. Non-zero exit or timeout = status-bar
   error and nothing from that run is routed; on timeout the process group is killed; the pane keeps running.
-- Writes: ASK -> `decision_open` (`from` = listener name; question `Heard on the call: <speaker> asked "<quote>"
+- Writes: ASK -> `decision_open` (`from` = the `--name` value, default `WATCH`; question `Heard on the call: <speaker> asked "<quote>"
   (<clock>). ...`; options from the item or `yes | no | not now`). ACTION / DECIDED / uncertain -> one
   `deliver(<name>, route.actions, text)` per batch window, lines `ACTION "<quote>" (<speaker>, <clock>) owner: <x>[, due: <y>]`,
   `DECIDED "<quote>" (...) decided-on-call; ...`, `<KIND>, marked uncertain: "<quote>" (...)`. DECIDED also appends
-  `{"id": null, "at", "asker": <speaker>, "verbatim": <quote>, "relayedTo": [<orchestrator>], "kind":
+  `{"id": null, "at", "asker": <speaker>, "verbatim": <quote>, "relayedTo": [<route.actions>], "kind":
   "decided-on-call", "confirmed": false, "from", "clock"}` to `decisions-log.jsonl`. Nothing else is written.
 - Never routed: non-final lines, speakers outside the filter (the `me` speaker is always classified, but its own ASKs
   are dropped), items whose quote is not a substring of a final transcript line (whitespace and case folded),

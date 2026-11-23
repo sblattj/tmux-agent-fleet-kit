@@ -31,10 +31,9 @@ Common first steps: clone the repo, then run the installer for your CLI. Every i
 ```bash
 install/claude.sh --trust ~/work/project          # skills, rules in ~/.claude/CLAUDE.md, bin symlinks
 install/claude.sh --mesh                          # optional: registers fleet-mesh user-wide; fleet launch already passes it per lane (--mcp-config)
-fleet launch --cli claude ORCHESTRATOR prompt "You are ORCHESTRATOR. Follow the fleet rules."
-fleet launch --cli claude --split-right-of ORCHESTRATOR DECISIONS desk
-fleet-goal new /tmp/lane-a.goal.json --goal "..." --report-to ORCHESTRATOR
-fleet-goal condition /tmp/lane-a.goal.json --report-to ORCHESTRATOR > /tmp/lane-a.cond.txt
+fleet desks up --dir ~/work/project              # the four desks: window deskA (ROUTE | DECIDE), window deskB (WATCH | LEARN)
+fleet-goal new /tmp/lane-a.goal.json --goal "..." --report-to ROUTE
+fleet-goal condition /tmp/lane-a.goal.json --report-to ROUTE > /tmp/lane-a.cond.txt
 fleet launch --cli claude lane-a goal /tmp/lane-a.cond.txt
 ```
 
@@ -79,7 +78,7 @@ Try anything first with `fleet launch --dry-run ...` (prints the window script, 
 | decide | the only place the human answers; relays each answer to the asker and logs it; the only desk that sends work to ROUTE | route's denies plus `fleet launch`, `park`, `stop`, `reopen` |
 | watch | turns feed events into messages to DECIDE, never to ROUTE | same as decide |
 | learn | keeps the ledger of decisions and shipped work, quizzes the human | same as decide |
-| worker | runs one goal, reports to the orchestrator, asks the desk | `fleet launch`, `park`, `stop`, `reopen` |
+| worker | runs one goal, reports to ROUTE, asks DECIDE | `fleet launch`, `park`, `stop`, `reopen` |
 
 Every role denies AskUserQuestion. Claude worker lanes also deny Workflow, ScheduleWakeup and ReportFindings unless the goal file lists them in `keepTools` (or `fleet launch --keep-tools`). Role files live in `roles/` (`<role>.md`, `<role>.claude.json`, `<role>.codex.toml`, `<role>.opencode.json`, `<role>.kiro.json`, `<role>.agy.json` + `<role>.agy.md`). Separately, `fleet launch|park|stop|reopen|cleanup --apply` refuse with `FAIL role <r> can't <verb>` when `FLEET_ROLE` is set to anything but `route`; a human shell with `FLEET_ROLE` unset is allowed.
 
@@ -97,7 +96,7 @@ The launcher warns once and launches without the role when the Codex profile, Op
 
 ## Lifecycle
 
-The orchestrator keeps the fleet small by parking lanes that are finished and bringing them back when needed. `fleet tick` (read-only) shows who is due.
+ROUTE keeps the fleet small by parking lanes that are finished and bringing them back when needed. `fleet tick` (read-only) shows who is due.
 
 `fleet tick` also ends with one browser line, `chrome tabs: N (agent A, other B)`, read from Chrome's DevTools list at `FLEET_CDP_URL` (default `http://127.0.0.1:9222`, pages only; "agent" means cdp-toolkit recorded opening the tab). Above `FLEET_TAB_WARN` (default 50) it adds a WARN line. If Chrome is down it prints `chrome tabs: unavailable` and tick carries on. It only reads; it never opens or closes a tab.
 
@@ -116,8 +115,8 @@ The orchestrator keeps the fleet small by parking lanes that are finished and br
 ## Routing
 
 - Messages go through `fleet send` / `peer_send` (fleet-mesh). Delivery always appends to the target's inbox, then wakes the lane. When the target is parked or done, delivery first runs `fleet reopen <to>` (timeout 180 s, `$FLEET_BIN` or `bin/fleet`), re-reads the roster, and wakes as usual; the result says `reopened`. A failed reopen still leaves the inbox line and says so.
-- Decision answers go straight to the asker, not through the orchestrator (the DECISIONS UI also sends the orchestrator a copy; see below). Each answer (from `decision_answer` or `desk.sh answer`) is appended to `$FLEET_STATE/decisions-log.jsonl` as `{id, at, asker, verbatim, relayedTo}`, which the orchestrator reads.
-- New work, scope changes and launch or park requests go through the orchestrator.
+- Decision answers go straight to the asker, not through ROUTE (the DECISIONS UI also sends ROUTE a copy; see below). Each answer (from `decision_answer` or `desk.sh answer`) is appended to `$FLEET_STATE/decisions-log.jsonl` as `{id, at, asker, verbatim, relayedTo}`, which ROUTE reads.
+- New work, scope changes and launch or park requests go through ROUTE.
 
 ## Per-CLI matrix
 
@@ -173,7 +172,7 @@ fleet decisions report Q12 ok "merged"   # the asker says whether it acted on th
 - **Relay at click time** to every asker, plus a copy to `$FLEET_ROUTE` (`copyOrchestrator`, default on). One log line per pick in `decisions-log.jsonl`: `{id, at, asker, verbatim, relayedTo}` plus `via:"ui"`, `frontend` (web, cli or tui), `kind` (pick, own, edit, refuse, found), `copiedTo` and `delivery` (each target's own `deliver()` result string).
 - **Called list** badges come from those strings: `relayed HH:MM`, `queued (no live lane)`, `reopened`, or `relay FAILED` with a Retry button. Retry wakes the failed or queued targets again without writing a second inbox line. `decision_report {id, ok, note}` (or `fleet decisions report`) adds `acted on` / `act failed`.
 - **New calls** slide in, the tab title shows `(n) DECISIONS`, and a desktop notification (Notify button) focuses the card on click. `notifyCommand` in the config runs on each new call while the server is up (`notify: false` turns both off) with `{title}`, `{body}`, `{url}` and `{id}` filled in; `{url}` deep-links to the card (`...?t=<token>#Q12`).
-- **Refresh all** asks the orchestrator to have every live lane re-sync, then looks for answers given elsewhere in `refreshSources`. Results go to an A/B page: keep A (the call stays open) or use B (relay the found answer). B needs a second Confirm click, enforced by the server, and rows nobody approves stay open. A B whose quote is not found verbatim in its named source is dropped and counted as `ungrounded: n`.
+- **Refresh all** asks ROUTE to have every live lane re-sync, then looks for answers given elsewhere in `refreshSources`. Results go to an A/B page: keep A (the call stays open) or use B (relay the found answer). B needs a second Confirm click, enforced by the server, and rows nobody approves stay open. A B whose quote is not found verbatim in its named source is dropped and counted as `ungrounded: n`.
 - **Live updates** over SSE (`/events`), with a 1 s poll fallback.
 - **Security**: binds loopback only (`--bind` accepts 127.0.0.1, ::1 or localhost and refuses anything else), a random token per launch (`?t=` for page loads and SSE, the `X-Fleet-Token` header for every POST), Host and Origin checks, lane text rendered with `textContent` only, the token kept out of the request log, and the URL written to `$FLEET_STATE/decisions-ui.url` (mode 0600). Only the human answers calls: with `FLEET_ROLE` set to anything but `desk`, `serve`, `pick` and `tui` refuse (exit 4).
 - **tmux popup**: `bind C-d display-popup -E "fleet decisions tui --one"` answers the newest call in a popup, with `gum` when it is on PATH, else curses.
@@ -196,8 +195,8 @@ Config `$FLEET_STATE/decisions-ui.json` (all optional):
 ## Tests
 
 ```bash
-python3 -m unittest test/test_listen.py # listener: parsing, routing, secrets, classifier contract, sources, page
-bash test/test_listen.sh      # listener in a real tmux pane on a private socket: layout, live filter, page, quit
+python3 -m unittest test/test_listen.py # WATCH UI: parsing, routing, secrets, classifier contract, sources, page
+bash test/test_listen.sh      # WATCH UI in a real tmux pane on a private socket: layout, live filter, page, quit
 python3 -m unittest test/test_mesh.py   # fleet-mesh delivery, reopen, decisions log
 python3 -m unittest test/test_decisions.py   # DECISIONS UI: cards, pick relay, badges, refresh A/B, server auth, tmux fallback
 bash test/test_goal.sh        # fleet-goal and the desk helper (incl. decisions log), with a broken-file control
@@ -222,7 +221,7 @@ bash test/test_privacy.sh     # no personal data in the repo (FLEET_PRIVACY_TERM
 - agy: the role deny's reach beyond the named shell commands (edit tools, artifacts, `sh -c` wrappers) is UNVERIFIED, so an agy role is not a hard fence. agy has no config-dir override, so lanes share the user's `~/.gemini` sign-in and conversations. Whether agy's own auto-compaction writes the same `CHECKPOINT` marker is UNVERIFIED. Live agy lanes on Linux are UNVERIFIED.
 - Nothing is pushed or sent anywhere by the kit; the only network calls are the two plugin `git clone`s in `install/opencode.sh`.
 
-## Listener UI
+## WATCH UI
 
 `fleet listen` opens a tmux pane that follows a live call or chat, shows the transcript filtered to the speakers you care about, and routes what it hears. It consumes text only: bring your own transcriber or meeting exporter.
 
@@ -232,7 +231,7 @@ fleet listen [--source file|stdin|command|replay ARG] [--speakers "A,B"] [--conf
 ```
 
 ```
-+-- LISTENER: weekly sync ------------------------------------------------- 00:23:41 +
++-- WATCH: weekly sync ---------------------------------------------------- 00:23:41 +
 | filter: Alice_Example, Bob_Example   [f]ilter  [p]ause  [m]ark  [o] page  [q]uit  [?] |
 +------------------------------------------------------------------------------------+
 | 15:22:58 Alice_Example  can we get the retry change into this week?               |
@@ -274,7 +273,7 @@ Config, `$FLEET_STATE/listener.json` (or `--config`; `//` comment lines allowed)
   "speakers": ["Alice_Example", "Bob_Example"],
   "me": "Human_Example",
   "speakerAliases": {"SPEAKER_00": "Alice_Example"},
-  "route": {"actions": "ORCHESTRATOR"},
+  "route": {"actions": "ROUTE"},
   "classifier": {"kind": "command", "run": "my-llm-classify", "timeoutSec": 10, "maxTokens": 300,
                  "minIntervalSec": 5, "tailChars": 1800},
   "facts": [{"match": ["p95"], "say": "p95 went from 840 ms to 310 ms", "source": "lane-a, 11:40"}],

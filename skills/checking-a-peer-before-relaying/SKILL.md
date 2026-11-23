@@ -8,7 +8,7 @@ description: "Before relaying a go-ahead or request to another lane, check that 
 Stale relays waste a round trip ("take the PR out of draft" when it already is). Check first, then send.
 
 ## Do this
-1. **Is the peer alive?** `fleet ls` (roster plus pane liveness). Claude Code lanes also show in `ListAgents`. A lane missing from both: do not relay, ask the orchestrator to resume it (`fleet launch <name> resume <session-id>`).
+1. **Is the peer alive?** `fleet ls` (roster plus pane liveness). Claude Code lanes also show in `ListAgents`. A lane missing from both: do not relay, ask ROUTE to resume it (`fleet launch <name> resume <session-id>`).
 2. **Is it already done?** Read-only checks, using whatever the repo uses:
    - git: `git ls-remote --tags origin <tag>`, `git log --oneline -5 <branch>`
    - GitHub: `gh pr view <n> --json state,isDraft,mergedAt,mergedBy`, `gh run view <id>`
