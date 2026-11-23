@@ -1,0 +1,95 @@
+{
+  "actor": {
+    "type": "user",
+    "display_name": "Bob_Example",
+    "nickname": "bob",
+    "account_id": "acct-bob",
+    "uuid": "{bob}"
+  },
+  "pullrequest": {
+    "type": "pullrequest",
+    "id": 11,
+    "title": "PROJ-1: Cap the retry budget",
+    "state": "OPEN",
+    "summary": {
+      "raw": "Stops retrying after 5 attempts. Fixes PROJ-1.",
+      "markup": "markdown"
+    },
+    "author": {
+      "type": "user",
+      "display_name": "Alice_Example",
+      "nickname": "alice",
+      "account_id": "acct-alice",
+      "uuid": "{alice}"
+    },
+    "reviewers": [
+      {
+        "type": "user",
+        "display_name": "Human_Example",
+        "nickname": "human",
+        "account_id": "acct-me",
+        "uuid": "{me}"
+      }
+    ],
+    "participants": [
+      {
+        "type": "participant",
+        "role": "REVIEWER",
+        "approved": false,
+        "state": null,
+        "participated_on": null,
+        "user": {
+          "type": "user",
+          "display_name": "Human_Example",
+          "nickname": "human",
+          "account_id": "acct-me",
+          "uuid": "{me}"
+        }
+      }
+    ],
+    "source": {
+      "branch": {
+        "name": "alice/PROJ-1-budget"
+      },
+      "commit": {
+        "hash": "b2b2b2b2b2b2"
+      }
+    },
+    "destination": {
+      "branch": {
+        "name": "main"
+      },
+      "commit": {
+        "hash": "0f0f0f0f0f0f"
+      }
+    },
+    "created_on": "2026-11-20T10:10:00.000000+00:00",
+    "updated_on": "2026-11-20T10:15:00.000000+00:00",
+    "links": {
+      "html": {
+        "href": "https://acme.example.com/acme/widget/pull-requests/11"
+      }
+    }
+  },
+  "repository": {
+    "type": "repository",
+    "full_name": "acme/widget",
+    "name": "widget",
+    "uuid": "{repo-widget}"
+  },
+  "comment": {
+    "id": 502,
+    "deleted": false,
+    "created_on": "2026-11-20T10:12:00.000000+00:00",
+    "content": {
+      "raw": "@{acct-me} can you check the retry budget before Friday?",
+      "markup": "markdown"
+    },
+    "user": {
+      "type": "user",
+      "display_name": "Bob_Example",
+      "nickname": "bob",
+      "account_id": "acct-bob"
+    }
+  }
+}

@@ -1,0 +1,210 @@
+{
+  "clock": "2026-11-20T10:15:00Z",
+  "exchanges": [
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://acme.example.com/api/v4/projects/acme%2Fwidget/merge_requests?scope=all&state=all&order_by=updated_at&sort=asc&updated_after=2026-11-20T10%3A00%3A00Z&per_page=100&page=1"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json",
+          "ratelimit-remaining": "1999",
+          "x-next-page": "2"
+        },
+        "body": [
+          {
+            "id": 1011,
+            "iid": 11,
+            "project_id": 7,
+            "title": "Retry the upload on 503",
+            "description": "",
+            "state": "opened",
+            "created_at": "2026-11-20T09:00:00.000Z",
+            "updated_at": "2026-11-20T10:01:00.250Z",
+            "merged_at": null,
+            "closed_at": null,
+            "merge_user": null,
+            "merged_by": null,
+            "closed_by": null,
+            "target_branch": "main",
+            "source_branch": "feature",
+            "author": {
+              "id": 2,
+              "username": "alice_example",
+              "name": "Alice Example",
+              "state": "active",
+              "bot": false,
+              "web_url": "https://acme.example.com/alice_example"
+            },
+            "assignees": [],
+            "reviewers": [
+              {
+                "id": 1,
+                "username": "human-example",
+                "name": "Human-Example",
+                "state": "active",
+                "bot": false,
+                "web_url": "https://acme.example.com/human-example"
+              }
+            ],
+            "draft": false,
+            "sha": "1111111111111111111111111111111111111111",
+            "web_url": "https://acme.example.com/acme/widget/-/merge_requests/11"
+          },
+          {
+            "id": 1012,
+            "iid": 12,
+            "project_id": 7,
+            "title": "Add PROJ-1 export",
+            "description": "Implements PROJ-1. @human-example can you take a look?",
+            "state": "opened",
+            "created_at": "2026-11-20T10:02:11.000Z",
+            "updated_at": "2026-11-20T10:02:11.000Z",
+            "merged_at": null,
+            "closed_at": null,
+            "merge_user": null,
+            "merged_by": null,
+            "closed_by": null,
+            "target_branch": "main",
+            "source_branch": "proj-1-export",
+            "author": {
+              "id": 2,
+              "username": "alice_example",
+              "name": "Alice Example",
+              "state": "active",
+              "bot": false,
+              "web_url": "https://acme.example.com/alice_example"
+            },
+            "assignees": [],
+            "reviewers": [],
+            "draft": false,
+            "sha": "1212121212121212121212121212121212121212",
+            "web_url": "https://acme.example.com/acme/widget/-/merge_requests/12"
+          }
+        ]
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://acme.example.com/api/v4/projects/acme%2Fwidget/merge_requests?scope=all&state=all&order_by=updated_at&sort=asc&updated_after=2026-11-20T10%3A00%3A00Z&per_page=100&page=2"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json",
+          "ratelimit-remaining": "1998",
+          "x-next-page": ""
+        },
+        "body": [
+          {
+            "id": 1009,
+            "iid": 9,
+            "project_id": 7,
+            "title": "Bump widget to 2.1",
+            "description": "",
+            "state": "merged",
+            "created_at": "2026-11-19T15:00:00Z",
+            "updated_at": "2026-11-20T10:05:00.000Z",
+            "merged_at": "2026-11-20T10:05:00.000Z",
+            "closed_at": null,
+            "merge_user": {
+              "id": 3,
+              "username": "bob_example",
+              "name": "Bob Example",
+              "state": "active",
+              "bot": false,
+              "web_url": "https://acme.example.com/bob_example"
+            },
+            "merged_by": {
+              "id": 3,
+              "username": "bob_example",
+              "name": "Bob Example",
+              "state": "active",
+              "bot": false,
+              "web_url": "https://acme.example.com/bob_example"
+            },
+            "closed_by": null,
+            "target_branch": "main",
+            "source_branch": "feature",
+            "author": {
+              "id": 3,
+              "username": "bob_example",
+              "name": "Bob Example",
+              "state": "active",
+              "bot": false,
+              "web_url": "https://acme.example.com/bob_example"
+            },
+            "assignees": [],
+            "reviewers": [],
+            "draft": false,
+            "sha": "0909090909090909090909090909090909090909",
+            "web_url": "https://acme.example.com/acme/widget/-/merge_requests/9"
+          },
+          {
+            "id": 1013,
+            "iid": 13,
+            "project_id": 7,
+            "title": "Docs: widget config",
+            "description": "",
+            "state": "opened",
+            "created_at": "2026-11-20T08:00:00Z",
+            "updated_at": "2026-11-20T10:05:00.000Z",
+            "merged_at": null,
+            "closed_at": null,
+            "merge_user": null,
+            "merged_by": null,
+            "closed_by": null,
+            "target_branch": "main",
+            "source_branch": "feature",
+            "author": {
+              "id": 4,
+              "username": "carol_example",
+              "name": "Carol Example",
+              "state": "active",
+              "bot": false,
+              "web_url": "https://acme.example.com/carol_example"
+            },
+            "assignees": [],
+            "reviewers": [],
+            "draft": false,
+            "sha": "1313131313131313131313131313131313131313",
+            "web_url": "https://acme.example.com/acme/widget/-/merge_requests/13"
+          }
+        ]
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://acme.example.com/api/v4/projects/acme%2Fwidget/repository/branches/main"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/json",
+          "ratelimit-remaining": "1997",
+          "x-next-page": ""
+        },
+        "body": {
+          "name": "main",
+          "merged": false,
+          "protected": true,
+          "default": true,
+          "web_url": "https://acme.example.com/acme/widget/-/tree/main",
+          "commit": {
+            "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "short_id": "aaaaaaaa",
+            "title": "Merge branch 'bump' into 'main'",
+            "message": "Merge branch 'bump' into 'main'\n",
+            "author_name": "Bob Example",
+            "committed_date": "2026-11-20T02:05:00-08:00",
+            "web_url": "https://acme.example.com/acme/widget/-/commit/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "note": "A bad or expired PAT: the server can answer 203 with an HTML sign-in page instead of JSON (UNVERIFIED in docs; widely reported).",
+  "status": 203,
+  "headers": {"content-type": "text/html; charset=utf-8"},
+  "body_text": "<!DOCTYPE html><html><head><title>Sign In</title></head><body>Sign in to ACME</body></html>"
+}

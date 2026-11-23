@@ -1,0 +1,46 @@
+{
+  "note": "Service hook workitem.updated for PROJ-2 rev 7 (Resolved -> Closed). resource.fields holds oldValue/newValue pairs, resource.revision the full revision.",
+  "headers": {"Content-Type": "application/json; charset=utf-8"},
+  "body": {
+    "subscriptionId": "44444444-4444-4444-8444-444444444444",
+    "notificationId": 7,
+    "id": "55555555-5555-4555-8555-555555555555",
+    "eventType": "workitem.updated",
+    "publisherId": "tfs",
+    "message": {"text": "Task #2 (Cache the token per poll) updated by Bob_Example"},
+    "resource": {
+      "id": 7,
+      "workItemId": 2,
+      "rev": 7,
+      "revisedBy": {"displayName": "Bob_Example", "uniqueName": "bob@acme.example.com", "id": "33333333-3333-4333-8333-333333333333"},
+      "revisedDate": "9999-01-01T00:00:00Z",
+      "fields": {
+        "System.Rev": {"oldValue": 6, "newValue": 7},
+        "System.State": {"oldValue": "Resolved", "newValue": "Closed"},
+        "System.ChangedDate": {"oldValue": "2026-11-20T09:45:00Z", "newValue": "2026-11-20T10:05:00Z"}
+      },
+      "revision": {
+        "id": 2,
+        "rev": 7,
+        "fields": {
+          "System.Id": 2,
+          "System.Rev": 7,
+          "System.Title": "Cache the token per poll",
+          "System.State": "Closed",
+          "System.WorkItemType": "Task",
+          "System.TeamProject": "PROJ",
+          "System.AssignedTo": {"displayName": "Bob_Example", "uniqueName": "bob@acme.example.com", "id": "33333333-3333-4333-8333-333333333333"},
+          "System.ChangedDate": "2026-11-20T10:05:00Z",
+          "System.ChangedBy": {"displayName": "Bob_Example", "uniqueName": "bob@acme.example.com", "id": "33333333-3333-4333-8333-333333333333"},
+          "System.CreatedDate": "2026-11-18T15:00:00Z",
+          "System.CommentCount": 0
+        },
+        "url": "https://acme.example.com/tfs/ACME/_apis/wit/workItems/2/revisions/7"
+      },
+      "url": "https://acme.example.com/tfs/ACME/_apis/wit/workItems/2/updates/7"
+    },
+    "resourceVersion": "1.0",
+    "resourceContainers": {"collection": {"id": "66666666-6666-4666-8666-666666666666"}, "project": {"id": "77777777-7777-4777-8777-777777777777"}},
+    "createdDate": "2026-11-20T10:05:01.000Z"
+  }
+}

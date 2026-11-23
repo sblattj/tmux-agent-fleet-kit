@@ -1,0 +1,14 @@
+{"pagelen": 20, "values": [
+  {"comment": {"id": 504, "deleted": false, "created_on": "2026-11-20T10:21:00.000000+00:00",
+               "content": {"raw": "Build 88 passed.", "markup": "markdown", "type": "rendered"},
+               "user": {"type": "user", "display_name": "acme-ci[bot]", "nickname": "acme-ci", "account_id": "acct-ci"},
+               "pullrequest": {"type": "pullrequest", "id": 12}},
+   "pull_request": {"type": "pullrequest", "id": 12, "title": "PROJ-1: Document the retry policy"}},
+  {"changes_request": {"date": "2026-11-20T10:20:00.000000+00:00",
+                       "user": {"type": "user", "display_name": "Bob_Example", "nickname": "bob", "account_id": "acct-bob"}},
+   "pull_request": {"type": "pullrequest", "id": 12, "title": "PROJ-1: Document the retry policy"}},
+  {"comment": {"id": 503, "deleted": true, "created_on": "2026-11-20T10:19:00.000000+00:00",
+               "content": {"raw": "", "markup": "markdown", "type": "rendered"},
+               "user": {"type": "user", "display_name": "Bob_Example", "nickname": "bob", "account_id": "acct-bob"}},
+   "pull_request": {"type": "pullrequest", "id": 12}}
+]}

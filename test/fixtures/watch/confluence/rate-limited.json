@@ -1,0 +1,10 @@
+{
+  "status": 429,
+  "headers": {
+    "Retry-After": "120",
+    "X-RateLimit-Remaining": "0"
+  },
+  "body": {
+    "message": "Rate limit exceeded"
+  }
+}

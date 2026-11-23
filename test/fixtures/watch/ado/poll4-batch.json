@@ -1,0 +1,12 @@
+{
+  "note": "Catch-up poll after the hook: the batch shows PROJ-2 at the same rev 7 the hook delivered.",
+  "request": {"method": "POST", "url": "https://acme.example.com/tfs/ACME/PROJ/_apis/wit/workitemsbatch?api-version=7.1"},
+  "status": 200,
+  "headers": {"content-type": "application/json; charset=utf-8"},
+  "body": {"count": 1, "value": [{"id": 2, "rev": 7, "url": "https://acme.example.com/tfs/ACME/_apis/wit/workItems/2", "fields": {
+    "System.Id": 2, "System.Rev": 7, "System.Title": "Cache the token per poll", "System.State": "Closed", "System.WorkItemType": "Task",
+    "System.AssignedTo": {"displayName": "Bob_Example", "uniqueName": "bob@acme.example.com", "id": "33333333-3333-4333-8333-333333333333"},
+    "System.ChangedDate": "2026-11-20T10:05:00Z",
+    "System.ChangedBy": {"displayName": "Bob_Example", "uniqueName": "bob@acme.example.com", "id": "33333333-3333-4333-8333-333333333333"},
+    "System.CreatedDate": "2026-11-18T15:00:00Z", "System.CommentCount": 0}}]}
+}

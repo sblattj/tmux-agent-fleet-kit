@@ -1,0 +1,20 @@
+{
+  "clock": "2026-11-20T10:45:00Z",
+  "exchanges": [
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://acme.example.com/api/v4/projects/acme%2Fwidget/merge_requests?scope=all&state=all&order_by=updated_at&sort=asc&updated_after=2026-11-20T10%3A25%3A00Z&per_page=100&page=1"
+      },
+      "response": {
+        "status": 429,
+        "headers": {
+          "retry-after": "60",
+          "ratelimit-remaining": "0",
+          "ratelimit-resettime": "Thu, 20 Nov 2026 10:46:00 GMT"
+        },
+        "body": "Retry later"
+      }
+    }
+  ]
+}

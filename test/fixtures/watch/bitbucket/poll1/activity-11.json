@@ -1,0 +1,7 @@
+{"pagelen": 20, "values": [
+  {"comment": {"id": 502, "deleted": false, "created_on": "2026-11-20T10:12:00.000000+00:00",
+               "content": {"raw": "@{acct-me} can you check the retry budget before Friday?", "markup": "markdown", "type": "rendered"},
+               "user": {"type": "user", "display_name": "Bob_Example", "nickname": "bob", "account_id": "acct-bob"},
+               "pullrequest": {"type": "pullrequest", "id": 11}},
+   "pull_request": {"type": "pullrequest", "id": 11, "title": "PROJ-1: Cap the retry budget"}}
+]}

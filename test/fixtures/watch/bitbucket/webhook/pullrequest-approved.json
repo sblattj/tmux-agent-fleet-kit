@@ -1,0 +1,71 @@
+{
+  "actor": {
+    "type": "user",
+    "display_name": "Bob_Example",
+    "nickname": "bob",
+    "account_id": "acct-bob",
+    "uuid": "{bob}"
+  },
+  "pullrequest": {
+    "type": "pullrequest",
+    "id": 10,
+    "title": "PROJ-1: Retry the upload on 503",
+    "state": "MERGED",
+    "author": {
+      "type": "user",
+      "display_name": "Alice_Example",
+      "nickname": "alice",
+      "account_id": "acct-alice",
+      "uuid": "{alice}"
+    },
+    "closed_by": {
+      "type": "user",
+      "display_name": "Bob_Example",
+      "nickname": "bob",
+      "account_id": "acct-bob",
+      "uuid": "{bob}"
+    },
+    "merge_commit": {
+      "hash": "5a5a5a5a5a5a"
+    },
+    "source": {
+      "branch": {
+        "name": "alice/PROJ-1-retry"
+      },
+      "commit": {
+        "hash": "a1a1a1a1a1a1"
+      }
+    },
+    "destination": {
+      "branch": {
+        "name": "main"
+      },
+      "commit": {
+        "hash": "0f0f0f0f0f0f"
+      }
+    },
+    "created_on": "2026-11-20T08:00:00.000000+00:00",
+    "updated_on": "2026-11-20T10:05:00.250000+00:00",
+    "links": {
+      "html": {
+        "href": "https://acme.example.com/acme/widget/pull-requests/10"
+      }
+    }
+  },
+  "repository": {
+    "type": "repository",
+    "full_name": "acme/widget",
+    "name": "widget",
+    "uuid": "{repo-widget}"
+  },
+  "approval": {
+    "date": "2026-11-20T10:03:00.000000+00:00",
+    "user": {
+      "type": "user",
+      "display_name": "Bob_Example",
+      "nickname": "bob",
+      "account_id": "acct-bob",
+      "uuid": "{bob}"
+    }
+  }
+}

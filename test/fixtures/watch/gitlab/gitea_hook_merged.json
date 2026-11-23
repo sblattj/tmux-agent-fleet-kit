@@ -1,0 +1,59 @@
+{
+  "headers": {
+    "X-Gitea-Event": "pull_request",
+    "X-Gitea-Event-Type": "pull_request",
+    "Content-Type": "application/json"
+  },
+  "body": {
+    "action": "closed",
+    "number": 7,
+    "pull_request": {
+      "id": 507,
+      "number": 7,
+      "title": "PROJ-1: cache the token lookup",
+      "body": "",
+      "state": "closed",
+      "merged": true,
+      "merged_at": "2026-11-20T10:06:00Z",
+      "merged_by": {
+        "id": 3,
+        "login": "bob_example",
+        "full_name": "Bob Example",
+        "email": "bob_example@acme.example.com"
+      },
+      "closed_at": "2026-11-20T10:06:00Z",
+      "created_at": "2026-11-19T12:00:00Z",
+      "updated_at": "2026-11-20T10:06:00Z",
+      "user": {
+        "id": 2,
+        "login": "alice_example",
+        "full_name": "Alice Example",
+        "email": "alice_example@acme.example.com"
+      },
+      "assignees": [],
+      "requested_reviewers": [],
+      "draft": false,
+      "base": {
+        "ref": "main",
+        "sha": "cccccccccccccccccccccccccccccccccccccccc"
+      },
+      "head": {
+        "ref": "feature-7",
+        "sha": "7777777777777777777777777777777777777777"
+      },
+      "html_url": "https://acme.example.com/acme/widget/pulls/7",
+      "url": "https://acme.example.com/api/v1/repos/acme/widget/pulls/7"
+    },
+    "repository": {
+      "id": 7,
+      "name": "widget",
+      "full_name": "acme/widget"
+    },
+    "sender": {
+      "id": 3,
+      "login": "bob_example",
+      "full_name": "Bob Example",
+      "email": "bob_example@acme.example.com"
+    }
+  }
+}

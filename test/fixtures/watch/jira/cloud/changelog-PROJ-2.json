@@ -1,0 +1,9 @@
+{"self": "https://acme.example.com/rest/api/3/issue/PROJ-2/changelog?maxResults=100&startAt=0", "startAt": 0, "maxResults": 100,
+ "total": 3, "isLast": true, "values": [
+  {"id": "21001", "author": {"accountId": "acct-777", "displayName": "Bob_Example"}, "created": "2026-11-20T10:12:00.000+0000",
+   "items": [{"field": "priority", "fieldtype": "jira", "fieldId": "priority", "from": "3", "fromString": "Medium", "to": "2", "toString": "High"}]},
+  {"id": "21002", "author": {"accountId": "acct-900", "displayName": "acme-ci[bot]"}, "created": "2026-11-20T10:20:00.000+0000",
+   "items": [{"field": "labels", "fieldtype": "jira", "fieldId": "labels", "from": null, "fromString": "", "to": null, "toString": "backend"}]},
+  {"id": "21003", "author": {"accountId": "acct-777", "displayName": "Bob_Example"}, "created": "2026-11-20T10:30:00.000+0000",
+   "items": [{"field": "status", "fieldtype": "jira", "fieldId": "status", "from": "10100", "fromString": "To Do", "to": "10103", "toString": "In Progress"}]}
+ ]}

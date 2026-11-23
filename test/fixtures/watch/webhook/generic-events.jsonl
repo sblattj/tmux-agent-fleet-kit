@@ -1,0 +1,2 @@
+{"eid": "command:acme-ci:PROJ-1:2026-11-20T11:00:00Z:build.failed", "source": "ignored-by-receiver", "sourceKind": "command", "at": "2026-11-20T11:00:00Z", "type": "build.failed", "ref": "PROJ-1", "url": "https://ci.example.com/PROJ-1/7", "actor": "ci-bot", "title": "Build 7 failed", "quote": "unit tests: 2 failures", "kind": "ask", "score": 3, "to": "ROUTE"}
+{"eid": "command:acme-ci:PROJ-2:2026-11-20T11:05:00Z:build.passed", "sourceKind": "command", "at": "2026-11-20T11:05:00Z", "type": "build.passed", "ref": "PROJ-2", "title": "Build 8 passed"}

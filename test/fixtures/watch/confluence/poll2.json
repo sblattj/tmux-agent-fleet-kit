@@ -1,0 +1,203 @@
+{
+  "status": 200,
+  "headers": {
+    "Content-Type": "application/json",
+    "X-RateLimit-Remaining": "95"
+  },
+  "body": {
+    "results": [
+      {
+        "id": "1002",
+        "type": "page",
+        "status": "current",
+        "title": "PROJ-1 rollout plan",
+        "space": {
+          "key": "ACME",
+          "name": "ACME Engineering",
+          "type": "global"
+        },
+        "history": {
+          "latest": true,
+          "createdDate": "2026-11-01T09:00:00.000Z",
+          "createdBy": {
+            "type": "known",
+            "accountId": "acct-me-1",
+            "displayName": "Human Example",
+            "publicName": "human"
+          }
+        },
+        "version": {
+          "by": {
+            "type": "known",
+            "accountId": "acct-bob-3",
+            "displayName": "Bob Example",
+            "publicName": "bob"
+          },
+          "when": "2026-11-20T10:02:11.000Z",
+          "number": 5,
+          "message": "Added the staging step",
+          "minorEdit": false
+        },
+        "_links": {
+          "webui": "/spaces/ACME/pages/1002",
+          "self": "https://acme.example.com/wiki/rest/api/content/1002"
+        },
+        "container": {
+          "key": "ACME",
+          "name": "ACME Engineering",
+          "type": "global"
+        }
+      },
+      {
+        "id": "1003",
+        "type": "blogpost",
+        "status": "current",
+        "title": "ACME weekly notes",
+        "space": {
+          "key": "ACME",
+          "name": "ACME Engineering",
+          "type": "global"
+        },
+        "history": {
+          "latest": true,
+          "createdDate": "2026-11-01T09:00:00.000Z",
+          "createdBy": {
+            "type": "known",
+            "accountId": "acct-me-1",
+            "displayName": "Human Example",
+            "publicName": "human"
+          }
+        },
+        "version": {
+          "by": {
+            "type": "known",
+            "accountId": "acct-me-1",
+            "displayName": "Human Example",
+            "publicName": "human"
+          },
+          "when": "2026-11-20T10:07:30.000Z",
+          "number": 1,
+          "message": "",
+          "minorEdit": false
+        },
+        "_links": {
+          "webui": "/spaces/ACME/pages/1003",
+          "self": "https://acme.example.com/wiki/rest/api/content/1003"
+        },
+        "container": {
+          "key": "ACME",
+          "name": "ACME Engineering",
+          "type": "global"
+        }
+      },
+      {
+        "id": "1004",
+        "type": "page",
+        "status": "current",
+        "title": "PROJ-1 runbook",
+        "space": {
+          "key": "ACME",
+          "name": "ACME Engineering",
+          "type": "global"
+        },
+        "history": {
+          "latest": true,
+          "createdDate": "2026-11-01T09:00:00.000Z",
+          "createdBy": {
+            "type": "known",
+            "accountId": "acct-alice-2",
+            "displayName": "Alice Example",
+            "publicName": "alice"
+          }
+        },
+        "version": {
+          "by": {
+            "type": "known",
+            "accountId": "acct-alice-2",
+            "displayName": "Alice Example",
+            "publicName": "alice"
+          },
+          "when": "2026-11-20T10:07:30.000Z",
+          "number": 2,
+          "message": "Fix typo",
+          "minorEdit": false
+        },
+        "_links": {
+          "webui": "/spaces/ACME/pages/1004",
+          "self": "https://acme.example.com/wiki/rest/api/content/1004"
+        },
+        "container": {
+          "key": "ACME",
+          "name": "ACME Engineering",
+          "type": "global"
+        }
+      },
+      {
+        "id": "2003",
+        "type": "comment",
+        "status": "current",
+        "title": "Re: Retry the upload on 503",
+        "space": {
+          "key": "ACME",
+          "name": "ACME Engineering",
+          "type": "global"
+        },
+        "history": {
+          "latest": true,
+          "createdDate": "2026-11-01T09:00:00.000Z",
+          "createdBy": {
+            "type": "known",
+            "accountId": "acct-bob-3",
+            "displayName": "Bob Example",
+            "publicName": "bob"
+          }
+        },
+        "version": {
+          "by": {
+            "type": "known",
+            "accountId": "acct-bob-3",
+            "displayName": "Bob Example",
+            "publicName": "bob"
+          },
+          "when": "2026-11-20T10:20:00.000Z",
+          "number": 1,
+          "message": "",
+          "minorEdit": false
+        },
+        "_links": {
+          "webui": "/spaces/ACME/pages/2003",
+          "self": "https://acme.example.com/wiki/rest/api/content/2003"
+        },
+        "container": {
+          "id": "1001",
+          "type": "page",
+          "status": "current",
+          "title": "Retry the upload on 503",
+          "history": {
+            "latest": true,
+            "createdBy": {
+              "type": "known",
+              "accountId": "acct-alice-2",
+              "displayName": "Alice Example",
+              "publicName": "alice"
+            }
+          }
+        },
+        "body": {
+          "storage": {
+            "value": "<p>Looks good to me.</p>",
+            "representation": "storage"
+          }
+        }
+      }
+    ],
+    "start": 0,
+    "limit": 50,
+    "size": 4,
+    "_links": {
+      "base": "https://acme.example.com/wiki",
+      "context": "/wiki",
+      "self": "https://acme.example.com/wiki/rest/api/content/search"
+    }
+  }
+}

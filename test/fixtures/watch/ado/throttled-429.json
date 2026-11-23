@@ -1,0 +1,7 @@
+{
+  "note": "Throttled: HTTP 429 with Retry-After (seconds) and X-RateLimit-* headers, per the rate-limits doc.",
+  "status": 429,
+  "headers": {"content-type": "application/json; charset=utf-8", "retry-after": "120", "x-ratelimit-resource": "ATCP",
+              "x-ratelimit-limit": "200", "x-ratelimit-remaining": "0", "x-ratelimit-reset": "1795255800"},
+  "body": {"message": "TF400733: The request has been canceled: Request was blocked due to exceeding usage of resource 'ATCP' in namespace 'User'."}
+}

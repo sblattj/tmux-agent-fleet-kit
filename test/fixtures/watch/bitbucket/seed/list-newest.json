@@ -1,0 +1,8 @@
+{"pagelen": 1, "page": 1, "values": [
+  {"type": "pullrequest", "id": 10, "title": "PROJ-1: Retry the upload on 503", "state": "OPEN",
+   "author": {"type": "user", "display_name": "Alice_Example", "nickname": "alice", "account_id": "acct-alice", "uuid": "{alice}"},
+   "source": {"branch": {"name": "alice/PROJ-1-retry"}, "commit": {"hash": "a1a1a1a1a1a1"}},
+   "destination": {"branch": {"name": "main"}, "commit": {"hash": "0f0f0f0f0f0f"}},
+   "created_on": "2026-11-20T08:00:00.000000+00:00", "updated_on": "2026-11-20T09:00:00.500000+00:00",
+   "links": {"html": {"href": "https://acme.example.com/acme/widget/pull-requests/10"}}}
+]}

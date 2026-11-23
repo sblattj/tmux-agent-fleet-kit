@@ -1,0 +1,2 @@
+{"self": "https://acme.example.com/rest/api/3/user?accountId=acct-123", "accountId": "acct-123",
+ "accountType": "atlassian", "displayName": "Human_Example", "active": true, "timeZone": "Europe/Berlin", "locale": "en_US"}

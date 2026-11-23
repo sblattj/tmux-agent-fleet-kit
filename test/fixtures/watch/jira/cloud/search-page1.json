@@ -1,0 +1,42 @@
+{"isLast": false, "nextPageToken": "tok-2",
+ "issues": [
+  {"id": "10001", "key": "PROJ-1", "self": "https://acme.example.com/rest/api/3/issue/10001",
+   "fields": {
+    "summary": "Retry the upload on 503",
+    "status": {"name": "Done"},
+    "assignee": {"accountId": "acct-123", "displayName": "Human_Example"},
+    "reporter": {"accountId": "acct-777", "displayName": "Bob_Example"},
+    "created": "2026-11-01T08:00:00.000+0000",
+    "updated": "2026-11-20T10:05:00.000+0000",
+    "comment": {"startAt": 0, "maxResults": 50, "total": 2, "comments": [
+     {"id": "30001", "author": {"accountId": "acct-777", "displayName": "Bob_Example"},
+      "created": "2026-11-19T09:00:00.000+0000", "updated": "2026-11-19T09:00:00.000+0000",
+      "body": {"type": "doc", "version": 1, "content": [{"type": "paragraph", "content": [{"type": "text", "text": "An old comment, before the cursor."}]}]}},
+     {"id": "30002", "author": {"accountId": "acct-555", "displayName": "Alice_Example"},
+      "created": "2026-11-20T10:04:00.000+0000", "updated": "2026-11-20T10:04:00.000+0000",
+      "body": {"type": "doc", "version": 1, "content": [{"type": "paragraph", "content": [
+       {"type": "mention", "attrs": {"id": "acct-123", "text": "@Human_Example", "accessLevel": ""}},
+       {"type": "text", "text": " can you check the retry backoff?"}]}]}}
+    ]}
+   },
+   "changelog": {"startAt": 0, "maxResults": 2, "total": 2, "histories": [
+    {"id": "20002", "author": {"accountId": "acct-555", "displayName": "Alice_Example"}, "created": "2026-11-20T10:05:00.000+0000",
+     "items": [{"field": "assignee", "fieldtype": "jira", "fieldId": "assignee", "from": "acct-777", "fromString": "Bob_Example", "to": "acct-123", "toString": "Human_Example"}]},
+    {"id": "20001", "author": {"accountId": "acct-555", "displayName": "Alice_Example"}, "created": "2026-11-20T10:02:11.000+0000",
+     "items": [{"field": "status", "fieldtype": "jira", "fieldId": "status", "from": "10101", "fromString": "In Review", "to": "10102", "toString": "Done"}]}
+   ]}},
+  {"id": "10002", "key": "PROJ-2", "self": "https://acme.example.com/rest/api/3/issue/10002",
+   "fields": {
+    "summary": "Widget export drops the header row",
+    "status": {"name": "In Progress"},
+    "assignee": null,
+    "reporter": {"accountId": "acct-777", "displayName": "Bob_Example"},
+    "created": "2026-11-20T10:10:00.000+0000",
+    "updated": "2026-11-20T10:30:00.000+0000",
+    "comment": {"startAt": 0, "maxResults": 50, "total": 0, "comments": []}
+   },
+   "changelog": {"startAt": 0, "maxResults": 1, "total": 3, "histories": [
+    {"id": "21003", "author": {"accountId": "acct-777", "displayName": "Bob_Example"}, "created": "2026-11-20T10:30:00.000+0000",
+     "items": [{"field": "status", "fieldtype": "jira", "fieldId": "status", "from": "10100", "fromString": "To Do", "to": "10103", "toString": "In Progress"}]}
+   ]}}
+ ]}

@@ -1,0 +1,22 @@
+{"pagelen": 50, "page": 1, "values": [
+  {"type": "pullrequest", "id": 12, "title": "PROJ-1: Document the retry policy", "state": "OPEN",
+   "author": {"type": "user", "display_name": "Human_Example", "nickname": "human", "account_id": "acct-me", "uuid": "{me}"},
+   "source": {"branch": {"name": "human/PROJ-1-docs"}, "commit": {"hash": "c3c3c3c3c3c3"}},
+   "destination": {"branch": {"name": "main"}, "commit": {"hash": "0f0f0f0f0f0f"}},
+   "created_on": "2026-11-20T07:00:00.000000+00:00", "updated_on": "2026-11-20T10:22:00.000000+00:00",
+   "links": {"html": {"href": "https://acme.example.com/acme/widget/pull-requests/12"}}},
+  {"type": "pullrequest", "id": 11, "title": "PROJ-1: Cap the retry budget", "state": "OPEN",
+   "author": {"type": "user", "display_name": "Alice_Example", "nickname": "alice", "account_id": "acct-alice", "uuid": "{alice}"},
+   "source": {"branch": {"name": "alice/PROJ-1-budget"}, "commit": {"hash": "d4d4d4d4d4d4"}},
+   "destination": {"branch": {"name": "main"}, "commit": {"hash": "1b1b1b1b1b1b"}},
+   "created_on": "2026-11-20T10:10:00.000000+00:00", "updated_on": "2026-11-20T10:40:00.000000+00:00",
+   "links": {"html": {"href": "https://acme.example.com/acme/widget/pull-requests/11"}}},
+  {"type": "pullrequest", "id": 10, "title": "PROJ-1: Retry the upload on 503", "state": "MERGED",
+   "author": {"type": "user", "display_name": "Alice_Example", "nickname": "alice", "account_id": "acct-alice", "uuid": "{alice}"},
+   "closed_by": {"type": "user", "display_name": "Bob_Example", "nickname": "bob", "account_id": "acct-bob", "uuid": "{bob}"},
+   "merge_commit": {"hash": "5a5a5a5a5a5a"},
+   "source": {"branch": {"name": "alice/PROJ-1-retry"}, "commit": {"hash": "a1a1a1a1a1a1"}},
+   "destination": {"branch": {"name": "main"}, "commit": {"hash": "0f0f0f0f0f0f"}},
+   "created_on": "2026-11-20T08:00:00.000000+00:00", "updated_on": "2026-11-20T10:45:00.000000+00:00",
+   "links": {"html": {"href": "https://acme.example.com/acme/widget/pull-requests/10"}}}
+]}

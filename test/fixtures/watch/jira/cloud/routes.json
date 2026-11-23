@@ -1,0 +1,9 @@
+{"//": "Recorded-fixture routes: a GET whose path matches and whose query holds every listed key (null = key absent) gets this file.",
+ "routes": [
+  {"path": "/rest/api/3/myself", "query": {}, "file": "myself.json"},
+  {"path": "/rest/api/3/search/jql", "query": {"nextPageToken": null}, "file": "search-page1.json",
+   "headers": {"X-RateLimit-Remaining": "97"}},
+  {"path": "/rest/api/3/search/jql", "query": {"nextPageToken": "tok-2"}, "file": "search-page2.json",
+   "headers": {"X-RateLimit-Remaining": "96"}},
+  {"path": "/rest/api/3/issue/PROJ-2/changelog", "query": {"startAt": "0"}, "file": "changelog-PROJ-2.json"}
+ ]}

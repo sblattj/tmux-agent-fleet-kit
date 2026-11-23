@@ -1,0 +1,62 @@
+{
+  "status": 200,
+  "headers": {
+    "Content-Type": "application/json",
+    "X-RateLimit-Remaining": "95"
+  },
+  "body": {
+    "results": [
+      {
+        "id": "1007",
+        "type": "page",
+        "status": "current",
+        "title": "PROJ-1 faq",
+        "space": {
+          "key": "ACME",
+          "name": "ACME Engineering",
+          "type": "global"
+        },
+        "history": {
+          "latest": true,
+          "createdDate": "2026-11-01T09:00:00.000Z",
+          "createdBy": {
+            "type": "known",
+            "accountId": "acct-alice-2",
+            "displayName": "Alice Example",
+            "publicName": "alice"
+          }
+        },
+        "version": {
+          "by": {
+            "type": "known",
+            "accountId": "acct-alice-2",
+            "displayName": "Alice Example",
+            "publicName": "alice"
+          },
+          "when": "2026-11-20T12:00:00.000Z",
+          "number": 1,
+          "message": "",
+          "minorEdit": false
+        },
+        "_links": {
+          "webui": "/spaces/ACME/pages/1007",
+          "self": "https://acme.example.com/wiki/rest/api/content/1007"
+        },
+        "container": {
+          "key": "ACME",
+          "name": "ACME Engineering",
+          "type": "global"
+        }
+      }
+    ],
+    "start": 0,
+    "limit": 50,
+    "size": 1,
+    "_links": {
+      "base": "https://acme.example.com/wiki",
+      "context": "/wiki",
+      "self": "https://acme.example.com/wiki/rest/api/content/search",
+      "next": "https://cdn.acme.example.com/wiki/rest/api/content/search?cursor=x"
+    }
+  }
+}

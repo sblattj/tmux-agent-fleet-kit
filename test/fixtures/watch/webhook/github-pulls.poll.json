@@ -1,0 +1,14 @@
+[
+  {
+    "number": 12,
+    "state": "closed",
+    "title": "Retry the upload on 503",
+    "html_url": "https://github.example/acme/widget/pull/12",
+    "user": {"login": "Alice_Example"},
+    "merged_by": {"login": "Alice_Example"},
+    "created_at": "2026-11-19T09:00:00Z",
+    "updated_at": "2026-11-20T10:02:11Z",
+    "closed_at": "2026-11-20T10:02:11Z",
+    "merged_at": "2026-11-20T10:02:11Z"
+  }
+]

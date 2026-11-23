@@ -1,0 +1,6 @@
+{"//": "Recorded-fixture routes for Jira Data Center / Server (API v2, startAt paging).",
+ "routes": [
+  {"path": "/rest/api/2/myself", "query": {}, "file": "myself.json"},
+  {"path": "/rest/api/2/search", "query": {"startAt": "0"}, "file": "search-page1.json"},
+  {"path": "/rest/api/2/search", "query": {"startAt": "2"}, "file": "search-page2.json"}
+ ]}

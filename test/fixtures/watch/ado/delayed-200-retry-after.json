@@ -1,0 +1,7 @@
+{
+  "note": "A WIQL answer that is still 200 but carries Retry-After: the doc says to honor it even on a 200.",
+  "status": 200,
+  "headers": {"content-type": "application/json; charset=utf-8", "retry-after": "45", "x-ratelimit-remaining": "0",
+              "x-ratelimit-delay": "1.250"},
+  "body": {"queryType": "flat", "queryResultType": "workItem", "asOf": "2026-11-20T10:00:00.000Z", "workItems": []}
+}
