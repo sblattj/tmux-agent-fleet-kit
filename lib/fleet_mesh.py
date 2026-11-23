@@ -500,7 +500,23 @@ def pane_busy(pane):
     if in_mode:
         return True, "pane is in copy mode"
     state, why = input_state(screen, cx, cy)
+    if state == "empty" and _claude_vim() and _claude_prompt_row(screen, cy) and \
+            not any("-- INSERT --" in _plain(screen_cells(ln)) for ln in screen.split("\n")[-8:]):
+        # Claude Code's vim mode shows `-- INSERT --` while inserting and nothing in NORMAL mode, where typed keys
+        # would run as vim commands (`[fleet] mes` eaten up to the `s`, measured 2026-11-23)
+        return True, "vim NORMAL mode (no -- INSERT -- shown)"
     return state != "empty", why
+
+
+def _claude_vim():
+    """True when Claude Code's editorMode is vim (~/.claude.json, or $FLEET_CLAUDE_JSON)."""
+    path = os.environ.get("FLEET_CLAUDE_JSON") or os.path.join(os.path.expanduser("~"), ".claude.json")
+    return _read_json(path).get("editorMode") == "vim"
+
+
+def _claude_prompt_row(screen, cy):
+    lines = screen.split("\n")
+    return 0 <= cy < len(lines) and _plain(screen_cells(lines[cy])).lstrip()[:1] == "\u276f"
 
 
 _POINTER = re.compile(r"^\[fleet\]messagefrom\S+?:runpeer_inboxtoreadit(\(nopeer_inboxtool\?read\S+\))?$")

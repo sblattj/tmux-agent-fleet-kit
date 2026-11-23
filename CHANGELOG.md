@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.3.2 (2026-11-23)
+
+- Fixed: a typed wake into a Claude Code lane in vim NORMAL mode lost its first characters. NORMAL keys ran as vim commands, so `[fleet] mes` was eaten and `sage from ...` was left in the box (seen on a live lane). Claude Code shows `-- INSERT --` while inserting and nothing in NORMAL mode, so the old `-- NORMAL --` check never fired. Now, when `editorMode` is `vim` in `~/.claude.json` (or `$FLEET_CLAUDE_JSON`), a Claude prompt with no `-- INSERT --` in the footer counts as busy, and the wake defers instead of typing.
+
 ## v0.3.1 (2026-11-23)
 
 - Fixed: a guarded type of a slash command into Claude Code (`fleet park`'s `/compact`, `fleet_mesh.py type <pane> /mcp`) never sent Enter, so `fleet park` refused every live Claude lane. Claude Code draws a typed slash command in colour, and the post-type check read coloured cells as placeholder (an empty box). The check now also accepts the box when every cell, placeholder styling included, reads exactly the typed text; the pre-type emptiness check is unchanged. PROVEN on a live Claude Code 2.1.330 lane: guarded `/mcp` opened the menu, and `fleet park` compacted and parked.

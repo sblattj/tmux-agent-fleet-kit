@@ -264,7 +264,7 @@ A deferred wake reads `delivered X -> Y (inbox written; typed wake deferred (<wh
 **Typed wakes (claude, kiro, agy).** `type_wake()` never types into text a human is writing. Before typing:
 1. No attached client whose current pane is the target sent a key in the last `FLEET_WAKE_QUIET` seconds
    (`list-clients -F '#{pane_id} #{client_activity}'`).
-2. The pane is not in copy mode, and no vim `-- NORMAL --` line shows.
+2. The pane is not in copy mode, and no vim `-- NORMAL --` line shows. With Claude Code's `editorMode: vim` (`~/.claude.json`, or `$FLEET_CLAUDE_JSON`), a `❯` prompt also needs `-- INSERT --` in the footer, because Claude Code shows nothing in NORMAL mode.
 3. The row under the cursor (`display-message -p '#{cursor_x} #{cursor_y}'`, `capture-pane -p -e`) is an EMPTY prompt:
    the text left of the cursor is exactly a prompt glyph (`❯` Claude Code, `›` kiro-cli, `>` agy), and every other
    cell on that row and on the rows below it, up to the box's rule line, is placeholder: faint (Claude) or drawn in an

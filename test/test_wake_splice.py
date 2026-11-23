@@ -271,6 +271,30 @@ class InputStateTest(unittest.TestCase):
         self.assertEqual(mesh.input_text(screen, 0), "", "control: the solid reading drops coloured cells")
         self.assertEqual(mesh.input_text(screen, 0, every=True), "/mcp")
 
+    def test_claude_vim_normal_mode_is_busy(self):
+        # Claude Code vim mode: `-- INSERT --` in the footer while inserting, nothing in NORMAL mode
+        tmp = tempfile.mkdtemp()
+        cfg = os.path.join(tmp, "claude.json")
+        old = {k: os.environ.get(k) for k in ("FLEET_CLAUDE_JSON", "FLEET_WAKE_QUIET")}
+        os.environ.update(FLEET_CLAUDE_JSON=cfg, FLEET_WAKE_QUIET="0")
+        rule = "\u2500" * 40
+        normal = "\u276f \n%s\n  bypass permissions on\n" % rule
+        insert = "\u276f \n%s\n  -- INSERT -- bypass permissions on\n" % rule
+        orig = mesh._read_screen
+        try:
+            for vim, screen, want in ((True, normal, True), (True, insert, False), (False, normal, False)):
+                with open(cfg, "w") as f:
+                    json.dump({"editorMode": "vim"} if vim else {}, f)
+                mesh._read_screen = lambda pane, s=screen: (s, 2, 0, False)
+                got = mesh.pane_busy("%0")
+                print("LABEL vim=%s insert=%s -> %r" % (vim, "INSERT" in screen, got))
+                self.assertEqual(got[0], want, (vim, screen))
+        finally:
+            mesh._read_screen = orig
+            for k, v in old.items():
+                os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+            shutil.rmtree(tmp, ignore_errors=True)
+
     def test_vim_normal_mode_and_bad_cursor_are_busy(self):
         self.assertEqual(mesh.input_state("❯ \n-- NORMAL --\n", 2, 0)[0], "busy")
         self.assertEqual(mesh.input_state("❯ \n", 2, 5)[0], "busy")
