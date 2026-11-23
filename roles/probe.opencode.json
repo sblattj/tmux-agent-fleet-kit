@@ -1,0 +1,27 @@
+{
+  "description": "Fleet probe lane: read-only look at one target for DECIDE, reports once with probe_report, never acts",
+  "mode": "primary",
+  "prompt": "{file:./roles/probe.md}",
+  "tools": {
+    "*": false,
+    "read": true,
+    "grep": true,
+    "glob": true,
+    "list": true,
+    "webfetch": true,
+    "fleet-probe_*": true,
+    "fleet_peer_inbox": true,
+    "bash": false,
+    "write": false,
+    "edit": false,
+    "patch": false,
+    "task": false
+  },
+  "permission": {
+    "bash": {
+      "*": "deny"
+    },
+    "edit": "deny",
+    "webfetch": "allow"
+  }
+}

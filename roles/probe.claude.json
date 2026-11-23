@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash",
+      "Edit",
+      "Write",
+      "NotebookEdit",
+      "MultiEdit",
+      "AskUserQuestion",
+      "SendMessage",
+      "Task",
+      "Agent",
+      "mcp__fleet__peer_send",
+      "mcp__fleet__decision_open",
+      "mcp__fleet__decision_answer",
+      "mcp__fleet__decision_report",
+      "mcp__fleet__decision_list",
+      "mcp__fleet__decision_find"
+    ]
+  }
+}

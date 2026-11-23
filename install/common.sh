@@ -36,7 +36,10 @@ fc_commit() {
     fc_say "would write: $label ($target)"; rm -f "$tmp"; return 0
   fi
   mkdir -p "$(dirname "$target")"
-  if [ -f "$target" ]; then cp -p "$target" "$target.fleet-bak.$(date +%Y%m%d%H%M%S)"; fi
+  # one backup per second: several edits to one file in a run keep the pre-run copy, not an intermediate one
+  local bak
+  bak=$target.fleet-bak.$(date +%Y%m%d%H%M%S)
+  if [ -f "$target" ] && [ ! -e "$bak" ]; then cp -p "$target" "$bak"; fi
   cat "$tmp" > "$target"
   rm -f "$tmp"
   fc_say "wrote: $label ($target)"
@@ -162,9 +165,26 @@ fc_trust_dir() {
   (cd "$FC_TRUST" && pwd -P)
 }
 
+# Roles renamed in v0.2.0 (desk -> decide, orchestrator -> route, listener -> watch). An upgrade retires
+# their installed files and agent entries, whose prompts point at roles/*.md files that no longer exist.
+FC_RETIRED_ROLES="desk orchestrator listener"
+
+# fc_retire_role_files <dir> <suffix> <label>: move $dir/fleet-<old><suffix> aside to a .fleet-bak copy.
+fc_retire_role_files() {
+  local dir=$1 suffix=$2 label=$3 r f
+  for r in $FC_RETIRED_ROLES; do
+    f=$dir/fleet-$r$suffix
+    [ -e "$f" ] || continue
+    if [ "$FC_DRY" = 1 ]; then fc_say "would retire: stale $label fleet-$r ($f)"; continue; fi
+    mv "$f" "$f.fleet-bak.$(date +%Y%m%d%H%M%S)"
+    fc_say "retired: stale $label fleet-$r ($f, renamed in v0.2.0)"
+  done
+}
+
 # Write $CODEX_HOME/fleet-<role>.config.toml from each roles/<role>.codex.toml. Idempotent.
 fc_install_codex_roles() {
   local home=${CODEX_HOME:-$HOME/.codex} f role found=0
+  fc_retire_role_files "$home" .config.toml "codex role profile"
   for f in "$FC_ROLES_DIR"/*.codex.toml; do
     [ -f "$f" ] || continue
     found=1
@@ -176,26 +196,56 @@ fc_install_codex_roles() {
 }
 
 # Merge each roles/<role>.opencode.json into .agent["fleet-<role>"] of $1 (opencode.json), rewriting
-# "{file:./roles/<role>.md}" to the absolute roles dir. Idempotent.
+# "{file:./roles/<role>.md}" to the absolute roles dir. Idempotent. Drops the agents of retired roles
+# (FC_RETIRED_ROLES), and fails when any {file:...} it writes, or any left on a fleet-* agent, is missing:
+# OpenCode rejects the whole config over one bad {file:} path, so every lane on it would exit 1.
 fc_install_opencode_roles() {
-  local target=$1 f role found=0
+  local target=$1 f role found=0 ref missing old
+  old=$(for r in $FC_RETIRED_ROLES; do printf '"fleet-%s",' "$r"; done); old="[${old%,}]"
+  if [ -f "$target" ] && jq -e --argjson o "$old" '(.agent // {}) | keys | any(. as $k | $o | index($k))' "$target" >/dev/null 2>&1; then
+    fc_jq_edit "$target" "retired opencode agents $(jq -r --argjson o "$old" '[(.agent // {}) | keys[] | select(. as $k | $o | index($k))] | join(", ")' "$target")" \
+      --argjson o "$old" '.agent |= with_entries(select(.key as $k | $o | index($k) | not))'
+  fi
   for f in "$FC_ROLES_DIR"/*.opencode.json; do
     [ -f "$f" ] || continue
     found=1
     role=$(basename "$f" .opencode.json)
     jq -e . "$f" >/dev/null 2>&1 || fc_die "$f is not valid JSON"
+    for ref in $(jq -r '.. | strings | scan("\\{file:\\./roles/([^}]+)\\}") | .[0]' "$f"); do
+      [ -f "$FC_ROLES_DIR/$ref" ] || fc_die "$f points at {file:./roles/$ref}, but $FC_ROLES_DIR/$ref does not exist"
+    done
     fc_jq_edit "$target" "opencode agent fleet-$role" --arg r "fleet-$role" --arg d "$FC_ROLES_DIR" \
       --slurpfile a "$f" \
       '.agent[$r] = ($a[0] | walk(if type == "string" then (split("{file:./roles/") | join("{file:" + $d + "/")) else . end))'
   done
   if [ "$found" = 0 ]; then fc_say "no role agents found in $FC_ROLES_DIR (roles/*.opencode.json); skipping"; fi
+  # The probe verbs are for fleet-probe only. OpenCode 1.19 turns the global tools["fleet-probe_*"]=false into a
+  # deny rule that the global permission (e.g. "allow" from --bypass) overrides, last match wins, so every agent
+  # was offered them. An agent's own permission comes after the global ones, so each agent but fleet-probe gets
+  # the deny there: every agent in the config plus the built-in build, plan and general.
+  fc_jq_edit "$target" "fleet-probe_* denied on every agent but fleet-probe" \
+    '.agent = ((.agent // {}) as $a | reduce ((($a | keys) + ["build", "plan", "general"]) | unique[]
+        | select(. != "fleet-probe")) as $k ($a; .[$k] = ((.[$k] // {})
+        | .permission = (((.permission // {}) | if type == "string" then {"*": .} else . end) + {"fleet-probe_*": "deny"}))))'
+  if [ "$FC_DRY" = 1 ] || [ ! -f "$target" ]; then return 0; fi
+  missing=$(jq -r '(.agent // {}) | to_entries[] | select(.key | startswith("fleet-")) | .key as $k
+      | .value | .. | strings | scan("\\{file:([^}]+)\\}") | "\($k) \(.[0])"' "$target" |
+    while read -r k path; do
+      [ "${path#\~/}" = "$path" ] || path=$HOME/${path#\~/}
+      [ -f "$path" ] || printf '  agent %s: {file:%s}\n' "$k" "$path"
+    done)
+  [ -z "$missing" ] || fc_die "$target has fleet agents whose {file:...} prompt does not exist; OpenCode would reject the config:
+$missing"
 }
 
 # Write $1/fleet-<role>.json (agents dir) from each roles/<role>.kiro.json: .name = "fleet-<role>" and
 # .prompt = the INLINE text of roles/<role>.md (Kiro rejects absolute file:// prompts and silently falls
 # back to the default agent, dropping the deny rules). Idempotent; reuses fc_jq_edit for backups.
+# fleet-probe sets includeMcpJson false, so it gets its servers here: the mesh (inbox) and the read-only
+# fleet-probe verbs (docs/design/four-desks.md 2.5).
 fc_install_kiro_roles() {
   local dir=$1 f role found=0
+  fc_retire_role_files "$dir" .json "kiro agent"
   for f in "$FC_ROLES_DIR"/*.kiro.json; do
     [ -f "$f" ] || continue
     found=1
@@ -204,7 +254,9 @@ fc_install_kiro_roles() {
     [ -f "$FC_ROLES_DIR/$role.md" ] || fc_die "missing $FC_ROLES_DIR/$role.md (prompt text for kiro agent fleet-$role)"
     fc_jq_edit "$dir/fleet-$role.json" "kiro agent fleet-$role" --arg n "fleet-$role" \
       --rawfile p "$FC_ROLES_DIR/$role.md" --slurpfile a "$f" \
-      '$a[0] | .name = $n | .prompt = $p'
+      --arg m "$FC_REPO/lib/fleet_mesh.py" --arg q "$FC_REPO/lib/fleet_probe.py" \
+      '$a[0] | .name = $n | .prompt = $p
+       | if $n == "fleet-probe" then .mcpServers = {fleet:{command:"python3",args:[$m,"serve"]},"fleet-probe":{command:"python3",args:[$q,"serve"]}} else . end'
   done
   if [ "$found" = 0 ]; then fc_say "no role agents found in $FC_ROLES_DIR (roles/*.kiro.json); skipping"; fi
 }
@@ -214,6 +266,7 @@ fc_install_kiro_roles() {
 # The deny rules are not here: fleet launch passes roles/<role>.agy.json as the lane's --settings.
 fc_install_agy_roles() {
   local dir=$1 f role found=0
+  fc_retire_role_files "$dir" .md "agy agent"
   for f in "$FC_ROLES_DIR"/*.agy.md; do
     [ -f "$f" ] || continue
     found=1

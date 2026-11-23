@@ -635,5 +635,360 @@ class TestTui(Base):
             self.assertIn(k, p.stdout)
 
 
+# ------------------------------------------------------------------ four desks: WATCH source, task gate, learn this
+# docs/design/four-desks.md 2.3, 2.4, 3.7 and the phase 4 and 7 rows of section 7.
+
+PROBE_C = os.path.join(ROOT, "lib", "fleet_probe_contract.py")
+HAVE_LEARN = os.path.exists(os.path.join(ROOT, "lib", "fleet_learn.py"))
+LEARN_SKIP = "needs lib/fleet_learn.py (branch fd/fleet-learn); lands with it"
+EID1 = "github:acme-gh:acme/widget#12:2026-11-20T10:00:00Z:opened"
+EID2 = "jira:acme-jira:PROJ-1:2026-11-20T11:00:00Z:created"
+TC1 = 'TASK-CANDIDATE %s acme/widget#12 "flaky upload test, can someone fix it" https://github.example.com/acme/widget/issues/12' % EID1
+TC2 = 'TASK-CANDIDATE %s PROJ-1 "add a retry cap" https://jira.example.com/browse/PROJ-1' % EID2
+
+
+def load_decisions():
+    """fleet_decisions in this process (for the probe hook test); lib/ goes on sys.path as the CLI does."""
+    return _load("fleet_decisions", DECISIONS)
+
+
+class DeskBase(Base):
+    def task_lines(self, name="ORCHESTRATOR"):
+        return [m["text"] for m in self.inbox(name) if m["text"].startswith("TASK ")]
+
+    def route_mentions(self, needle, name="ORCHESTRATOR"):
+        return [m["text"] for m in self.inbox(name) if needle in m["text"]]
+
+    def intake(self, text, env=None):
+        p = self.fleet("intake", text, env=env)
+        return p
+
+    def meta(self):
+        p = os.path.join(self.state, "decide", "calls.json")
+        if not os.path.exists(p):
+            return {}
+        with open(p) as f:
+            return json.load(f)
+
+    def card(self, cid):
+        for c in self.state_json()["open"]:
+            if c["id"] == cid:
+                return c
+        return None
+
+    def append_row(self, row):
+        with open(os.path.join(self.state, "decisions.jsonl"), "a") as f:
+            f.write(json.dumps(row) + "\n")
+
+
+class TestWatchSource(DeskBase):
+    def test_card_shows_watch_source_and_link_from_the_call_row(self):
+        self.append_row({"id": "Q3", "at": mesh.now(), "from": "WATCH", "question": "acme-gh acme/widget#12: review?",
+                         "options": ["yes", "no"], "status": "open", "answer": None, "answeredAt": None,
+                         "watch": {"sourceKind": "github", "source": "acme-gh", "ref": "acme/widget#12",
+                                   "url": "https://github.example.com/acme/widget/pull/12", "eid": EID1,
+                                   "auth": "env:GH_TOKEN"}})
+        c = self.card("Q3")
+        self.assertEqual(c["watch"], {"sourceKind": "github", "source": "acme-gh", "ref": "acme/widget#12",
+                                      "url": "https://github.example.com/acme/widget/pull/12", "eid": EID1},
+                         "only the five WATCH keys survive (no auth)")
+        self.assertIsNone(self.card("Q1")["watch"], "control: a lane's call has no WATCH badge")
+        p = self.fleet("tui", "--plain", stdin="q\n")
+        self.assertIn("[github] acme/widget#12  https://github.example.com/acme/widget/pull/12", p.stdout)
+
+    def test_non_http_url_is_dropped_never_a_link(self):
+        for i, url in enumerate(("javascript:alert(1)", "file:///etc/passwd", "data:text/html,x", "http://ok.example/a")):
+            self.append_row({"id": "Q%d" % (3 + i), "at": mesh.now(), "from": "WATCH", "question": "q %d %s" % (i, url),
+                             "options": [], "status": "open", "answer": None,
+                             "watch": {"sourceKind": "jira", "ref": "PROJ-%d" % i, "url": url}})
+        got = {c["id"]: c["watch"] for c in self.state_json()["open"] if c["watch"]}
+        self.assertNotIn("url", got["Q3"])
+        self.assertNotIn("url", got["Q4"])
+        self.assertNotIn("url", got["Q5"])
+        self.assertEqual(got["Q6"]["url"], "http://ok.example/a", "control: an http url stays")
+
+    def test_sidecar_registration_gives_a_badge_when_the_row_has_none(self):
+        d = load_decisions()
+        d.register_call("Q1", "ask", watch={"sourceKind": "call", "ref": "standup 09:00"})
+        self.assertEqual(self.card("Q1")["watch"], {"sourceKind": "call", "ref": "standup 09:00"})
+        self.assertIsNone(self.card("Q2")["watch"], "control: unregistered call")
+        with self.assertRaises(ValueError):
+            d.register_call("Q1", "task-candidate")  # a task call without its task is refused
+        with self.assertRaises(ValueError):
+            d.register_call("bogus", "ask")
+
+    @unittest.skipUnless("watch" in open(MESH).read().split("def t_decision_open", 1)[1].split("\ndef ", 1)[0],
+                         "needs the decision_open watch patch (LANDER-NOTES-fd-decide-ui.md)")
+    def test_decision_open_passes_watch_through(self):
+        mesh.call_tool("decision_open", {"from": "WATCH", "question": "acme/widget#12 review?", "watch": {
+            "sourceKind": "github", "ref": "acme/widget#12", "url": "javascript:x", "auth": "env:T"}})
+        self.assertEqual(self.rows()["Q3"]["watch"], {"sourceKind": "github", "ref": "acme/widget#12"})
+
+
+class TestTaskGate(DeskBase):
+    def test_task_candidate_reaches_route_only_after_a_yes_pick(self):
+        p = self.intake(TC1 + "\n" + TC2)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        res = json.loads(p.stdout)
+        self.assertEqual(res["calls"], ["Q3", "Q4"])
+        # open: ROUTE has heard nothing about either candidate
+        self.assertEqual(self.task_lines(), [])
+        self.assertEqual(self.route_mentions("acme/widget#12") + self.route_mentions("PROJ-1"), [])
+        c3 = self.card("Q3")
+        self.assertEqual(c3["task"], "task-candidate")
+        self.assertEqual(c3["watch"]["sourceKind"], "github")
+        self.assertEqual(c3["watch"]["url"], "https://github.example.com/acme/widget/issues/12")
+        self.assertEqual([o["text"] for o in c3["options"]], ["yes: start a writing lane", "learn only", "no: drop"])
+        # control: "no" is a pick too, and still sends ROUTE nothing
+        self.run_ok([FLEET, "decisions", "pick", "Q4", "c"])
+        self.assertEqual(self.task_lines(), [])
+        self.assertEqual(self.route_mentions("PROJ-1"), [], "no answer copy of a task call reaches ROUTE")
+        # a yes forwards exactly one TASK, with the human's call id
+        self.run_ok([FLEET, "decisions", "pick", "Q3", "a"])
+        self.assertEqual(self.task_lines(), [
+            'TASK %s acme/widget#12 "flaky upload test, can someone fix it" '
+            'https://github.example.com/acme/widget/issues/12 by human:Q3' % EID1])
+        self.assertEqual(self.inbox("ORCHESTRATOR")[-1]["from"], "DECISIONS")
+        p = self.fleet("pick", "Q3", "a")
+        self.assertEqual(p.returncode, 3, "second pick is already answered")
+        self.assertEqual(len(self.task_lines()), 1, "and forwards nothing more")
+        called = {r["id"]: r for r in self.state_json()["called"]}
+        self.assertEqual(called["Q3"]["forwarded"], "ORCHESTRATOR")
+        self.assertIsNone(called["Q4"]["forwarded"])
+
+    def test_refuse_or_own_words_never_forward(self):
+        self.intake(TC1)
+        p = self.fleet("pick", "Q3", "--text", "yes")
+        self.assertEqual(p.returncode, 1, "a task call takes picks, not own answers")
+        self.run_ok([FLEET, "decisions", "pick", "Q3", "--refuse", "yes later maybe"])
+        self.assertEqual(self.task_lines(), [])
+        self.assertEqual(self.meta()["Q3"]["choice"], "refuse")
+
+    def test_a_lane_answering_a_task_call_forwards_nothing(self):
+        self.intake(TC1)
+        os.environ["FLEET_NAME"] = "lane-a"
+        try:
+            mesh.call_tool("decision_answer", {"id": "Q3", "answer": "a: yes: start a writing lane"})
+        finally:
+            os.environ.pop("FLEET_NAME")
+        p = self.fleet("forward")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertTrue(json.loads(p.stdout)[0]["unverified"])
+        self.intake(TC2)  # intake sweeps answered task calls too
+        self.assertEqual(self.task_lines(), [], "a yes not given by the desk never reaches ROUTE")
+        self.assertNotIn("settledAt", self.meta()["Q3"])
+
+    @unittest.skipUnless('"by"' in open(MESH).read().split("def t_decision_answer", 1)[1].split("\ndef ", 1)[0],
+                         "needs the decision_answer `by` patch (LANDER-NOTES-fd-decide-ui.md)")
+    def test_desk_pane_answer_forwards_once_through_forward(self):
+        self.intake(TC1 + "\n" + TC2)
+        os.environ["FLEET_NAME"] = "DECISIONS"
+        try:
+            mesh.call_tool("decision_answer", {"id": "Q3", "answer": "a: yes: start a writing lane"})
+            mesh.call_tool("decision_answer", {"id": "Q4", "answer": "yes, but only after the release"})
+        finally:
+            os.environ.pop("FLEET_NAME")
+        self.assertEqual(self.task_lines(), [], "decision_answer alone does not forward")
+        self.run_ok([FLEET, "decisions", "forward"])
+        self.run_ok([FLEET, "decisions", "forward"])
+        lines = self.task_lines()
+        self.assertEqual(len(lines), 1, lines)
+        self.assertTrue(lines[0].endswith("by human:Q3"))
+        self.assertEqual(self.meta()["Q4"]["choice"], "own", "control: own words that contain yes are not a yes")
+
+    def test_same_candidate_twice_opens_one_call(self):
+        self.intake(TC1)
+        res = json.loads(self.intake(TC1).stdout)
+        self.assertEqual(res["calls"], [])
+        self.assertEqual(len([r for r in self.rows().values() if EID1 in json.dumps(r) or "acme/widget#12" in r["question"]]), 1)
+
+    def test_watch_role_cannot_run_intake(self):
+        p = self.intake(TC1, env={"FLEET_ROLE": "watch"})
+        self.assertEqual(p.returncode, 4)
+        self.assertEqual(self.task_lines(), [])
+        p = self.intake(TC1, env={"FLEET_ROLE": "decide"})
+        self.assertEqual(p.returncode, 0, "control: DECIDE can")
+
+    def test_probe_call_yes_forwards_and_every_choice_reaches_the_probe_hook(self):
+        import sys
+        import types
+        calls = []
+        fake = types.ModuleType("fleet_probe")
+        fake.on_pick = lambda cid, choice, meta: calls.append((cid, choice, meta.get("target")))
+        saved = sys.modules.get("fleet_probe")
+        sys.modules["fleet_probe"] = fake
+        try:
+            d = load_decisions()
+            for target in ("acme/widget", "acme/gadget", "acme/gizmo"):
+                mesh.call_tool("decision_open", {"from": "DECISIONS", "question": "found work in %s, start a lane?" % target,
+                                                 "options": ["yes", "no", "nuke"], "allow": ["pick"]})
+            for cid, target in (("Q3", "acme/widget"), ("Q4", "acme/gadget"), ("Q5", "acme/gizmo")):
+                d.register_call(cid, "probe", target=target, probeId="P" + cid[1:],
+                                task={"eid": "probe:P" + cid[1:], "ref": target, "quote": "3 open good-first-issues"})
+            self.assertEqual(self.task_lines(), [])
+            d.pick("Q4", option="b")
+            d.pick("Q5", option="c")
+            self.assertEqual(self.task_lines(), [], "no and nuke forward nothing")
+            d.pick("Q3", option="a")
+            self.assertEqual(self.task_lines(), ['TASK probe:P3 acme/widget "3 open good-first-issues" - by human:Q3'])
+            self.assertEqual(sorted(calls), [("Q3", "yes", "acme/widget"), ("Q4", "no", "acme/gadget"),
+                                             ("Q5", "nuke", "acme/gizmo")])
+        finally:
+            if saved is None:
+                sys.modules.pop("fleet_probe", None)
+            else:
+                sys.modules["fleet_probe"] = saved
+
+
+class TestFyi(DeskBase):
+    def test_fyi_goes_to_route_alone_with_a_decide_probe_row(self):
+        probe_c = _load("fleet_probe_contract", PROBE_C)
+        self.assertEqual(self.route_mentions("FYI"), [], "control: nothing before intake")
+        before = self.state_json()["calledCount"]
+        res = json.loads(self.intake("FYI 2 events: %s %s" % (EID1, EID2)).stdout)
+        self.assertEqual(len(res["fyi"]), 1)
+        self.assertEqual(self.route_mentions("FYI"), ["FYI 2 events: %s %s decidedBy: decide:probe" % (EID1, EID2)])
+        rows = [r for r in self.log_lines() if r.get("action") == "fyi-forward"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(probe_c.validate_log_row(rows[0]), [])
+        self.assertEqual((rows[0]["decidedBy"], rows[0]["human"]), ("decide:probe", False))
+        self.assertEqual(rows[0]["eids"], [EID1, EID2])
+        self.assertEqual(self.task_lines(), [], "an fyi is never a TASK")
+        self.assertEqual(self.rows().keys(), {"Q1", "Q2"}, "an fyi opens no call")
+        self.assertEqual(self.state_json()["calledCount"], before, "an alone row is not a Called answer")
+        # the same eids again: nothing new
+        self.intake("FYI 1 events: %s" % EID1)
+        self.assertEqual(len(self.route_mentions("FYI")), 1)
+
+    def test_probe_action_rows_do_not_overwrite_an_answer_in_called(self):
+        self.run_ok([FLEET, "decisions", "pick", "Q1", "b"])
+        probe_c = _load("fleet_probe_contract", PROBE_C)
+        mesh._append_line(os.path.join(self.state, "decisions-log.jsonl"),
+                          json.dumps(probe_c.log_row("nuke", mesh.now(), "acme/widget", call_id="Q1")))
+        called = {r["id"]: r for r in self.state_json()["called"]}
+        self.assertEqual(called["Q1"]["verbatim"], "b: quarantine")
+
+
+class LearnBase(DeskBase):
+    def ledger(self):
+        p = os.path.join(self.state, "learn", "ledger.jsonl")
+        if not os.path.exists(p):
+            return []
+        with open(p) as f:
+            return [json.loads(x) for x in f if x.strip()]
+
+
+@unittest.skipUnless(HAVE_LEARN, LEARN_SKIP)
+class TestLearnThis(LearnBase):
+    def test_tui_learn_key_adds_one_row_with_the_humans_verbatim_words(self):
+        self.assertEqual(self.ledger(), [], "control: empty before")
+        p = self.fleet("tui", "--plain", stdin="l Q2\no hold it until Monday\nl Q2\nl Q2\nq\n")
+        self.assertIn("error: Q2 is still open", p.stdout, "an open call can't be learned")
+        rows = self.ledger()
+        self.assertEqual(len(rows), 1, rows)
+        r = rows[0]
+        self.assertEqual(r["quote"], "hold it until Monday")
+        self.assertEqual(r["quote"], [x for x in self.log_lines() if x.get("id") == "Q2"][-1]["verbatim"])
+        self.assertEqual((r["kind"], r["origin"], r["by"]), ("decision", "fleet", "decide"))
+        self.assertEqual(r["source"]["type"], "decide-learn-this")
+        self.assertEqual(r["source"]["ref"], "Q2")
+        self.assertIn("already in LEARN as %s" % r["lid"], p.stdout, "the second press adds nothing")
+        self.assertIn("learned %s" % r["lid"], self.fleet("tui", "--plain", stdin="v\nq\n").stdout)
+
+    def test_learn_this_keeps_the_watch_link(self):
+        self.intake(TC1)
+        self.run_ok([FLEET, "decisions", "pick", "Q3", "a"])
+        self.run_ok([FLEET, "decisions", "learn", "Q3"])
+        r = self.ledger()[-1]
+        self.assertEqual(r["quote"], "a: yes: start a writing lane")
+        self.assertEqual(r["links"], [{"type": "github", "ref": "acme/widget#12", "eid": EID1,
+                                       "url": "https://github.example.com/acme/widget/issues/12"}])
+
+    def test_learn_only_sends_the_item_to_learn_and_nothing_to_route(self):
+        self.intake(TC1)
+        self.run_ok([FLEET, "decisions", "pick", "Q3", "b"])
+        self.assertEqual(self.task_lines(), [])
+        rows = self.ledger()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]["origin"], rows[0]["source"]["type"]), ("outside", "watch"))
+        self.assertEqual(rows[0]["quote"], "flaky upload test, can someone fix it")
+
+
+@unittest.skipIf(HAVE_LEARN, "fleet_learn is present")
+class TestLearnMissing(LearnBase):
+    def test_learn_this_without_fleet_learn_is_a_one_line_error(self):
+        self.run_ok([FLEET, "decisions", "pick", "Q1", "b"])
+        p = self.fleet("learn", "Q1")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("LEARN is not installed", p.stderr)
+        self.assertNotIn("Traceback", p.stderr)
+
+    def test_learn_only_without_fleet_learn_answers_the_call_and_sends_route_nothing(self):
+        self.intake(TC1)
+        p = self.fleet("pick", "Q3", "b")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertNotIn("Traceback", p.stdout + p.stderr)
+        self.assertIn("LEARN is not installed", p.stdout + p.stderr, "the miss is a visible note")
+        self.assertEqual(self.rows()["Q3"]["status"], "answered")
+        self.assertEqual(self.task_lines(), [])
+        self.assertEqual(self.meta()["Q3"]["choice"], "learn")
+
+
+class DeskServerBase(LearnBase):
+    def setUp(self):
+        super().setUp()
+        self.s = Server(self)
+
+    def tearDown(self):
+        self.s.stop()
+        super().tearDown()
+
+
+class TestDeskPage(DeskServerBase):
+    def test_new_routes_need_the_token(self):
+        self.run_ok([FLEET, "decisions", "pick", "Q1", "b"])
+        self.assertEqual(self.s.req("POST", "/api/learn", {"id": "Q1"}, token=False)[0], 403)
+        self.assertEqual(self.s.req("POST", "/api/learn?t=%s" % self.s.token, {"id": "Q1"}, token=False)[0], 403)
+        self.assertEqual(self.s.req("POST", "/api/learn", {"id": "Q1"}, headers={"Origin": "http://evil.example"})[0], 403)
+        self.assertEqual(self.ledger(), [], "no refused request wrote to LEARN")
+
+    def test_page_renders_source_badges_and_safe_links(self):
+        st, html = self.s.req("GET", "/?t=%s" % self.s.token, token=False)
+        self.assertEqual(st, 200)
+        for needle in ("srcBadge", "b-src", "safeUrl", "noopener noreferrer", "/api/learn", "Learn this"):
+            self.assertIn(needle, html)
+        self.assertRegex(html, r"https\?:")
+        self.assertNotIn("innerHTML =", html.replace("innerHTML = ''", ""))
+        self.intake(TC1)
+        st, body = self.s.req("GET", "/api/state")
+        c = [x for x in json.loads(body)["open"] if x["id"] == "Q3"][0]
+        self.assertEqual((c["watch"]["sourceKind"], c["watch"]["ref"]), ("github", "acme/widget#12"))
+
+    def test_yes_in_the_page_forwards_once_like_the_cli(self):
+        self.intake(TC1)
+        self.assertEqual(self.task_lines(), [])
+        st, body = self.s.req("POST", "/api/pick", {"id": "Q3", "option": "a"})
+        self.assertEqual(st, 200, body)
+        self.assertEqual(json.loads(body)["forwarded"], "ORCHESTRATOR")
+        self.assertEqual(self.s.req("POST", "/api/pick", {"id": "Q3", "option": "a"})[0], 409)
+        self.assertEqual(len(self.task_lines()), 1)
+
+    @unittest.skipUnless(HAVE_LEARN, LEARN_SKIP)
+    def test_learn_in_the_page_and_in_the_tui_end_in_the_same_state(self):
+        self.run_ok([FLEET, "decisions", "pick", "Q1", "--text", "quarantine it until Friday"])
+        self.run_ok([FLEET, "decisions", "pick", "Q2", "--text", "ship the docs fix alone"])
+        st, body = self.s.req("POST", "/api/learn", {"id": "Q1"})
+        self.assertEqual(st, 200, body)
+        self.assertEqual(self.s.req("POST", "/api/learn", {"id": "Q1"})[0], 409, "second press")
+        self.fleet("tui", "--plain", stdin="l Q2\nq\n")
+        a, b = self.ledger()
+        strip = lambda r: {k: v for k, v in r.items() if k not in ("lid", "at", "title", "topic")}
+        self.assertEqual(dict(strip(a), source=None, quote=None), dict(strip(b), source=None, quote=None))
+        self.assertEqual((a["quote"], b["quote"]), ("quarantine it until Friday", "ship the docs fix alone"))
+        st, body = self.s.req("GET", "/api/state")
+        learned = {r["id"]: r["learned"] for r in json.loads(body)["called"]}
+        self.assertEqual(learned, {"Q1": a["lid"], "Q2": b["lid"]})
+
+
 if __name__ == "__main__":
     unittest.main()

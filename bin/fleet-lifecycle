@@ -8,6 +8,8 @@
 #   fleet reopen NAME [--fresh]       parked/done lane back: resume the same id, or --fresh from handoff/NAME.md
 #   fleet cleanup [--apply] [--kill-orphans]   dry run by default; --apply archives the roster, parks, marks
 #   fleet handoff NAME                write $FLEET_STATE/handoff/NAME.md (first line "Was: NAME") from the transcript
+#   fleet forget NAME [--force]       archive the roster row, inbox and cursor under archive/forgotten/NAME-<ts>/
+#                                     and drop the row; refuses a lane whose pane is alive unless --force
 #
 # Columns: TIER = the lane's roster model (or -); LAST-ACTIVE = age of the newest of tmux window_activity,
 # the claude sessions/<pid>.json statusUpdatedAt, roster lastActive; UNREAD = unread/young (young = under 3600 s old).
@@ -15,7 +17,8 @@
 # type page; agent = a cdp-toolkit origin record exists; just N when CDP_ARTIFACT_DIR is absent), a WARN line when
 # N > FLEET_TAB_WARN, and `chrome tabs: unavailable` when Chrome can't be read. --json output is unchanged.
 # ACTION: park = worker AND (goal achieved OR goal stopped > 600 s) AND no unread inbox line under 3600 s old;
-# orchestrator-decides = worker with goal none; - = nothing. Only workers are parked: route/decide/watch/learn (and any roster entry still carrying a retired role) never are.
+# orchestrator-decides = worker with goal none; forget = a row with a retired role (orchestrator, desk, listener,
+# replaced by the four desks): `fleet forget` it; - = nothing. Only workers are parked: route/decide/watch/learn never are.
 # Stopped-since time, in order: roster goalStoppedAt (epoch secs or ISO), the transcript record's timestamp
 # (claude), the goals db row's updated_at else db mtime (codex), session time.updated (opencode), else file mtime.
 # kiro (Kiro CLI): transcript ${KIRO_HOME:-~/.kiro}/sessions/*/<sid>/{session.json,messages.jsonl}; goal = the
@@ -114,9 +117,11 @@ CLAUDE_HOME = os.environ["FLEET_CLAUDE_HOME"]
 CODEX_HOME = os.environ["CODEX_HOME"]
 KIRO_HOME = os.environ.get("KIRO_HOME") or os.path.join(os.path.expanduser("~"), ".kiro")
 AGY_HOME = os.environ.get("FLEET_AGY_HOME") or os.path.join(os.path.expanduser("~"), ".gemini")
-NOW = time.time()
+NOW = float(os.environ.get("FLEET_NOW") or time.time())  # FLEET_NOW: a fixed clock for tests
 YOUNG = 3600
 STOP_AFTER = 600
+PROBE_STALL = 900  # Q105: a probe lane with no output for 15 min is parked (lib/fleet_probe_contract.py STALL_SEC)
+RETIRED_ROLES = ("orchestrator", "desk", "listener")  # renamed route, decide, watch in v0.2.0
 QUIET = int(os.environ.get("FLEET_QUIET_SECS", "7200"))
 
 
@@ -476,6 +481,10 @@ def facts(name, e, act):
             action = "orchestrator-decides"
         elif (gs == "achieved" or (gs == "stopped" and NOW - since > STOP_AFTER)) and young == 0:
             action = "park"
+    elif status == "live" and role == "probe" and alive and last and NOW - last > PROBE_STALL:
+        action = "park-stalled"
+    elif role in RETIRED_ROLES and not alive:  # the four desks replaced these; a live one is left alone, as
+        action = "forget"                       # `fleet forget` without --force refuses a live pane
     return {"name": name, "cli": e.get("cli"), "role": role, "tier": e.get("model") or "-", "status": status,
             "pane": pane, "paneAlive": alive, "goalState": gs, "goalStoppedAt": int(since) if gs == "stopped" else 0,
             "lastActive": int(last), "unread": un, "unreadYoung": young, "action": action,
@@ -569,6 +578,7 @@ def cmd_scan(args):
     quiet = [f for f in fs if f["status"] == "live" and f["role"] == "worker" and f["paneAlive"]
              and f["goalState"] == "none" and f["lastActive"] and NOW - f["lastActive"] > QUIET]
     dead = [{"name": f["name"], "pane": f["pane"]} for f in fs if f["status"] == "live" and not f["paneAlive"]]
+    stalled = [f for f in fs if f["action"] == "park-stalled"]
     live_panes = set(f["pane"] for f in fs if f["status"] == "live" and f["paneAlive"])
     names = set(r.keys())
     orphans = []
@@ -617,7 +627,8 @@ def cmd_scan(args):
                 procs.append({"pid": pid, "lane": f["name"], "args": args_[:120]})
                 break
     print(json.dumps({"quiet": [{"name": f["name"], "age": age(f["lastActive"])} for f in quiet],
-                      "orphanWindows": orphans, "deadLanes": dead, "orphanProcs": procs}))
+                      "orphanWindows": orphans, "deadLanes": dead, "orphanProcs": procs,
+                      "stalledProbes": [{"name": f["name"], "age": age(f["lastActive"])} for f in stalled]}))
 
 
 # ---------------------------------------------------------------- handoff
@@ -1038,6 +1049,37 @@ cmd_reopen() {
   flog "$name reopened fresh=$fresh"
 }
 
+cmd_forget() {
+  local name= force=0 pane ts d f t
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --force) force=1; shift ;;
+      -*) die "unknown flag $1" ;;
+      *) [ -z "$name" ] || usage; name=$1; shift ;;
+    esac
+  done
+  [ -n "$name" ] || usage
+  role_guard forget
+  need jq
+  has_lane "$name" || die "no lane named $name in the roster"
+  pane=$(roster_get "$name" pane)
+  if pane_alive "$pane"; then
+    [ "$force" = 1 ] || die "lane $name is live (pane $pane); fleet stop $name first, or pass --force"
+    echo "WARN $name's pane $pane is alive; --force drops the row and leaves the pane running" >&2
+  fi
+  ts=$(date -u +%Y%m%dT%H%M%SZ)
+  d=$STATE/archive/forgotten/$name-$ts
+  mkdir -p "$d"
+  jq --arg n "$name" '.[$n]' "$ROSTER" > "$d/roster-entry.json" || die "could not archive $name's roster row"
+  for f in "$STATE/inbox/$name.jsonl" "$STATE/inbox/$name.cursor"; do
+    [ ! -e "$f" ] || mv "$f" "$d/" || die "could not archive $f"
+  done
+  t=$(mktemp "$STATE/.roster.XXXXXX")
+  if jq --arg n "$name" 'del(.[$n])' "$ROSTER" > "$t"; then mv "$t" "$ROSTER"; else rm -f "$t"; die "could not update $ROSTER"; fi
+  flog "$name forgotten (archived to $d) force=$force"
+  echo "OK forgot $name (archived to $d)"
+}
+
 cmd_cleanup() {
   local apply=0 kill=0 scan n i ts
   while [ $# -gt 0 ]; do
@@ -1059,6 +1101,8 @@ cmd_cleanup() {
   printf '%s' "$scan" | jq -r '.deadLanes[] | "  DEAD-LANE \(.name) pane=\(.pane)"'
   echo "(4) cli processes naming a roster lane that has no pane:"
   printf '%s' "$scan" | jq -r '.orphanProcs[] | "  ORPHAN-PROC pid=\(.pid) lane=\(.lane) \(.args)"'
+  echo "(5) probe lanes with no output for 15 min (Q105):"
+  printf '%s' "$scan" | jq -r '.stalledProbes[] | "  STALLED-PROBE \(.name) idle=\(.age)"'
   if [ "$apply" = 0 ]; then
     echo "dry run: nothing changed (pass --apply; add --kill-orphans to kill (2) and (4))"
     return 0
@@ -1070,6 +1114,12 @@ cmd_cleanup() {
   for n in $(printf '%s' "$scan" | jq -r '.quiet[].name'); do
     ( cmd_park "$n" ) || echo "WARN could not park $n" >&2
   done
+  for n in $(printf '%s' "$scan" | jq -r '.stalledProbes[].name'); do
+    ( cmd_park "$n" --no-compact ) || echo "WARN could not park stalled probe $n" >&2
+  done
+  if [ "$(printf '%s' "$scan" | jq '.stalledProbes|length')" != 0 ] && [ -x "$HERE/fleet-probe" ]; then
+    "$HERE/fleet-probe" stalled --apply || echo "WARN fleet probe stalled --apply failed" >&2  # marks probes.jsonl rows
+  fi
   for n in $(printf '%s' "$scan" | jq -r '.deadLanes[].name'); do
     roster_merge "$n" "$(jq -n --arg at "$(now)" --arg r "$(resume_cmd "$n")" '{status:"parked",parkedAt:$at,resume:$r}')"
     flog "$n marked parked by cleanup (pane gone)"
@@ -1093,6 +1143,7 @@ case $sub in
   reopen) cmd_reopen "$@" ;;
   cleanup) cmd_cleanup "$@" ;;
   handoff) cmd_handoff "$@" ;;
+  forget) cmd_forget "$@" ;;
   -h|--help|help) usage ;;
   *) usage ;;
 esac

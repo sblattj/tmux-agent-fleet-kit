@@ -14,6 +14,10 @@ desk.sh answer/revise), so the desk pane and the UI end in the same state.
   fleet decisions ask "<q>" [--options a,b] [--allow pick,own] [--wait] [--timeout 30m] [--new]
                                                                   exit 0 picked, 1 refused / own answer, 2 no answer yet
   fleet decisions find "<text>"                                   past answered calls matching the text
+  fleet decisions learn [<id>]                                    learn this: one LEARN row with the human's words
+  fleet decisions intake ["<WATCH lines>"|-]                      DECIDE: FYI lines to ROUTE alone; TASK-CANDIDATE
+                                                                  lines become calls (ROUTE hears only after a yes)
+  fleet decisions forward                                         settle task calls answered in the desk pane
   fleet decisions report <id> ok|fail [note]                      the asker says whether it acted on the answer
   fleet decisions refresh [--json] | refresh choose <id> A|B | refresh confirm <id>
                                                                   ask every lane to re-sync, look for answers given
@@ -180,7 +184,7 @@ def goal_items():
 def latest_log():
     out = {}
     for rec in mesh._parse_lines(mesh.decisions_log_path()):
-        if rec.get("id"):
+        if rec.get("id") and not rec.get("action"):  # DECIDE's alone/nuke rows (probe contract) are not answers
             out[rec["id"]] = rec
     return out
 
@@ -216,7 +220,8 @@ def all_calls():
     for d in mesh.decisions():
         calls[d["id"]] = {"id": d["id"], "at": d.get("at"), "from": d.get("from"), "question": d.get("question") or "",
                           "rawOptions": d.get("options") or [], "allow": d.get("allow"), "relayTo": [],
-                          "mesh": d.get("status"), "goal": None, "answer": d.get("answer")}
+                          "mesh": d.get("status"), "goal": None, "answer": d.get("answer"),
+                          "watch": clean_watch(d.get("watch"))}
     for g in goal_items():
         gid = g.get("id")
         if not gid:
@@ -226,7 +231,7 @@ def all_calls():
             q, inline = split_inline(g.get("question") or "")
             c = calls[gid] = {"id": gid, "at": g.get("at"), "from": g.get("from"), "question": q,
                               "rawOptions": inline, "allow": None, "relayTo": [], "mesh": None, "goal": None,
-                              "answer": g.get("answer")}
+                              "answer": g.get("answer"), "watch": None}
         elif c["mesh"] is not None:
             gq = mesh._norm(split_inline(g.get("question") or "")[0])
             mq = mesh._norm(c["question"])
@@ -248,6 +253,7 @@ DEFAULT_ALLOW = ["pick", "edit", "own", "snooze", "refuse"]
 
 def open_cards(include_snoozed=False):
     calls = all_calls()
+    meta = calls_meta()
     opened = sorted((c for c in calls.values() if c["open"]), key=lambda c: (c.get("at") or "", _idnum(c["id"])))
     groups, order = {}, []
     for c in opened:  # oldest first: the oldest id of a duplicate group is the primary
@@ -269,7 +275,8 @@ def open_cards(include_snoozed=False):
                 "allow": prim.get("allow") or DEFAULT_ALLOW, "askers": askers,
                 "alsoAskedBy": [a for a in askers if a != prim["from"]], "dupIds": [d["id"] for d in dups],
                 "conflict": prim.get("conflict"),
-                "askerOf": {d["id"]: _uniq([d["from"]] + d["relayTo"]) for d in [prim] + dups}}
+                "askerOf": {d["id"]: _uniq([d["from"]] + d["relayTo"]) for d in [prim] + dups},
+                "watch": watch_of(prim["id"], prim, meta), "task": (meta.get(prim["id"]) or {}).get("kind")}
         if prim["id"] in snoozed and not include_snoozed:
             n_snoozed += 1
             continue
@@ -304,6 +311,7 @@ def badge_of(delivery):
 def called_list():
     calls = all_calls()
     logs, reports = latest_log(), latest_reports()
+    meta, learned = calls_meta(), learned_ids()
     out = []
     for cid, ln in logs.items():
         c = calls.get(cid) or {}
@@ -318,7 +326,9 @@ def called_list():
                     "via": ln.get("via") or "desk", "delivery": delivery, "badge": b,
                     "retry": b in ("failed", "queued") and bool(delivery),
                     "acted": (None if not rep else ("acted on" if rep.get("ok") else "act failed")),
-                    "actedNote": rep.get("note") if rep else None, "source": ln.get("source")})
+                    "actedNote": rep.get("note") if rep else None, "source": ln.get("source"),
+                    "watch": watch_of(cid, c, meta), "task": (meta.get(cid) or {}).get("kind"),
+                    "forwarded": ln.get("forwarded"), "learned": learned.get(cid)})
     out.sort(key=lambda r: (r.get("at") or "", _idnum(r["id"])), reverse=True)
     return out
 
@@ -416,14 +426,21 @@ def pick(cid, option=None, text=None, kind=None, refuse=False, via="ui", extra=N
                     delivery[to] = mesh.deliver(frm, to, "[answer %s] %s" % (i, verbatim))
         copied = []
         orch = mesh.orch_name()
-        if cfg.get("copyOrchestrator", True) and orch not in card["askers"]:
+        tmeta = calls_meta().get(card["id"]) or {}
+        forwarded, notes = None, []
+        if tmeta.get("kind") in TASK_KINDS:  # a task reaches ROUTE only as TASK, only after a yes (Q88, 3.7)
+            forwarded, notes = _settle_task(card["id"], tmeta, verbatim, kind, card["options"])
+            if forwarded:
+                delivery[orch] = forwarded
+        elif cfg.get("copyOrchestrator", True) and orch not in card["askers"]:
             delivery[orch] = mesh.deliver(frm, orch, "[DECISIONS UI copy] %s from %s -> %s: %s" % (
                 card["id"], card["from"], ", ".join(card["askers"]), verbatim))
             copied.append(orch)
         rec_extra = {"via": via, "frontend": frontend, "kind": kind, "copiedTo": copied, "delivery": delivery}
+        if forwarded:
+            rec_extra["forwarded"] = orch
         rec_extra.update(extra or {})
         goal_open = {g.get("id") for g in goal_items() if g.get("status") == "open"}
-        notes = []
         for i in ids:
             done = False
             if i in goal_open:
@@ -439,7 +456,8 @@ def pick(cid, option=None, text=None, kind=None, refuse=False, via="ui", extra=N
                 mesh._append_line(mesh.decisions_log_path(), json.dumps(line))
         mesh.log("decisions-ui pick %s kind=%s via=%s badge=%s" % (card["id"], kind, via, badge_of(delivery)))
         return {"ok": True, "id": card["id"], "ids": ids, "verbatim": verbatim, "kind": kind, "delivery": delivery,
-                "status": badge_of(delivery), "copiedTo": copied, "notes": notes}
+                "status": badge_of(delivery), "copiedTo": copied, "notes": notes,
+                "forwarded": orch if forwarded else None}
     finally:
         lk.close()
 
@@ -762,6 +780,373 @@ def refresh_confirm(cid):
 
 # ---------------------------------------------------------------- role guard
 
+# ---------------------------------------------------------------- four desks: WATCH source, task gate, learn this
+#
+# Spec: docs/design/four-desks.md 2.3, 2.4, 2.5 and 3.7. Every WATCH item reaches DECIDE first (Q88). An fyi DECIDE
+# passes to ROUTE alone (a mesh message, never a write) and logs a decidedBy decide:probe row. A task candidate
+# becomes a call for the human, and ROUTE hears of it only as `TASK ... by human:<Qn>` after a yes on that call.
+
+WATCH_KEYS = ("sourceKind", "source", "ref", "url", "eid")
+TASK_KINDS = ("task-candidate", "probe")  # call kinds whose yes forwards a TASK to ROUTE
+TASK_OPTIONS = ["yes: start a writing lane", "learn only", "no: drop"]
+_URL_OK = re.compile(r"^https?://[^\s\"'<>\\]+$", re.I)
+_EID_OK = re.compile(r"^[A-Za-z0-9][^\s\"]{0,279}$")
+_TASK_LINE = re.compile(r'^TASK-CANDIDATE\s+(\S+)\s+(\S+)\s+"(.*)"\s+(\S+)\s*$')
+_FYI_LINE = re.compile(r"^FYI\s+(\d+)\s+events?:\s*(.*?)\s*$")
+
+
+def clean_watch(w):
+    """The WATCH object a call may carry: WATCH_KEYS only, one-line strings, and a url only when it is http(s)."""
+    if not isinstance(w, dict):
+        return None
+    out = {}
+    for k in WATCH_KEYS:
+        v = w.get(k)
+        if isinstance(v, str) and v.strip() and len(v) <= 500 and "\n" not in v:
+            out[k] = v.strip()
+    if "url" in out and not _URL_OK.match(out["url"]):
+        del out["url"]
+    return out if (out.get("sourceKind") or out.get("ref")) else None
+
+
+def decide_dir():
+    return state_path("decide")
+
+
+def _meta_path():
+    return os.path.join(decide_dir(), "calls.json")
+
+
+def calls_meta():
+    d = _read_json(_meta_path(), {})
+    return d if isinstance(d, dict) else {}
+
+
+def _calls_lock():
+    os.makedirs(decide_dir(), exist_ok=True)
+    f = open(os.path.join(decide_dir(), ".calls.lock"), "a+")
+    fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+    return f
+
+
+def _update_meta(cid, fields):
+    lk = _calls_lock()
+    try:
+        m = calls_meta()
+        m.setdefault(cid, {}).update(fields)
+        mesh._atomic_write(_meta_path(), json.dumps(m, indent=2, sort_keys=True) + "\n")
+        return dict(m[cid])
+    finally:
+        lk.close()
+
+
+def _clean_task(task):
+    if not isinstance(task, dict) or not isinstance(task.get("eid"), str) or not _EID_OK.match(task["eid"]):
+        raise ValueError("a task needs an eid (a WATCH event id, or probe:<id>)")
+    t = {k: str(task[k]) for k in ("eid", "ref", "quote", "url") if task.get(k)}
+    if t.get("url") and not _URL_OK.match(t["url"]):
+        del t["url"]
+    return t
+
+
+def register_call(cid, kind, watch=None, task=None, **extra):
+    """Record DECIDE's own metadata for call `cid` in $FLEET_STATE/decide/calls.json and return the stored row.
+
+    kind: task-candidate (a WATCH TASK-CANDIDATE, opened by intake()), probe (a "found X, start a lane?" call opened by
+    fleet_probe) or ask (a WATCH ask, for its badge only). watch: {sourceKind, source, ref, url, eid}. task (task kinds
+    only): {eid, ref, quote, url}, what a yes forwards to ROUTE. extra keys (target, probeId, ...) are stored as-is."""
+    if not cid or not re.match(r"^Q\d+$", str(cid)):
+        raise ValueError("register_call needs a call id like Q12, got %r" % (cid,))
+    if kind not in TASK_KINDS + ("ask",):
+        raise ValueError("kind must be one of %s" % ", ".join(TASK_KINDS + ("ask",)))
+    fields = dict(extra)
+    fields["kind"] = kind
+    w = clean_watch(watch)
+    if w:
+        fields["watch"] = w
+    if task is not None:
+        fields["task"] = _clean_task(task)
+    elif kind in TASK_KINDS and not (calls_meta().get(cid) or {}).get("task"):
+        raise ValueError("a %s call needs task {eid, ref, quote, url}" % kind)
+    return _update_meta(cid, fields)
+
+
+def watch_of(cid, call=None, meta=None):
+    """The WATCH object for a call: the decisions.jsonl row's own `watch`, else DECIDE's sidecar entry."""
+    w = (call or {}).get("watch")
+    if w:
+        return w
+    m = (meta if meta is not None else calls_meta()).get(cid) or {}
+    return clean_watch(m.get("watch"))
+
+
+def watch_event(eid):
+    """The latest watch/events.jsonl row with this eid, or None."""
+    hit = None
+    for rec in mesh._parse_lines(state_path(os.path.join("watch", "events.jsonl"))):
+        if rec.get("eid") == eid:
+            hit = rec
+    return hit
+
+
+def choice_of(answer, options, kind):
+    """Which option an answer is: the option's first word ("yes", "no", "nuke", "learn") when it was picked or typed
+    back exactly; "own" / "refuse" otherwise. An own answer that merely contains yes is never a yes."""
+    if kind == "refuse":
+        return "refuse"
+    if kind not in ("pick", "desk"):
+        return "own"
+    a = (answer or "").strip()
+    m = re.match(r"^\(?([a-z])\)?\s*:\s*(.+)$", a, re.I)
+    body = mesh._norm(m.group(2) if m else a)
+    for o in options:
+        t = mesh._norm(o["text"])
+        if body and (body == t or body == t.split(" ")[0]):
+            return t.split(" ")[0]
+    return "own"
+
+
+def _task_text(cid, t):
+    return 'TASK %s %s "%s" %s by human:%s' % (t["eid"], t.get("ref") or "-", (t.get("quote") or "").replace('"', "'"),
+                                               t.get("url") or "-", cid)
+
+
+def _probe_hook(cid, choice, meta):
+    try:
+        import fleet_probe
+        hook = getattr(fleet_probe, "on_pick", None)
+    except ImportError:
+        return "fleet_probe not installed"
+    if hook is None:
+        return "fleet_probe has no on_pick"
+    try:
+        hook(cid, choice, meta)
+        return None
+    except Exception as e:  # the answer stands; the hook's failure is a note, never a second relay
+        mesh.log("decisions-ui probe hook %s failed: %s" % (cid, e))
+        return "fleet_probe.on_pick failed: %s" % e
+
+
+def _settle_task(cid, tmeta, verbatim, kind, options):
+    """Run once per task call, after it is marked answered, under the pick lock. A yes forwards the TASK to ROUTE;
+    "learn only" adds it to LEARN; anything else sends nothing. Returns (deliver result or None, notes)."""
+    if tmeta.get("settledAt"):
+        return None, []
+    choice = choice_of(verbatim, options, kind)
+    notes, res, fields = [], None, {"settledAt": mesh.now(), "choice": choice}
+    if choice == "yes":
+        res = mesh.deliver(mesh.desk_name(), mesh.orch_name(), _task_text(cid, tmeta["task"]))
+        fields.update({"forwardedAt": mesh.now(), "forwardResult": res})
+    elif choice == "learn" and tmeta.get("kind") == "task-candidate":
+        try:
+            fields["lid"] = _learn_outside(cid, tmeta)["lid"]
+        except ValueError as e:
+            notes.append(str(e))
+    if tmeta.get("kind") == "probe":
+        n = _probe_hook(cid, choice, tmeta)
+        if n:
+            notes.append(n)
+    _update_meta(cid, fields)
+    mesh.log("decisions-ui task %s choice=%s forwarded=%s" % (cid, choice, bool(res)))
+    return res, notes
+
+
+def forward_answered():
+    """Settle every task call answered outside pick() (the desk pane's decision_answer): idempotent.
+
+    Fails closed: decision_answer has no role check, so an answer counts only when its log row says the desk gave it
+    (`by` == $FLEET_DECIDE, written by the mesh patch in LANDER-NOTES-fd-decide-ui.md). Any other answer is reported
+    as `unverified`, left unsettled and forwards nothing; answer task calls with `fleet decisions pick` instead."""
+    lk = _lock()
+    try:
+        rows = {d["id"]: d for d in mesh.decisions()}
+        logs = latest_log()
+        out = []
+        for cid, m in sorted(calls_meta().items(), key=lambda kv: _idnum(kv[0])):
+            d = rows.get(cid)
+            if m.get("kind") not in TASK_KINDS or m.get("settledAt") or not d or d.get("status") != "answered":
+                continue
+            by = (logs.get(cid) or {}).get("by")
+            if by != mesh.desk_name():
+                out.append({"id": cid, "forwarded": False, "result": None, "unverified": True,
+                            "notes": ["answered outside a pick by %s, not the desk: not forwarded; ask again with "
+                                      "`fleet decisions pick`" % (by or "an unrecorded sender")]})
+                continue
+            kind = d.get("answerKind") or "desk"
+            res, notes = _settle_task(cid, m, d.get("answer"), kind, build_options(d.get("options") or []))
+            out.append({"id": cid, "forwarded": bool(res), "result": res, "notes": notes})
+        return out
+    finally:
+        lk.close()
+
+
+def _forwarded_fyi():
+    d = _read_json(os.path.join(decide_dir(), "fyi-forwarded.json"), {})
+    return d if isinstance(d, dict) else {}
+
+
+def intake(text):
+    """DECIDE's handling of WATCH inbox lines (3.7).
+
+    FYI <n> events: <eid>...      -> ROUTE at once, alone (mesh only), one decidedBy decide:probe log row
+    TASK-CANDIDATE <eid> <ref> "<quote>" <url>  -> a call for the human; ROUTE gets nothing until a yes
+    Each eid is handled once. Unknown lines are skipped and listed."""
+    import fleet_probe_contract as probe_c
+    out = {"fyi": [], "calls": [], "skipped": [], "settled": forward_answered()}
+    desk, orch = mesh.desk_name(), mesh.orch_name()
+    os.makedirs(decide_dir(), exist_ok=True)
+    lk = open(os.path.join(decide_dir(), ".intake.lock"), "a+")  # one intake at a time: two wakes must not open
+    fcntl.flock(lk.fileno(), fcntl.LOCK_EX)  # the same candidate twice
+    try:
+        _intake_lines(text, out, desk, orch, probe_c)
+    finally:
+        lk.close()
+    return out
+
+
+def _intake_lines(text, out, desk, orch, probe_c):
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        m = _TASK_LINE.match(line)
+        if m:
+            eid, ref, quote, url = m.groups()
+            if not _EID_OK.match(eid):
+                out["skipped"].append(line[:120])
+                continue
+            dup = [c for c, mm in calls_meta().items() if (mm.get("task") or {}).get("eid") == eid]
+            if dup:
+                out["skipped"].append("%s (already %s)" % (eid, dup[0]))
+                continue
+            ev = watch_event(eid) or {}
+            parts = eid.split(":")
+            w = clean_watch({"sourceKind": ev.get("sourceKind") or parts[0],
+                             "source": ev.get("source") or (parts[1] if len(parts) > 1 else ""),
+                             "ref": ev.get("ref") or ref, "url": ev.get("url") or url, "eid": eid}) or {}
+            q = '%s %s: start a writing lane? "%s"' % (w.get("source") or w.get("sourceKind") or "watch", ref, quote)
+            res = mesh.t_decision_open({"from": desk, "question": q, "options": TASK_OPTIONS,
+                                        "allow": ["pick", "snooze", "refuse"], "watch": w})
+            cid = re.match(r"opened (Q\d+)", res).group(1)
+            register_call(cid, "task-candidate", watch=w, task={"eid": eid, "ref": ref, "quote": quote,
+                                                                 "url": w.get("url")})
+            out["calls"].append(cid)
+            continue
+        m = _FYI_LINE.match(line)
+        if m:
+            seen = _forwarded_fyi()
+            eids = [e for e in m.group(2).split() if _EID_OK.match(e)]
+            fresh = [e for e in eids if e not in seen]
+            if not fresh:
+                out["skipped"].append("FYI (all %d already forwarded)" % len(eids))
+                continue
+            msg = "FYI %d events: %s decidedBy: decide:probe" % (len(fresh), " ".join(fresh))
+            res = mesh.deliver(desk, orch, msg)
+            row = probe_c.log_row("fyi-forward", mesh.now(), "watch", verbatim=msg, relayed_to=[orch])
+            row.update({"eids": fresh, "delivery": {orch: res}})
+            errs = probe_c.validate_log_row(row)
+            if errs:
+                raise ValueError("fyi-forward row invalid: %s" % "; ".join(errs))
+            mesh._append_line(mesh.decisions_log_path(), json.dumps(row))
+            seen.update({e: row["at"] for e in fresh})
+            mesh._atomic_write(os.path.join(decide_dir(), "fyi-forwarded.json"),
+                               json.dumps(seen, indent=2, sort_keys=True) + "\n")
+            out["fyi"].append({"eids": fresh, "result": res})
+            continue
+        out["skipped"].append(line[:120])
+
+
+# ---- learn this (2.4): one LEARN ledger row with the human's verbatim words, through fleet_learn's API
+
+def _learn():
+    try:
+        import fleet_learn
+    except ImportError:
+        raise ValueError("LEARN is not installed here (lib/fleet_learn.py missing); learn this needs fleet-learn")
+    return fleet_learn
+
+
+def learned_ids():
+    """{call id: lid} for calls already copied to LEARN by learn this; {} when LEARN is absent."""
+    try:
+        fl = _learn()
+        rows = fl.items(include_retired=True)
+    except Exception:
+        return {}
+    out = {}
+    for r in rows:
+        src = r.get("source") or {}
+        if src.get("type") == "decide-learn-this" and src.get("ref"):
+            out[src["ref"]] = r.get("lid")
+    return out
+
+
+def _links(w):
+    if not w or not w.get("ref"):
+        return []
+    link = {"type": w.get("sourceKind") or "watch", "ref": w["ref"]}
+    for k in ("eid", "url"):
+        if w.get(k):
+            link[k] = w[k]
+    return [link]
+
+
+def _add(fl, **kw):
+    try:
+        return fl.add_item(**kw)
+    except Exception as e:  # fleet_learn.Refused and friends: one line, no traceback
+        raise ValueError("LEARN refused: %s" % e)
+
+
+def learn_this(cid=None):
+    """Copy one answered call to LEARN: kind decision, origin fleet, quote = the human's verbatim answer from the
+    decisions log. cid None = the newest called row. A second press on the same call adds nothing."""
+    lk = _lock()
+    try:
+        rows = called_list()
+        if cid:
+            row = next((r for r in rows if r["id"] == cid), None)
+            if row is None:
+                c = all_calls().get(cid)
+                if c and c.get("open"):
+                    raise ValueError("%s is still open; answer it first" % cid)
+                raise NotFound("no answered call %s" % cid)
+        elif rows:
+            row = rows[0]
+        else:
+            raise NotFound("no answered call to learn")
+        if row.get("learned"):
+            raise AlreadyAnswered("%s is already in LEARN as %s" % (row["id"], row["learned"]))
+        verbatim = row.get("verbatim") or ""
+        if not verbatim.strip():
+            raise ValueError("%s has no answer words in the decisions log" % row["id"])
+        fl = _learn()
+        lr = _add(fl, kind="decision", origin="fleet", quote=verbatim, title=row.get("question") or "",
+                  source={"type": "decide-learn-this", "ref": row["id"], "path": "$FLEET_STATE/decisions-log.jsonl"},
+                  links=_links(row.get("watch")), by="decide")
+        mesh.log("decisions-ui learn this %s -> %s" % (row["id"], lr.get("lid")))
+        return {"ok": True, "id": row["id"], "lid": lr.get("lid"), "quote": verbatim}
+    finally:
+        lk.close()
+
+
+def _learn_outside(cid, tmeta):
+    """"learn only" on a task candidate: the WATCH item goes to LEARN as outside knowledge, nothing to ROUTE."""
+    fl = _learn()
+    t = tmeta.get("task") or {}
+    ev = watch_event(t.get("eid")) if t.get("eid") else None
+    if ev and hasattr(fl, "add_learn_item"):
+        try:
+            r = fl.add_learn_item(ev)
+        except Exception as e:
+            raise ValueError("LEARN refused: %s" % e)
+        if r:
+            return r
+    return _add(fl, kind="change", origin="outside", quote=t.get("quote") or t.get("eid"),
+                source={"type": "watch", "ref": t.get("eid")}, title=t.get("ref") or "",
+                links=_links(tmeta.get("watch")), by="decide")
+
+
 def human_only(verb):
     role = os.environ.get("FLEET_ROLE") or ""
     if role not in ("", "decide"):
@@ -783,7 +1168,7 @@ class Hub:
     def files(self):
         return [mesh._decisions_path(), mesh.decisions_log_path(), mesh.reports_path(), goal_path(),
                 state_path("decisions-ui-state.json"), state_path("decisions-refresh.json"),
-                state_path("roster.json")]
+                state_path("roster.json"), _meta_path(), state_path(os.path.join("learn", "ledger.jsonl"))]
 
     def signature(self):
         out = []
@@ -929,6 +1314,8 @@ def make_handler(token, hub, allowed_hosts):
                                kind=body.get("kind"), refuse=bool(body.get("refuse")), via="ui")
                 elif path == "/api/retry":
                     res = retry(body.get("id"))
+                elif path == "/api/learn":
+                    res = learn_this(body.get("id"))
                 elif path == "/api/snooze":
                     res = snooze(body.get("id"), body.get("minutes") or 30)
                 elif path == "/api/refresh":
@@ -1022,7 +1409,8 @@ def serve(port, bind, open_page):
 # ---------------------------------------------------------------- terminal fallback
 
 HELP = """keys: j/k or arrows move | a/b/c/d pick that option | o own answer | e edit the rec option
-      x refuse | s snooze 30m | r refresh all | v called list | t retry failed relays | ? help | q quit"""
+      x refuse | s snooze 30m | r refresh all | v called list | t retry failed relays
+      l [id] learn this: copy an answered call (newest, or id) to LEARN in your own words | ? help | q quit"""
 
 
 class Tui:
@@ -1037,6 +1425,10 @@ class Tui:
                                           ("   also asked by: " + ", ".join(c["alsoAskedBy"])) if c["alsoAskedBy"]
                                           else "")]
         lines.append("    " + c["question"])
+        w = c.get("watch")
+        if w:
+            lines.append("    [%s] %s%s" % (w.get("sourceKind") or "watch", w.get("ref") or "",
+                                          ("  " + w["url"]) if w.get("url") else ""))
         if c.get("conflict"):
             lines.append("    !! %s; answer it in the desk pane" % c["conflict"])
         for o in c["options"]:
@@ -1061,8 +1453,11 @@ class Tui:
         for r in rows:
             b = {"relayed": "relayed %s" % r["time"], "queued": "queued (no live lane)", "reopened": "reopened",
                  "failed": "relay FAILED [t retry]"}[r["badge"]]
-            lines.append('  %s  "%s"  -> %s  %s%s' % (r["id"], r["verbatim"], ", ".join(r["relayedTo"]) or "?", b,
-                                                      ("  " + r["acted"]) if r["acted"] else ""))
+            lines.append('  %s%s  "%s"  -> %s  %s%s%s%s' % (
+                r["id"], ("  [%s]" % (r["watch"].get("sourceKind") or "watch")) if r.get("watch") else "",
+                r["verbatim"], ", ".join(r["relayedTo"]) or "?", b, ("  " + r["acted"]) if r["acted"] else "",
+                ("  TASK -> %s" % r["forwarded"]) if r.get("forwarded") else "",
+                ("  learned %s" % r["learned"]) if r.get("learned") else ""))
         return lines
 
     def current(self):
@@ -1099,6 +1494,9 @@ class Tui:
                     out.append('  %s  B: "%s" (%s)  approve: fleet decisions refresh choose %s B, then refresh '
                                'confirm %s' % (r["id"], r["b"]["quote"], r["b"]["source"], r["id"], r["id"]))
                 return out
+            if key == "l":
+                res = learn_this(arg or None)
+                return ["learn this: %s -> LEARN %s \"%s\"" % (res["id"], res["lid"], res["quote"])]
             if key == "t":
                 outs = [self.result_line(retry(r["id"])) for r in called_list() if r["retry"]]
                 return outs or ["nothing to retry"]
@@ -1116,7 +1514,7 @@ class Tui:
             if key == "s":
                 snooze(c["id"], 30)
                 return ["snoozed %s for 30m" % c["id"]] + self.screen()
-        except (ValueError, PermissionError) as e:
+        except (ValueError, PermissionError) as e:  # AlreadyAnswered and NotFound are ValueErrors too
             return ["error: %s" % e]
         return ["unknown key %r; ? for help" % key]
 
@@ -1216,6 +1614,9 @@ def tui_curses(one=False):
                 arg = prompt(scr, "own answer (Enter sends, empty cancels): ")
                 if not arg:
                     continue
+            elif key == "l":
+                rows = called_list()
+                arg = prompt(scr, "learn this, call id [%s]: " % (rows[0]["id"] if rows else "none")) or None
             elif key == "e":
                 cur = t.current()
                 rec = cur["options"][0]["text"] if cur and cur["options"] else ""
@@ -1308,6 +1709,19 @@ def main(argv):
             print("%s %s: %s" % (res["id"], res["status"], json.dumps(res["delivery"])))
             for n in res.get("notes") or []:
                 sys.stderr.write("WARN %s\n" % n)
+            return 0
+        if cmd == "learn":
+            human_only("learn this")
+            _print(learn_this(rest[0] if rest else None))
+            return 0
+        if cmd == "intake":
+            human_only("take in WATCH items")
+            text = sys.stdin.read() if (not rest or rest == ["-"]) else " ".join(rest)
+            _print(intake(text), as_json=True)
+            return 0
+        if cmd == "forward":
+            human_only("forward answered task calls")
+            _print(forward_answered(), as_json=True)
             return 0
         if cmd == "retry":
             human_only("retry relays")

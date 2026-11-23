@@ -165,6 +165,16 @@ check "opencode: tui.json does not list the compact plugin (server plugin only)"
 check "opencode: tui.json lists the plugin once, as a plain entry" jq -e --arg p "file://$pdir" '.plugin == [$p]' "$cdir/tui.json"
 check "opencode: mcp.fleet entry is local, enabled, runs fleet_mesh.py serve" jq -e --arg m "$ROOT/lib/fleet_mesh.py" '.mcp.fleet == {"type":"local","command":["python3",$m,"serve"],"enabled":true}' "$cdir/opencode.json"
 check "opencode: --bypass sets permission allow" jq -e '.permission == "allow"' "$cdir/opencode.json"
+check "opencode: mcp.fleet-probe entry runs fleet_probe.py serve" jq -e --arg p "$ROOT/lib/fleet_probe.py" '.mcp["fleet-probe"] == {"type":"local","command":["python3",$p,"serve"],"enabled":true}' "$cdir/opencode.json"
+check "opencode: fleet-probe tools off by default, on only in agent fleet-probe" jq -e '.tools["fleet-probe_*"] == false and .agent["fleet-probe"].tools["fleet-probe_*"] == true and (.agent["fleet-worker"].tools // {} | has("fleet-probe_*") | not)' "$cdir/opencode.json"
+check "opencode: agent fleet-probe denies bash and edit, all other tools off" jq -e '.agent["fleet-probe"] | .tools["*"] == false and .tools.bash == false and .tools.write == false and .tools.edit == false and .permission.bash == {"*":"deny"} and .permission.edit == "deny"' "$cdir/opencode.json"
+check "opencode: control: agent fleet-worker does not deny bash" jq -e '.agent["fleet-worker"].tools.bash != false' "$cdir/opencode.json"
+# the global tools deny is overridden by permission "allow" (last match wins), so each agent but fleet-probe denies
+# fleet-probe_* in its own permission; a live opencode 1.19 run showed the worker offered all 8 verbs without it
+check "opencode: every fleet agent but fleet-probe denies fleet-probe_* itself" jq -e '[.agent | to_entries[] | select(.key | startswith("fleet-")) | select(.key != "fleet-probe") | .value.permission["fleet-probe_*"]] | length == 5 and all(. == "deny")' "$cdir/opencode.json"
+check "opencode: built-in build, plan and general deny fleet-probe_*" jq -e '[.agent.build, .agent.plan, .agent.general | .permission["fleet-probe_*"]] == ["deny","deny","deny"]' "$cdir/opencode.json"
+check "opencode: control: agent fleet-probe does not deny its own verbs" jq -e '.agent["fleet-probe"].permission | has("fleet-probe_*") | not' "$cdir/opencode.json"
+check "opencode: the worker keeps its bash deny map next to the probe deny" jq -e '.agent["fleet-worker"].permission.bash["fleet park*"] == "deny"' "$cdir/opencode.json"
 eq "opencode: AGENTS.md begin marker once" "$(count 'fleet-rules:begin' "$cdir/AGENTS.md")" 1
 eq "opencode: AGENTS.md end marker once" "$(count 'fleet-rules:end' "$cdir/AGENTS.md")" 1
 eq "opencode: bin/fleet-goal symlink" "$(readlink "$h/.local/bin/fleet-goal")" "$ROOT/bin/fleet-goal"
@@ -180,10 +190,11 @@ eq "opencode: AGENTS.md markers once after second run" "$(count 'fleet-rules:beg
 
 h=$(newhome opencode-nobypass)
 printf '{"theme":"x","plugin":["other"]}\n' > /dev/null
-mkdir -p "$h/.config/opencode"; printf '{"theme":"x","plugin":["other"]}\n' > "$h/.config/opencode/opencode.json"
+mkdir -p "$h/.config/opencode"; printf '{"theme":"x","plugin":["other"],"agent":{"mine":{"description":"u","permission":"ask"}}}\n' > "$h/.config/opencode/opencode.json"
 FLEET_OC_GOAL_PLUGIN_REF=v9.9.9 FLEET_OC_GOAL_PLUGIN_URL=https://example.invalid/p.git FLEET_OC_COMPACT_PLUGIN_REF=v8.8.8 FLEET_OC_COMPACT_PLUGIN_URL=https://example.invalid/c.git inst "$h" opencode.sh --prefix "$h/.local" >/dev/null 2>&1; rc=$?
 eq "opencode (no --bypass, env overrides) exits 0" "$rc" 0
 check "opencode: no permission key without --bypass" jq -e 'has("permission") | not' "$h/.config/opencode/opencode.json"
+check "opencode: a user agent's string permission becomes {*: it} plus the probe deny" jq -e '.agent.mine == {"description":"u","permission":{"*":"ask","fleet-probe_*":"deny"}}' "$h/.config/opencode/opencode.json"
 check "opencode: existing keys preserved, plugin appended" jq -e '.theme == "x" and .plugin[0] == "other" and (.plugin | length) == 3' "$h/.config/opencode/opencode.json"
 check "opencode: ref and url overrides honored" grep -qF "git clone --depth 1 --branch v9.9.9 https://example.invalid/p.git" "$STUB_LOG"
 check "opencode: compact ref and url overrides honored" grep -qF "git clone --depth 1 --branch v8.8.8 https://example.invalid/c.git" "$STUB_LOG"
@@ -267,6 +278,7 @@ printf 'developer_instructions = "alpha role"\n' > "$roles/alpha.codex.toml"
 printf 'developer_instructions = "beta role"\n[mcp_servers.fleet]\nenabled_tools = ["peer_send"]\n' > "$roles/beta.codex.toml"
 printf '{"description":"alpha","prompt":"{file:./roles/alpha.md}","tools":{"write":false}}\n' > "$roles/alpha.opencode.json"
 printf '{"description":"beta","prompt":"{file:./roles/beta.md}","permission":{"bash":{"fleet launch*":"deny"}}}\n' > "$roles/beta.opencode.json"
+printf 'alpha prompt\n' > "$roles/alpha.md"; printf 'beta prompt\n' > "$roles/beta.md"
 
 h=$(newhome roles-codex); empty=$tmp/emptyroles; mkdir -p "$empty"
 out=$(FLEET_ROLES_DIR="$empty" inst "$h" codex.sh --prefix "$h/.local" 2>&1); rc=$?
@@ -311,7 +323,74 @@ eq "opencode roles: --dry-run wrote nothing under HOME" "$(nfiles "$h")" 0
 h=$(newhome roles-oc-empty)
 out=$(FLEET_ROLES_DIR="$empty" inst "$h" opencode.sh --prefix "$h/.local" 2>&1); rc=$?
 eq "opencode roles: empty roles dir exits 0" "$rc" 0
-check "opencode roles: empty roles dir adds no agent key" jq -e 'has("agent") | not' "$h/.config/opencode/opencode.json"
+check "opencode roles: empty roles dir adds no fleet-* agent" jq -e '(.agent // {}) | keys | map(select(startswith("fleet-"))) == []' "$h/.config/opencode/opencode.json"
+check "opencode roles: empty roles dir still denies fleet-probe_* on build, plan and general" jq -e '.agent | keys == ["build","general","plan"] and all(.[]; .permission["fleet-probe_*"] == "deny")' "$h/.config/opencode/opencode.json"
+
+# upgrade from v0.1.x: agents of renamed roles (desk/orchestrator/listener) point at deleted roles/*.md files,
+# which makes OpenCode reject the whole config. The installer drops them and checks every {file:} it leaves.
+h=$(newhome roles-oc-upgrade); oj=$h/.config/opencode/opencode.json; mkdir -p "$(dirname "$oj")"
+gone=$tmp/oldcheckout/roles
+printf '{"agent":{"fleet-desk":{"prompt":"{file:%s/desk.md}"},"fleet-orchestrator":{"prompt":"{file:%s/orchestrator.md}"},"fleet-listener":{"prompt":"{file:%s/listener.md}"},"mine":{"prompt":"{file:/nowhere/mine.md}"}}}\n' "$gone" "$gone" "$gone" > "$oj"
+out=$(inst "$h" opencode.sh --prefix "$h/.local" 2>&1); rc=$?
+eq "opencode upgrade: real roles dir over a v0.1.x config exits 0" "$rc" 0
+check "opencode upgrade: retired agents fleet-desk/orchestrator/listener are gone" jq -e '.agent | has("fleet-desk") or has("fleet-orchestrator") or has("fleet-listener") | not' "$oj"
+check "opencode upgrade: no prompt still points at desk.md" bash -c "! grep -q 'desk.md' \"\$1\"" _ "$oj"
+check "opencode upgrade: the install says which agents it retired" bash -c "printf '%s' \"\$1\" | grep -q 'retired opencode agents fleet-desk, fleet-listener, fleet-orchestrator'" _ "$out"
+check "opencode upgrade: new role agents decide/route/watch point at existing files" jq -e --arg d "$ROOT/roles" '[.agent["fleet-decide","fleet-route","fleet-watch"].prompt] == ["{file:\($d)/decide.md}","{file:\($d)/route.md}","{file:\($d)/watch.md}"]' "$oj"
+check "opencode upgrade: control: a non-fleet agent is left alone, even with a bad path" jq -e '.agent.mine.prompt == "{file:/nowhere/mine.md}"' "$oj"
+check "opencode upgrade: the pre-upgrade config was backed up" bash -c "grep -l 'fleet-desk' \"\$1\".fleet-bak.* >/dev/null" _ "$oj"
+before=$(cksum < "$oj")
+out=$(inst "$h" opencode.sh --prefix "$h/.local" 2>&1); rc=$?
+eq "opencode upgrade: a rerun exits 0" "$rc" 0
+eq "opencode upgrade: a rerun is byte-identical" "$(cksum < "$oj")" "$before"
+check "opencode upgrade: a rerun retires nothing" bash -c "! printf '%s' \"\$1\" | grep -q retired" _ "$out"
+h=$(newhome roles-oc-upgrade-dry); oj=$h/.config/opencode/opencode.json; mkdir -p "$(dirname "$oj")"
+printf '{"agent":{"fleet-desk":{"prompt":"{file:%s/desk.md}"}}}\n' "$gone" > "$oj"; before=$(cksum < "$oj")
+out=$(inst "$h" opencode.sh --dry-run --prefix "$h/.local" 2>&1); rc=$?
+eq "opencode upgrade --dry-run exits 0" "$rc" 0
+eq "opencode upgrade --dry-run leaves the old config untouched" "$(cksum < "$oj")" "$before"
+check "opencode upgrade --dry-run says it would retire fleet-desk" bash -c "printf '%s' \"\$1\" | grep -q 'would write: retired opencode agents fleet-desk'" _ "$out"
+# fail loudly: a {file:} the installer would write that does not exist
+badroles=$tmp/badroles; mkdir -p "$badroles"
+printf '{"description":"gamma","prompt":"{file:./roles/gamma.md}"}\n' > "$badroles/gamma.opencode.json"
+h=$(newhome roles-oc-badref)
+out=$(FLEET_ROLES_DIR="$badroles" inst "$h" opencode.sh --prefix "$h/.local" 2>&1); rc=$?
+check "opencode roles: a role prompt file that does not exist fails the install" test "$rc" -ne 0
+check "opencode roles: the failure names the missing prompt file" bash -c "printf '%s' \"\$1\" | grep -q 'FAIL.*gamma.md does not exist'" _ "$out"
+check "opencode roles: the bad agent was not written" bash -c "! jq -e '.agent[\"fleet-gamma\"]' \"\$1\" >/dev/null 2>&1" _ "$h/.config/opencode/opencode.json"
+printf 'gamma prompt\n' > "$badroles/gamma.md"
+out=$(FLEET_ROLES_DIR="$badroles" inst "$h" opencode.sh --prefix "$h/.local" 2>&1); rc=$?
+eq "opencode roles: control: the same role with its prompt file present installs" "$rc" 0
+# fail loudly: a fleet agent outside the retired list whose prompt file is gone
+h=$(newhome roles-oc-leftover); oj=$h/.config/opencode/opencode.json; mkdir -p "$(dirname "$oj")"
+printf '{"agent":{"fleet-old":{"prompt":"{file:%s/old.md}"}}}\n' "$gone" > "$oj"
+out=$(FLEET_ROLES_DIR="$roles" inst "$h" opencode.sh --prefix "$h/.local" 2>&1); rc=$?
+check "opencode roles: a fleet agent left with a missing {file:} fails the install" test "$rc" -ne 0
+check "opencode roles: the failure names the agent and the path" bash -c "printf '%s' \"\$1\" | grep -qF 'agent fleet-old: {file:$gone/old.md}'" _ "$out"
+
+# kiro, agy and codex keep one file per role: an upgrade retires the old names, other roles stay
+h=$(newhome roles-retire); kd=$h/.kiro/agents; ad=$h/.gemini/config/agents; cd_=$h/.codex
+mkdir -p "$kd" "$ad" "$cd_"
+for r in desk orchestrator listener; do
+  echo '{}' > "$kd/fleet-$r.json"; printf -- '---\nname: fleet-%s\n---\n' "$r" > "$ad/fleet-$r.md"; echo 'x = 1' > "$cd_/fleet-$r.config.toml"
+done
+echo '{"keep":1}' > "$kd/mine.json"
+out=$(inst "$h" kiro.sh --dry-run --prefix "$h/.local" 2>&1)
+check "kiro upgrade --dry-run says it would retire fleet-desk" bash -c "printf '%s' \"\$1\" | grep -q 'would retire: stale kiro agent fleet-desk'" _ "$out"
+check "kiro upgrade --dry-run leaves fleet-desk.json in place" test -f "$kd/fleet-desk.json"
+inst "$h" kiro.sh --prefix "$h/.local" >/dev/null 2>&1
+inst "$h" agy.sh --prefix "$h/.local" >/dev/null 2>&1
+inst "$h" codex.sh --prefix "$h/.local" >/dev/null 2>&1
+for r in desk orchestrator listener; do
+  check "kiro upgrade: fleet-$r.json retired" test ! -e "$kd/fleet-$r.json"
+  check "agy upgrade: fleet-$r.md retired" test ! -e "$ad/fleet-$r.md"
+  check "codex upgrade: fleet-$r.config.toml retired" test ! -e "$cd_/fleet-$r.config.toml"
+done
+eq "upgrade: every retired file kept as a .fleet-bak copy" "$(find "$kd" "$ad" "$cd_" -name 'fleet-desk*.fleet-bak.*' -o -name 'fleet-orchestrator*.fleet-bak.*' -o -name 'fleet-listener*.fleet-bak.*' | wc -l | tr -d ' ')" 9
+check "kiro upgrade: control: fleet-decide.json installed" test -f "$kd/fleet-decide.json"
+check "agy upgrade: control: fleet-route.md installed" test -f "$ad/fleet-route.md"
+check "codex upgrade: control: fleet-watch.config.toml installed" test -f "$cd_/fleet-watch.config.toml"
+check "kiro upgrade: control: a non-fleet agent file is left alone" test -f "$kd/mine.json"
 
 h=$(newhome roles-claude)
 out=$(inst "$h" claude.sh --help 2>&1)
@@ -348,6 +427,11 @@ for r in route decide watch; do
 done
 check "kiro: worker has no fs_write deny" jq -e '[.permissions.rules[] | select(.capability=="fs_write")] | length == 0' "$kh/agents/fleet-worker.json"
 check "kiro: route does not deny fleet launch" jq -e '[.permissions.rules[].match[]] | index("fleet launch*") == null' "$kh/agents/fleet-route.json"
+pf=$kh/agents/fleet-probe.json
+check "kiro: agent fleet-probe: no shell or write tool, mcp.json not inherited" jq -e '.name == "fleet-probe" and .includeMcpJson == false and (.tools | index("*") == null and index("shell") == null and index("fs_write") == null)' "$pf"
+check "kiro: agent fleet-probe carries only the fleet + fleet-probe servers" jq -e --arg m "$ROOT/lib/fleet_mesh.py" --arg p "$ROOT/lib/fleet_probe.py" '.mcpServers == {"fleet":{"command":"python3","args":[$m,"serve"]},"fleet-probe":{"command":"python3","args":[$p,"serve"]}}' "$pf"
+check "kiro: agent fleet-probe prompt is the inline text of roles/probe.md" jq -e --rawfile t "$ROOT/roles/probe.md" '.prompt == $t' "$pf"
+check "kiro: control: fleet-worker gets no fleet-probe server" jq -e '(.mcpServers // {}) | has("fleet-probe") | not' "$kh/agents/fleet-worker.json"
 eq "kiro: bin/fleet symlink" "$(readlink "$h/.local/bin/fleet")" "$ROOT/bin/fleet"
 # CONTROL: the deny assertion must fail on an agent whose deny rule was stripped
 jq '.permissions.rules |= map(select((.match // []) | index("fleet park*") | not))' "$kh/agents/fleet-worker.json" > "$tmp/stripped-agent.json"

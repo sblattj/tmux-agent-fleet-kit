@@ -29,6 +29,6 @@ Stale relays waste a round trip ("take the PR out of draft" when it already is).
 ## Notes
 - The peer reads the first line in its preview: put the ask there, not a greeting.
 - Cross-session messages wait until the peer's next tool round; do not poll, use `notify_when_idle: true` (Claude) or read the reply with `peer_inbox`.
-- A message typed into a Claude pane by the mesh (`[fleet] message from X: run peer_inbox to read it`) is only a pointer: run `peer_inbox`.
+- A message typed into a Claude pane by the mesh (`[fleet] message from X: run peer_inbox to read it`) is only a pointer: run `peer_inbox` (no such tool: read the inbox file the line names).
 - A live pane or open socket proves a candidate endpoint, not that the peer read the message. Do not claim delivery you did not observe.
 - Capability questions ("can you reach that session?") do not authorize a test message.

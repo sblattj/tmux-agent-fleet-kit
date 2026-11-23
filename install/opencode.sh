@@ -95,8 +95,11 @@ oc_plugins='
 
 mesh_path="$FC_REPO/lib/fleet_mesh.py"
 filter="$oc_plugins | .mcp.fleet = {type:\"local\",command:[\"python3\",\$m,\"serve\"],enabled:true}"
+# the read-only probe verbs; only agent fleet-probe enables its tools (roles/probe.opencode.json "fleet-probe_*")
+filter="$filter | .mcp[\"fleet-probe\"] = {type:\"local\",command:[\"python3\",\$q,\"serve\"],enabled:true}"
+filter="$filter | .tools[\"fleet-probe_*\"] = false"
 if [ "$BYPASS" = 1 ]; then filter="$filter | .permission = \"allow\""; fi
-fc_jq_edit "$CONF/opencode.json" "goal + compact plugins + fleet MCP in opencode.json" --arg p "$plugin_ref" --arg c "$compact_ref" --arg l "$C_LIMIT" --arg m "$mesh_path" "$filter"
+fc_jq_edit "$CONF/opencode.json" "goal + compact plugins + fleet MCP in opencode.json" --arg p "$plugin_ref" --arg c "$compact_ref" --arg l "$C_LIMIT" --arg m "$mesh_path" --arg q "$FC_REPO/lib/fleet_probe.py" "$filter"
 
 fc_install_opencode_roles "$CONF/opencode.json"
 

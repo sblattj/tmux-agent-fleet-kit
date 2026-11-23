@@ -8,6 +8,7 @@ T=$(mktemp -d "${TMPDIR:-/tmp}/rolestest.XXXXXX")
 export FLEET_TMUX_SOCKET=rolestest-$$
 export FLEET_TMUX_SESSION=rolesess
 export FLEET_STATE=$T/state
+unset FLEET_PROBE_ALLOW_UNVERIFIED  # test-only override for test_probe_live.sh; never inherited here
 export FLEET_CLAUDE_BIN=$HERE/stubs/claude
 export FLEET_CODEX_BIN=$HERE/stubs/codex
 export FLEET_OPENCODE_BIN=$HERE/stubs/opencode
@@ -254,7 +255,7 @@ for r in route decide watch learn; do
 done
 t "watch role text sends to DECIDE, never ROUTE" bash -c 'grep -q DECIDE "$1" && grep -qi "never message ROUTE" "$1"' _ "$ROOT/roles/watch.md"
 
-# ---- role names: the old names are refused at launch (Q110: no backwards compatibility); probe is reserved
+# ---- role names: the old names are refused at launch (Q110: no backwards compatibility); probe fails closed
 for r in route decide watch learn; do
   out=$(dry --cli claude --role $r --dir "$T" N1 prompt "$T/prompt.txt"); rc=$?
   t "--role $r accepted (exit 0, no warn)" bash -c 'test "$1" = 0 && ! printf "%s" "$2" | grep -q "^warn: role"' _ "$rc" "$out"
@@ -271,9 +272,19 @@ for p in orchestrator:route desk:decide listener:watch; do
 done
 out=$(dry --cli claude --role route --dir "$T" N1 resume 11111111-2222-3333-4444-555555555555); rc=$?
 t "control: resume mode takes --role route" bash -c 'test "$1" = 0 && printf "%s" "$2" | grep -q "FLEET_ROLE=route "' _ "$rc" "$out"
-out=$("$FLEET" launch --dry-run --role probe --dir "$T" N1 prompt hi 2>&1); rc=$?
-t "--role probe refused as reserved (exit 1, not 'unknown')" bash -c 'test "$1" = 1 && printf "%s" "$2" | grep -q "^FAIL role probe is reserved"' _ "$rc" "$out"
-t "no roles/probe.* files yet (probe behaviour is phase 4)" bash -c '! ls "$1"/roles/probe.* >/dev/null 2>&1' _ "$ROOT"
+out=$(dry --cli claude --role probe --dir "$T" N1 prompt hi); rc=$?
+t "--role probe on claude: read tools only, strict MCP with fleet-probe, probe settings" bash -c 'test "$1" = 0 && printf "%s" "$2" | grep -qF -- "--tools Read,Grep,Glob,WebFetch --strict-mcp-config" && printf "%s" "$2" | grep -qF fleet_probe.py && printf "%s" "$2" | grep -qF roles/probe.claude.json && printf "%s" "$2" | grep -q "FLEET_ROLE=probe "' _ "$rc" "$out"
+out=$(dry --cli claude --role worker --dir "$T" N1 prompt hi)
+t "control: a claude worker keeps its tools (no --tools cut, no strict MCP, no fleet-probe)" bash -c '! printf "%s" "$1" | grep -qF -- "--strict-mcp-config" && ! printf "%s" "$1" | grep -qF fleet_probe.py' _ "$out"
+for c in codex agy; do
+  out=$(dry --cli $c --role probe --dir "$T" N1 prompt hi); rc=$?
+  t "--role probe refused on --cli $c (exit 1, fails closed)" bash -c 'test "$1" = 1 && printf "%s" "$2" | grep -q "^FAIL role probe refused on --cli $3"' _ "$rc" "$out" "$c"
+done
+out=$(XDG_CONFIG_HOME=$T/xdg-empty dry --cli opencode --role probe --dir "$T" N1 prompt hi); rc=$?
+t "--role probe on opencode with no fleet-probe agent fails closed (exit 1, no warn-and-launch)" bash -c 'test "$1" = 1 && printf "%s" "$2" | grep -q "^FAIL opencode agent fleet-probe not installed"' _ "$rc" "$out"
+out=$(XDG_CONFIG_HOME=$T/xdg-empty dry --cli opencode --role watch --dir "$T" N1 prompt hi); rc=$?
+t "control: --role watch on opencode with no agent still warns and launches" bash -c 'test "$1" = 0 && printf "%s" "$2" | grep -q "warn: opencode agent fleet-watch not installed"' _ "$rc" "$out"
+t "roles/probe.* exist for every CLI" bash -c 'for f in md claude.json codex.toml kiro.json opencode.json agy.json agy.md; do test -f "$1/roles/probe.$f" || exit 1; done' _ "$ROOT"
 out=$(FLEET_ROLE=route "$FLEET" stop NOPE 2>&1)
 t "FLEET_ROLE=route passes the role guard (fails later on the missing lane)" bash -c 'printf "%s" "$1" | grep -q "no lane named NOPE" && ! printf "%s" "$1" | grep -q "can.t stop"' _ "$out"
 out=$(FLEET_ROLE=route "$ROOT/bin/fleet-lifecycle" park NOPE 2>&1)
@@ -324,7 +335,7 @@ dsk() { env FLEET_STATE=$DS FLEET_TMUX_SOCKET=desks-$$ FLEET_TMUX_SESSION=dsess 
 dlayout() { # socket session state
   local s=$1 sess=$2 st=$3
   tmux -L "$s" list-panes -s -t "=$sess" -F '#{window_index} #{window_name} #{pane_left} #{pane_id}' 2>/dev/null | LC_ALL=C sort -k1,1n -k3,3n |
-    while read -r _ w _ p; do n=$(jq -r --arg p "$p" 'to_entries[]|select(.value.pane==$p)|.key' "$st/roster.json" | head -1); printf '%s %s\n' "$w" "${n:-?}"; done |
+    while read -r _ w _ p; do [ "$(tmux -L "$s" display -p -t "$p" '#{@fleet-watch-status}')" = 1 ] && continue; n=$(jq -r --arg p "$p" 'to_entries[]|select(.value.pane==$p)|.key' "$st/roster.json" | head -1); printf '%s %s\n' "$w" "${n:-?}"; done |
     awk '{ if ($1!=last) { if (NR>1) printf " "; printf "%s:%s", $1, $2; last=$1 } else printf "|%s", $2 } END { print "" }'
 }
 dpanes() { tmux -L "$1" list-panes -s -t "=$2" -F '#{window_id}.#{pane_id}' 2>/dev/null | LC_ALL=C sort | tr '\n' ' '; }
@@ -343,7 +354,13 @@ t "desks up: roster DECIDE role decide, ROUTE role route" bash -c 'test "$(jq -r
 t "desks up writes no alias map" test ! -e "$DS/aliases.json"
 t "desks up: roster WATCH role watch, LEARN role learn, all four mode desk" jq -e '.WATCH.role=="watch" and .LEARN.role=="learn" and ([.DECIDE,.ROUTE,.WATCH,.LEARN]|all(.mode=="desk"))' "$DS/roster.json"
 t "desks up: WATCH and LEARN got a read-only look-for-work brief" bash -c 'grep -q "Look for work, read-only" "$1/launch/WATCH.txt" && grep -q "Look for work, read-only" "$1/launch/LEARN.txt"' _ "$DS"
-t "desks up: all four desk panes tagged @fleet-desk with their role" bash -c 'test "$(tmux -L "$1" list-panes -s -t =dsess -F "#{pane_title}=#{@fleet-desk}" | LC_ALL=C sort | tr "\n" " ")" = "DECIDE=decide LEARN=learn ROUTE=route WATCH=watch "' _ "desks-$$"
+t "desks up: all four desk panes tagged @fleet-desk with their role" bash -c 'test "$(tmux -L "$1" list-panes -s -t =dsess -F "#{@fleet-watch-status}#{pane_title}=#{@fleet-desk}" | grep -v "^1" | LC_ALL=C sort | tr "\n" " ")" = "DECIDE=decide LEARN=learn ROUTE=route WATCH=watch "' _ "desks-$$"
+wsp() { tmux -L "$1" list-panes -s -t "=$2" -F '#{window_name} #{pane_dead} #{@fleet-watch-status} #{pane_start_command}' 2>/dev/null | awk '$3==1'; }
+ws1=$(wsp desks-$$ dsess)
+t "desks up: exactly one WATCH status pane, live, in window deskB" bash -c 'test "$(printf "%s\n" "$1" | grep -c .)" = 1 && printf "%s" "$1" | grep -q "^deskB 0 1 "' _ "$ws1"
+t "desks up: the WATCH status pane runs fleet watch status" bash -c 'printf "%s" "$1" | grep -q "watch status"' _ "$ws1"
+t "control: window deskA has no WATCH status pane" bash -c '! printf "%s" "$1" | grep -q "^deskA "' _ "$ws1"
+t "desks up second run: WATCH status pane left alone, still exactly one" bash -c 'printf "%s" "$1" | grep -q "no WATCH status pane" && test "$(printf "%s\n" "$2" | grep -c .)" = 1' _ "$o2" "$(wsp desks-$$ dsess)"
 cl=$(FLEET_STATE=$DS FLEET_TMUX_SOCKET=desks-$$ FLEET_TMUX_SESSION=dsess "$FLEET" cleanup 2>&1)
 t "cleanup does not call deskA or deskB an orphan" bash -c '! printf "%s" "$1" | grep -q ORPHAN-WINDOW' _ "$cl"
 # half-dead pair: left desk gone, right desk live -> relaunch the left desk as the left pane of the same window
@@ -354,6 +371,7 @@ t "half-dead deskB: desks up exits 0" test "$rc3" = 0
 t "half-dead deskB: LEARN already live, WATCH relaunched" bash -c 'printf "%s" "$1" | grep -q "^LEARN already live" && ! printf "%s" "$1" | grep -q "^WATCH already live"' _ "$o3"
 t "half-dead deskB: back to deskA ROUTE|DECIDE, deskB WATCH|LEARN" test "$(dlayout desks-$$ dsess "$DS")" = "deskA:ROUTE|DECIDE deskB:WATCH|LEARN"
 t "half-dead deskB: LEARN kept its pane id" test "$(jq -r .LEARN.pane "$DS/roster.json")" = "$lp"
+t "half-dead deskB: WATCH relaunched, its status pane reused (still exactly one)" bash -c 'printf "%s" "$1" | grep -q "^WATCH status pane already live" && test "$(printf "%s\n" "$2" | grep -c .)" = 1' _ "$o3" "$(wsp desks-$$ dsess)"
 t "half-dead deskB: WATCH has a new live pane" bash -c 'p=$(jq -r .WATCH.pane "$1"); test "$p" != "$2" && tmux -L "$3" list-panes -a -F "#{pane_id} #{pane_dead}" | grep -qx "$p 0"' _ "$DS/roster.json" "$kp" "desks-$$"
 out=$(FLEET_ROLE=decide env FLEET_STATE=$DS "$FLEET" desks up --no-proof 2>&1)
 t "desks up is role-guarded (FLEET_ROLE=decide refused)" has "$out" "FAIL role decide can't desks"
@@ -376,6 +394,7 @@ t "by hand: all four already live" bash -c 'for d in ROUTE DECIDE WATCH LEARN; d
 t "by hand: window and pane ids unchanged" test "$(dpanes byhand-$$ hsess)" = "$hids"
 t "by hand: roster unchanged" test "$(jq -cS . "$HB/roster.json")" = "$hros"
 t "by hand: pane tags unchanged" test "$(tmux -L byhand-$$ list-panes -s -t =hsess -F '#{pane_id}=#{@fleet-desk}' | tr '\n' ' ')" = "$hopts"
+t "control: by hand (WATCH already live, not launched): no WATCH status pane" bash -c '! tmux -L "$1" list-panes -s -t =hsess -F "#{@fleet-watch-status}" | grep -qx 1 && printf "%s" "$2" | grep -q "no WATCH status pane"' _ "byhand-$$" "$ho"
 t "by hand: window names still deskA deskB" test "$(tmux -L byhand-$$ list-windows -t =hsess -F '#{window_name}' | tr '\n' ' ')" = "deskA deskB "
 tmux -L byhand-$$ swap-pane -d -s "$hR" -t "$hD"
 sw=$(dlayout byhand-$$ hsess "$HB")
@@ -389,6 +408,7 @@ t "dry run: exits 0" test "$drc" = 0
 t "dry run: names window deskA ROUTE left | DECIDE right" has "$dro" "window deskA: ROUTE (left) | DECIDE (right)"
 t "dry run: names window deskB WATCH left | LEARN right" has "$dro" "window deskB: WATCH (left) | LEARN (right)"
 t "dry run: DECIDE splits right of ROUTE, LEARN right of WATCH" bash -c 'printf "%s" "$1" | grep -q "would run:.*--split-right-of ROUTE DECIDE desk" && printf "%s" "$1" | grep -q "would run:.*--split-right-of WATCH LEARN desk"' _ "$dro"
+t "dry run: shows the WATCH status pane under WATCH running fleet watch status" bash -c 'printf "%s" "$1" | grep -q "WATCH status pane under WATCH" && printf "%s" "$1" | grep -q "would run: tmux split-window.*watch\\\\ status"' _ "$dro"
 t "dry run: no tmux server started, no roster" bash -c '! tmux -L "$1" has-session 2>/dev/null && test ! -e "$2/roster.json"' _ "dry-$$" "$DR"
 
 # ---- desks up beside old-named ORCHESTRATOR and DECISIONS lanes (Q110 c): they keep their windows, panes, roster and mail
@@ -403,7 +423,11 @@ ad "$FLEET" desks up --no-proof --dir "$T" > "$AD/up.out" 2>&1; rc=$?  # as the 
 t "beside: desks up exits 0" test "$rc" = 0
 t "beside: roster entries ORCHESTRATOR and DECISIONS unchanged" test "$(jq -cS '{ORCHESTRATOR,DECISIONS}' "$AD/roster.json")" = "$old"
 t "beside: roster now also has DECIDE ROUTE WATCH LEARN" jq -e 'keys==["DECIDE","DECISIONS","LEARN","ORCHESTRATOR","ROUTE","WATCH"]' "$AD/roster.json"
-t "beside: windows ORCHESTRATOR DECISIONS kept, deskA deskB added" bash -c 'test "$(tmux -L "$1" list-windows -t =asess -F "#{window_name}:#{window_panes}" | LC_ALL=C sort | tr "\n" " ")" = "DECISIONS:1 ORCHESTRATOR:1 deskA:2 deskB:2 home:1 "' _ "beside-$$"
+# deskB has 3 panes: WATCH | LEARN plus the `fleet watch status` pane desks up splits under a WATCH it launched
+bw=$(tmux -L "beside-$$" list-windows -t =asess -F "#{window_name}:#{window_panes}" | LC_ALL=C sort | tr "\n" " ")
+t "beside: windows ORCHESTRATOR DECISIONS kept, deskA deskB added (got: $bw)" test "$bw" = "DECISIONS:1 ORCHESTRATOR:1 deskA:2 deskB:3 home:1 "
+t "beside: deskB's third pane is the WATCH status pane" bash -c 'test "$(tmux -L "$1" list-panes -t =asess:deskB -F "#{@fleet-watch-status}" | grep -cx 1)" = 1' _ "beside-$$"
+t "beside: control: the ORCHESTRATOR and DECISIONS windows hold only their own panes" bash -c 'test "$(tmux -L "$1" list-panes -t =asess:ORCHESTRATOR -F "#{pane_id}")" = "$2" && test "$(tmux -L "$1" list-panes -t =asess:DECISIONS -F "#{pane_id}")" = "$3"' _ "beside-$$" "$pO" "$pD"
 t "beside: ORCHESTRATOR and DECISIONS panes still alive on the same ids" bash -c 'tmux -L "$1" list-panes -a -F "#{pane_id} #{pane_dead}" | grep -qx "$2 0" && tmux -L "$1" list-panes -a -F "#{pane_id} #{pane_dead}" | grep -qx "$3 0"' _ "beside-$$" "$pO" "$pD"
 sleep 1
 t "beside: nothing typed into the ORCHESTRATOR or DECISIONS pane" bash -c 'test ! -s "$1/o.keys" && test ! -s "$1/d.keys"' _ "$AD"

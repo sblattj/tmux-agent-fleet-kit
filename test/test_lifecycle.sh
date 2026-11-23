@@ -37,6 +37,8 @@ t() { # label cmd...
 eq() { # label expected actual
   if [ "$2" = "$3" ]; then echo "PASS $1"; else echo "FAIL $1 (expected '$2', got '$3')"; FAILS=$((FAILS+1)); fi
 }
+neq() { # label unwanted actual
+  if [ "$2" != "$3" ]; then echo "PASS $1"; else echo "FAIL $1 (did not want '$2')"; FAILS=$((FAILS+1)); fi; }
 has() { printf '%s' "$1" | grep -qF -- "$2"; }
 hasnt() { ! printf '%s' "$1" | grep -qF -- "$2"; }
 
@@ -205,9 +207,9 @@ kfix kiro-goal-achieved sess_t1 >/dev/null; kfix kiro-goal-failed sess_t2 >/dev/
 addlane kPark kiro worker sess_t1 %901; addlane kFail kiro worker sess_t2 %901; addlane kAct kiro worker sess_t3 %901
 addlane kOrch kiro orchestrator sess_t1 %901
 eq "tick: worker with achieved goal -> park" park "$(field wPark action)"
-eq "tick: orchestrator with achieved goal -> not park" "-" "$(field orch action)"
-eq "tick: desk with achieved goal -> not park" "-" "$(field desk action)"
-eq "tick: listener with achieved goal -> not park" "-" "$(field lstn action)"
+neq "tick: orchestrator with achieved goal -> not park" park "$(field orch action)"
+neq "tick: desk with achieved goal -> not park" park "$(field desk action)"
+neq "tick: listener with achieved goal -> not park" park "$(field lstn action)"
 eq "tick: unread line 10 min old blocks park" "-" "$(field wNew action)"
 eq "tick: control, only a 2 h old unread -> park" park "$(field wOld action)"
 eq "tick: young line already read (cursor) -> park" park "$(field wRead action)"
@@ -220,7 +222,11 @@ eq "tick: active goal -> no action" "-" "$(field wActive action)"
 eq "tick: kiro worker with achieved goal -> park" park "$(field kPark action)"
 eq "tick: kiro worker with a failed goal (stopped long ago) -> park" park "$(field kFail action)"
 eq "tick: kiro worker with an active goal -> no action" "-" "$(field kAct action)"
-eq "tick: kiro orchestrator with achieved goal -> not park" "-" "$(field kOrch action)"
+neq "tick: kiro orchestrator with achieved goal -> not park" park "$(field kOrch action)"
+# a retired-role row: forget only when its pane is dead (%901 is no pane here); a live one is left alone
+eq "tick: a dead retired orchestrator row -> forget" forget "$(field orch action)"
+pLive=$(mkwin liveorch); addlane orchLive claude orchestrator "$(uid 12)" "$pLive"
+eq "tick: control: a retired orchestrator row with a live pane -> -" "-" "$(field orchLive action)"
 t "tick text row shows park for wPark" bash -c '"$1" tick | grep "^wPark" | grep -q "park$"' _ "$LC"
 before=$(cksum "$FLEET_STATE/roster.json"); ticks >/dev/null; "$LC" tick >/dev/null
 eq "tick is read-only (roster unchanged)" "$before" "$(cksum "$FLEET_STATE/roster.json")"

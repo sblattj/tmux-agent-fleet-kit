@@ -49,6 +49,8 @@
   .badge { font-size:12px; padding:2px 8px; border-radius:99px; white-space:nowrap; border:1px solid; }
   .b-relayed { color:var(--rec); } .b-queued { color:var(--warn); } .b-reopened { color:var(--info); }
   .b-failed { color:var(--bad); } .b-acted { color:var(--rec); } .b-actfail { color:var(--bad); }
+  .b-src { color:var(--info); text-transform:lowercase; } .b-task { color:var(--warn); }
+  .src a { color:var(--info); } .src { font-size:13px; }
   .empty { color:var(--dim); padding:20px 0; }
   .ab { display:grid; grid-template-columns: 1fr 1fr; gap:10px; }
   .ab .side { border:1px solid var(--line); border-radius:8px; padding:10px; }
@@ -73,7 +75,7 @@
     <h2 id="h-open">Open</h2>
     <div id="open"></div>
     <h2 id="h-called">Called</h2>
-    <table><thead><tr><th>call</th><th>answer</th><th>to</th><th>relay</th><th>acted</th><th></th></tr></thead>
+    <table><thead><tr><th>call</th><th>answer</th><th>to</th><th>relay</th><th>acted</th><th></th><th>learn</th></tr></thead>
       <tbody id="called"></tbody></table>
   </section>
   <section id="view-refresh" hidden>
@@ -117,6 +119,20 @@ function badgeText(c) {
            failed: "relay FAILED" }[c.badge] || c.badge;
 }
 
+// The WATCH source badge and link (2.4, phase 7). A url is a link only when it is http(s); WATCH text is data.
+function safeUrl(u) { return (typeof u === "string" && /^https?:\/\//i.test(u)) ? u : null; }
+function srcBadge(w) {
+  if (!w) return null;
+  return el("span", { class: "badge b-src", "data-src": w.sourceKind || "watch", text: w.sourceKind || "watch",
+                      title: w.source ? "WATCH source " + w.source : "WATCH source" });
+}
+function srcLink(w) {
+  if (!w || !w.ref) return null;
+  const u = safeUrl(w.url);
+  return u ? el("a", { href: u, target: "_blank", rel: "noopener noreferrer", text: w.ref })
+           : el("span", { text: w.ref });
+}
+
 function card(c) {
   const allow = new Set(c.conflict ? ["snooze"] : (c.allow || []));  // an id that names two calls: desk pane only
   const node = el("div", { class: "card", id: c.id });
@@ -138,9 +154,11 @@ function card(c) {
     }
   };
   node.appendChild(el("div", { class: "top" },
-    el("span", { class: "id", text: c.id }), el("span", { text: "from " + c.from }), el("span", { text: c.ago }),
+    el("span", { class: "id", text: c.id }), srcBadge(c.watch), el("span", { text: "from " + c.from }), el("span", { text: c.ago }),
+    c.task ? el("span", { class: "badge b-task", text: "task: a yes forwards it to ROUTE" }) : null,
     c.alsoAskedBy.length ? el("span", { class: "also", text: "also asked by " + c.alsoAskedBy.join(", ") }) : null,
     c.dupIds.length ? el("span", { text: "(dups: " + c.dupIds.join(", ") + ")" }) : null));
+  if (c.watch && c.watch.ref) node.appendChild(el("div", { class: "src" }, srcLink(c.watch)));
   node.appendChild(el("div", { class: "q", text: c.question }));
   if (c.conflict) node.appendChild(el("div", { class: "err", text: c.conflict + "; answer it in the desk pane" }));
   if (allow.has("pick")) for (const o of c.options) {
@@ -178,9 +196,17 @@ function calledRow(c) {
     text: c.acted, title: c.actedNote || "" }) : null;
   const retry = c.retry ? el("button", { text: "Retry", onclick: async (ev) => { ev.target.disabled = true;
     try { await api("/api/retry", { id: c.id }); } catch (e) { ev.target.title = e.message; ev.target.disabled = false; } } }) : null;
-  return el("tr", {}, el("td", {}, el("b", { text: c.id }), document.createTextNode(" " + (c.question || ""))),
-    el("td", { class: "quote", text: c.verbatim || "" }), el("td", { text: (c.relayedTo || []).join(", ") }),
-    el("td", {}, st), el("td", {}, acted), el("td", {}, retry));
+  const learn = c.learned ? el("span", { class: "badge b-acted", text: "in LEARN " + c.learned })
+    : el("button", { text: "Learn this", title: "copy this call to LEARN with your own words", onclick: async (ev) => {
+        ev.target.disabled = true; ev.target.textContent = "Learning...";
+        try { const r = await api("/api/learn", { id: c.id }); ev.target.textContent = "in LEARN " + r.lid; }
+        catch (e) { ev.target.textContent = "Learn this"; ev.target.title = e.message;
+                    if (!/already/.test(e.message)) ev.target.disabled = false; } } });
+  return el("tr", {}, el("td", {}, el("b", { text: c.id }), c.watch ? document.createTextNode(" ") : null, srcBadge(c.watch),
+      c.watch && c.watch.ref ? document.createTextNode(" ") : null, srcLink(c.watch),
+      document.createTextNode(" " + (c.question || ""))),
+    el("td", { class: "quote", text: c.verbatim || "" }), el("td", { text: (c.relayedTo || []).join(", ") + (c.forwarded ? " (TASK -> " + c.forwarded + ")" : "") }),
+    el("td", {}, st), el("td", {}, acted), el("td", {}, retry), el("td", {}, learn));
 }
 
 function render(s) {

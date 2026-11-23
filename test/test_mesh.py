@@ -56,6 +56,11 @@ class MeshBase(unittest.TestCase):
         self.env = {"FLEET_STATE": self.state, "FLEET_CODEX_BIN": self.codex,
                     "FLEET_TMUX_SOCKET": "testsock", "FLEET_NAME": "alpha",
                     "FLEET_DECIDE": "DECISIONS", "FLEET_ROUTE": "ORCHESTRATOR",
+                    # has_mesh reads CLI configs: point every one at the temp dir, never the real home
+                    "FLEET_CLAUDE_JSON": os.path.join(self.tmp, "claude.json"),
+                    "CODEX_HOME": os.path.join(self.tmp, "codex"), "KIRO_HOME": os.path.join(self.tmp, "kiro"),
+                    "FLEET_AGY_HOME": os.path.join(self.tmp, "agy"),
+                    "XDG_CONFIG_HOME": os.path.join(self.tmp, "xdg"),
                     "PATH": self.bin + os.pathsep + os.environ.get("PATH", "")}
         self._saved = {k: os.environ.get(k) for k in self.env}
         os.environ.update(self.env)
@@ -92,6 +97,63 @@ class MeshBase(unittest.TestCase):
     def decision_rows(self):
         with open(os.path.join(self.state, "decisions.jsonl")) as f:
             return [json.loads(x) for x in f if x.strip()]
+
+    def note(self, frm, to):  # the wake line, built from the test's own state dir, not from fleet_mesh
+        return "[fleet] message from %s: run peer_inbox to read it (no peer_inbox tool? read %s)" % (
+            frm, os.path.join(self.state, "inbox", to + ".jsonl"))
+
+    def test_mesh_lane_gets_the_short_wake_line(self):
+        """mesh=yes (launch record passes fleet_mesh.py) types no fallback; a mesh=no lane gets it."""
+        os.makedirs(os.path.join(self.state, "launch"))
+        with open(os.path.join(self.state, "launch", "cl.sh"), "w") as fh:
+            fh.write("exec claude --mcp-config /tmp/m.json  # fleet_mesh.py serve\n")
+        self.assertTrue(mesh.has_mesh("cl", self.roster["cl"]))
+        mesh.deliver("alpha", "cl", "hi")
+        self.assertEqual(calls(self.tmux)[0][-1], "[fleet] message from alpha: run peer_inbox to read it")
+        # control: kiro lane with no fleet server in its config and no roster flag
+        self.assertFalse(mesh.has_mesh("ki", self.roster["ki"]))
+        self.assertEqual(mesh.wake_note("alpha", "ki", self.roster["ki"]), self.note("alpha", "ki"))
+
+    def test_has_mesh_evidence_sources(self):
+        cl = self.roster["cl"]
+        self.assertFalse(mesh.has_mesh("cl", cl))  # control: no launch record, no config
+        with open(os.path.join(self.state, "launch.sh"), "w") as fh:  # a record for a different path is ignored
+            fh.write("fleet_mesh.py")
+        self.assertFalse(mesh.has_mesh("cl", cl))
+        self.assertTrue(mesh.has_mesh("cl", dict(cl, mesh=True)))
+        self.assertFalse(mesh.has_mesh("cl", dict(cl, mesh=False)))
+        with open(os.environ["FLEET_CLAUDE_JSON"], "w") as fh:
+            json.dump({"mcpServers": {"other": {}}}, fh)
+        self.assertFalse(mesh.has_mesh("cl", cl))  # control: some other server only
+        with open(os.environ["FLEET_CLAUDE_JSON"], "w") as fh:
+            json.dump({"mcpServers": {"fleet": {}}}, fh)
+        self.assertTrue(mesh.has_mesh("cl", cl))
+        os.makedirs(os.path.join(self.tmp, "kiro", "settings"))
+        with open(os.path.join(self.tmp, "kiro", "settings", "mcp.json"), "w") as fh:
+            json.dump({"mcpServers": {"fleet": {}}}, fh)
+        self.assertTrue(mesh.has_mesh("ki", self.roster["ki"]))
+        self.assertFalse(mesh.has_mesh("ag", self.roster["ag"]))  # control: agy config absent
+
+    def test_mesh_cli_lists_yes_and_no(self):
+        os.makedirs(os.path.join(self.state, "launch"))
+        with open(os.path.join(self.state, "launch", "cl.sh"), "w") as fh:
+            fh.write("fleet_mesh.py")
+        out = subprocess.run([sys.executable, MESH, "mesh"], capture_output=True, text=True, env=os.environ.copy())
+        rows = dict(line.split() for line in out.stdout.splitlines())
+        self.assertEqual(rows.get("cl"), "yes")
+        self.assertEqual(rows.get("ki"), "no")  # control
+
+    def test_wake_names_an_inbox_file_that_holds_the_message(self):
+        """A lane with no fleet MCP reads the file the wake line names; that file must hold the message."""
+        mesh.deliver("alpha", "cl", "body for a lane with no mcp")
+        typed = calls(self.tmux)[0][-1]
+        path = typed.split("no peer_inbox tool? read ", 1)[1].rstrip(")")
+        self.assertTrue(path.startswith(self.state), path)
+        with open(path) as fh:
+            self.assertIn("body for a lane with no mcp", fh.read())
+        # control: the file for another lane does not get it
+        self.assertFalse(os.path.exists(os.path.join(self.state, "inbox", "ki.jsonl")))
+        self.assertNotIn("body for a lane with no mcp", typed)  # still a pointer only
 
     def inbox_lines(self, name):
         p = os.path.join(self.state, "inbox", name + ".jsonl")
@@ -134,7 +196,7 @@ class TestDelivery(MeshBase):
         self.assertTrue(os.path.exists(self.tmux + ".argv"), "control: fake tmux never ran")
         self.assertEqual(calls(self.tmux), [
             ["-L", "testsock", "send-keys", "-t", "%3", "-l",
-             "[fleet] message from alpha: run peer_inbox to read it"],
+             self.note("alpha", "cl")],
             ["-L", "testsock", "send-keys", "-t", "%3", "Enter"],
         ])
         with open(self.tmux + ".argv") as fh:
@@ -147,7 +209,7 @@ class TestDelivery(MeshBase):
         self.assertTrue(os.path.exists(self.tmux + ".argv"), "control: fake tmux never ran")
         self.assertEqual(calls(self.tmux), [
             ["-L", "testsock", "send-keys", "-t", "%4", "-l",
-             "[fleet] message from alpha: run peer_inbox to read it"],
+             self.note("alpha", "ki")],
             ["-L", "testsock", "send-keys", "-t", "%4", "Enter"],
         ])
         with open(self.tmux + ".argv") as fh:
@@ -162,7 +224,7 @@ class TestDelivery(MeshBase):
         self.assertEqual(calls(self.tmux), [
             ["-L", "testsock", "capture-pane", "-p", "-t", "%5"],
             ["-L", "testsock", "send-keys", "-t", "%5", "-l",
-             "[fleet] message from alpha: run peer_inbox to read it"],
+             self.note("alpha", "ag")],
             ["-L", "testsock", "send-keys", "-t", "%5", "Enter"],
         ])
         with open(self.tmux + ".argv") as fh:
@@ -384,7 +446,7 @@ class TestReopen(MeshBase):
         self.assertIn("tmux send-keys", res)
         self.assertEqual(calls(self.tmux), [
             ["-L", "testsock", "send-keys", "-t", "%4", "-l",
-             "[fleet] message from alpha: run peer_inbox to read it"],
+             self.note("alpha", "ki")],
             ["-L", "testsock", "send-keys", "-t", "%4", "Enter"],
         ])
         self.assertEqual(mesh.load_roster()["ki"]["status"], "live")
@@ -448,6 +510,8 @@ class TestDecisions(MeshBase):
                          "answer must go only to the asker")
         rows = self.decision_rows()
         self.assertEqual((rows[0]["status"], rows[0]["answer"]), ("answered", "yes"))
+        with open(os.path.join(self.state, "decisions-log.jsonl")) as f:
+            self.assertEqual(json.loads(f.read().splitlines()[-1])["by"], "DECISIONS", "the log row names who answered")
         self.assertTrue(rows[0]["answeredAt"])
         self.assertEqual(rows[1]["status"], "open")
         # codex asker was woken
@@ -456,6 +520,23 @@ class TestDecisions(MeshBase):
         listed = mesh.call_tool("decision_list", {"status": "open"})["content"][0]["text"]
         self.assertIn("Q2", listed)
         self.assertNotIn("Q1", listed)
+
+    def test_decision_open_keeps_only_the_watch_keys_and_http_urls(self):
+        mesh.call_tool("decision_open", {"question": "acme/widget#12 review?", "from": "WATCH", "watch": {
+            "sourceKind": "github", "source": "acme-gh", "ref": "acme/widget#12", "eid": "github:acme-gh:acme/widget#12:x:y",
+            "url": "https://github.example.com/acme/widget/pull/12", "auth": "env:GH_TOKEN", "token": "x"}})
+        mesh.call_tool("decision_open", {"question": "PROJ-1?", "from": "WATCH",
+                                         "watch": {"sourceKind": "jira", "ref": "PROJ-1", "url": "javascript:alert(1)"}})
+        mesh.call_tool("decision_open", {"question": "lane call", "from": "cx"})
+        rows = self.decision_rows()
+        self.assertEqual(rows[0]["watch"], {"sourceKind": "github", "source": "acme-gh", "ref": "acme/widget#12",
+                                            "eid": "github:acme-gh:acme/widget#12:x:y",
+                                            "url": "https://github.example.com/acme/widget/pull/12"},
+                         "unknown keys (auth, token) are dropped")
+        self.assertEqual(rows[1]["watch"], {"sourceKind": "jira", "ref": "PROJ-1"}, "a non-http(s) url is dropped")
+        self.assertNotIn("watch", rows[2], "control: a call with no watch object has none")
+        r = mesh.call_tool("decision_open", {"question": "bad", "from": "WATCH", "watch": "github"})
+        self.assertTrue(r["isError"], "a non-object watch is refused")
 
     def test_answer_to_orchestrator_asker_delivers_once(self):
         mesh.call_tool("decision_open", {"question": "q?", "from": "ORCHESTRATOR"})
@@ -473,7 +554,7 @@ class TestDecisions(MeshBase):
         self.assertEqual(rows[0]["asker"], "oc")
         self.assertEqual(rows[0]["verbatim"], "exactly this, verbatim")
         self.assertEqual(rows[0]["relayedTo"], ["oc"])
-        self.assertEqual(sorted(rows[0]), ["asker", "at", "id", "relayedTo", "verbatim"])
+        self.assertEqual(sorted(rows[0]), ["asker", "at", "by", "id", "relayedTo", "verbatim"])
         self.assertTrue(rows[0]["at"])
         # control: nobody but the asker was messaged, and the orchestrator inbox is absent
         self.assertFalse(os.path.exists(os.path.join(self.state, "inbox", "ORCHESTRATOR.jsonl")))

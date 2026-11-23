@@ -8,6 +8,7 @@ import datetime
 import fcntl
 import json
 import os
+import re
 import subprocess
 import sys
 import urllib.request
@@ -108,6 +109,68 @@ def load_roster():
 
 def _inbox_path(name):
     return os.path.join(state_dir(), "inbox", "%s.jsonl" % name)
+
+
+def _read_json(path):
+    try:
+        with open(path) as f:
+            doc = json.load(f)
+        return doc if isinstance(doc, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _has_fleet(doc, key="mcpServers"):
+    servers = doc.get(key)
+    return isinstance(servers, dict) and "fleet" in servers
+
+
+def has_mesh(name, entry):
+    """True when the lane's CLI was given the fleet MCP (so it has peer_inbox). Evidence, in order: the roster's
+    `mesh` bool; claude: the launch record ($FLEET_STATE/launch/<name>.sh passes --mcp-config with fleet_mesh.py),
+    a user or per-project mcpServers.fleet in ~/.claude.json ($FLEET_CLAUDE_JSON), or <dir>/.mcp.json; codex,
+    opencode, kiro, agy: a fleet server in the CLI's global MCP config."""
+    m = entry.get("mesh")
+    if isinstance(m, bool):
+        return m
+    cli, home = entry.get("cli"), os.path.expanduser("~")
+    if cli == "claude":
+        try:
+            with open(os.path.join(state_dir(), "launch", "%s.sh" % name)) as f:
+                if "fleet_mesh.py" in f.read():
+                    return True
+        except OSError:
+            pass
+        doc = _read_json(os.environ.get("FLEET_CLAUDE_JSON") or os.path.join(home, ".claude.json"))
+        d = entry.get("dir") or ""
+        proj = (doc.get("projects") or {}).get(d) if isinstance(doc.get("projects"), dict) else None
+        return (_has_fleet(doc) or (isinstance(proj, dict) and _has_fleet(proj))
+                or bool(d and _has_fleet(_read_json(os.path.join(d, ".mcp.json")))))
+    if cli == "codex":
+        try:
+            with open(os.path.join(os.environ.get("CODEX_HOME") or os.path.join(home, ".codex"), "config.toml")) as f:
+                return "[mcp_servers.fleet]" in f.read()
+        except OSError:
+            return False
+    if cli == "opencode":
+        xdg = os.environ.get("XDG_CONFIG_HOME") or os.path.join(home, ".config")
+        return _has_fleet(_read_json(os.path.join(xdg, "opencode", "opencode.json")), "mcp")
+    if cli == "kiro":
+        kh = os.environ.get("KIRO_HOME") or os.path.join(home, ".kiro")
+        return _has_fleet(_read_json(os.path.join(kh, "settings", "mcp.json")))
+    if cli == "agy":
+        ah = os.environ.get("FLEET_AGY_HOME") or os.path.join(home, ".gemini")
+        return _has_fleet(_read_json(os.path.join(ah, "config", "mcp_config.json")))
+    return False
+
+
+def wake_note(frm, to, entry):
+    """The pointer line typed into a pane. A lane with no fleet MCP (not started by `fleet launch`) has no
+    peer_inbox tool, so its line also names the inbox file to read by hand."""
+    note = "[fleet] message from %s: run peer_inbox to read it" % frm
+    if has_mesh(to, entry):
+        return note
+    return note + " (no peer_inbox tool? read %s)" % _inbox_path(to)
 
 
 def _cursor_path(name):
@@ -225,7 +288,7 @@ def wake(frm, to, text, entry):
             hit = next((m for m in AGY_BLOCKING_SCREENS if m in screen), None)
             if hit:
                 return "tmux send-keys", False, "agy pane %s shows a %r screen; not typing into it" % (pane, hit)
-        note = "[fleet] message from %s: run peer_inbox to read it" % frm
+        note = wake_note(frm, to, entry)
         ok, detail = _run(_tmux_argv("send-keys", "-t", pane, "-l", note))
         if ok:
             ok, detail = _run(_tmux_argv("send-keys", "-t", pane, "Enter"))
@@ -398,6 +461,24 @@ def t_peer_inbox(args):
 
 
 ALLOW_TYPES = ("pick", "edit", "own", "snooze", "refuse")
+WATCH_KEYS = ("sourceKind", "source", "ref", "url", "eid")  # the WATCH object a call may carry (four-desks 2.4)
+_WATCH_URL = re.compile(r"^https?://[^\s\"'<>\\]+$", re.I)
+
+
+def _clean_watch(w):
+    """Keep WATCH_KEYS only, as one-line strings; drop a url that is not http(s). None when nothing is left."""
+    if w is None:
+        return None
+    if not isinstance(w, dict):
+        raise ValueError("`watch` must be an object {sourceKind, source, ref, url, eid}")
+    out = {}
+    for k in WATCH_KEYS:
+        v = w.get(k)
+        if isinstance(v, str) and v.strip() and len(v) <= 500 and "\n" not in v:
+            out[k] = v.strip()
+    if "url" in out and not _WATCH_URL.match(out["url"]):
+        del out["url"]
+    return out or None
 
 
 def t_decision_open(args):
@@ -413,6 +494,7 @@ def t_decision_open(args):
         if not isinstance(allow, list) or not set(allow) <= set(ALLOW_TYPES):
             raise ValueError("`allow` must be a list drawn from %s" % ", ".join(ALLOW_TYPES))
         allow = [str(a) for a in allow]
+    watch = _clean_watch(args.get("watch"))
     path = _decisions_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "a+") as f:
@@ -425,6 +507,8 @@ def t_decision_open(args):
                    "answer": None, "answeredAt": None}
             if allow is not None:
                 rec["allow"] = allow
+            if watch:
+                rec["watch"] = watch
             f.seek(0, 2)
             f.write(json.dumps(rec) + "\n")
             f.flush()
@@ -511,7 +595,7 @@ def t_decision_answer(args):
     frm = os.environ.get("FLEET_NAME") or desk_name()
     asker = target.get("from")
     _append_line(decisions_log_path(), json.dumps(
-        {"id": did, "at": now(), "asker": asker, "verbatim": answer, "relayedTo": [asker] if asker else []}))
+        {"id": did, "at": now(), "asker": asker, "verbatim": answer, "relayedTo": [asker] if asker else [], "by": frm}))
     if not asker:
         return "answered %s; no asker to deliver to" % did
     return "answered %s; %s" % (did, deliver(frm, asker, "[answer %s] %s" % (did, answer)))
@@ -582,7 +666,10 @@ TOOLS = [
      _schema({"name": _S, "all": {"type": "boolean"}}), t_peer_inbox),
     ("decision_open", "Open a decision and deliver it to the decisions desk.",
      _schema({"question": _S, "options": {"type": "array", "items": _S}, "from": _S,
-              "allow": {"type": "array", "items": {"type": "string", "enum": list(ALLOW_TYPES)}}}, ["question"]),
+              "allow": {"type": "array", "items": {"type": "string", "enum": list(ALLOW_TYPES)}},
+              "watch": {"type": "object", "description": "WATCH source of the call: sourceKind, source, ref, url "
+                        "(http/https only), eid. Other keys are dropped.",
+                        "properties": {k: _S for k in WATCH_KEYS}}}, ["question"]),
      t_decision_open),
     ("decision_list", "List decisions, optionally filtered by status (open|answered).",
      _schema({"status": {"type": "string", "enum": ["open", "answered"]}}), t_decision_list),
@@ -679,10 +766,14 @@ def main(argv):
             payload = {}
         print(mirror(payload if isinstance(payload, dict) else {}))
         return 0
+    if cmd == "mesh":  # one line per roster lane: "<name> yes|no" (fleet ls)
+        for n, e in sorted(load_roster().items()):
+            print("%s %s" % (n, "yes" if has_mesh(n, e if isinstance(e, dict) else {}) else "no"))
+        return 0
     if cmd == "roster":
         print(json.dumps(load_roster(), indent=2, sort_keys=True))
         return 0
-    sys.stderr.write("usage: fleet_mesh.py serve | send <from> <to> <text> | inbox <name> | roster | mirror\n")
+    sys.stderr.write("usage: fleet_mesh.py serve | send <from> <to> <text> | inbox <name> | roster | mesh | mirror\n")
     return 2
 
 

@@ -1,0 +1,37 @@
+{
+  "name": "fleet-probe",
+  "description": "Fleet probe lane: read-only look at one target for DECIDE, reports once with probe_report, never acts.",
+  "tools": [
+    "fs_read",
+    "grep",
+    "glob",
+    "@fleet-probe",
+    "@fleet/peer_inbox"
+  ],
+  "allowedTools": [
+    "fs_read",
+    "grep",
+    "glob",
+    "@fleet-probe"
+  ],
+  "includeMcpJson": false,
+  "mcpServers": {},
+  "permissions": {
+    "rules": [
+      {
+        "capability": "shell",
+        "match": [
+          "*"
+        ],
+        "effect": "deny"
+      },
+      {
+        "capability": "fs_write",
+        "match": [
+          "**"
+        ],
+        "effect": "deny"
+      }
+    ]
+  }
+}

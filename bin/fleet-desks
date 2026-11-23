@@ -6,6 +6,9 @@
 # Builds two split windows in the fleet session, each desk an LLM lane (mode desk, never parked):
 #   deskA   ROUTE (left, role route) | DECIDE (right, role decide)
 #   deskB   WATCH (left, role watch) | LEARN (right, role learn); WATCH and LEARN get a read-only look-for-work brief
+#           plus a non-LLM pane under WATCH running `fleet watch status` (tagged @fleet-watch-status 1). It opens
+#           only with a WATCH desk this run launched, once per session (a live one is left alone), so a fleet whose
+#           desks are all live already is not touched.
 # Every desk pane is tagged @fleet-desk <role>. Idempotent: a desk whose roster pane is live is left alone, so a rerun
 # on a live fleet prints '<D> already live' four times and changes nothing. A dead desk is relaunched into its
 # pair's window: a dead right desk splits right of the live left one, a dead left desk splits beside the live right
@@ -55,7 +58,7 @@ lopts=(--cli "$cli" --dir "$dir")
 
 run() { if [ "$dry" = 1 ]; then printf 'would run:'; printf ' %q' "$@"; printf '\n'; else "$@"; fi; }
 
-created=0
+created=0 watch_launched=0
 if ! tm has-session -t "=$SESSION" 2>/dev/null; then created=1; fi
 
 brief_ROUTE="You are ROUTE, the standing routing desk for $HUMAN. Follow your role file: route work, own the lane lifecycle, never edit files. Never set a /goal."
@@ -67,6 +70,7 @@ launch_desk() { # desk [extra fleet launch args...]
   local d=$1 r b; shift
   r=$(printf '%s' "$d" | tr A-Z a-z); b=brief_$d
   run "$FLEET" launch "${lopts[@]}" --role "$r" "$@" "$d" desk "${!b}"
+  [ "$d" != WATCH ] || watch_launched=1
   [ "$dry" = 1 ] || tm set-option -p -t "$(roster_get "$d" pane)" @fleet-desk "$r"
 }
 
@@ -86,8 +90,28 @@ pair() { # window left right: one split window, left desk | right desk
   [ "$dry" = 1 ] || [ "$changed" = 0 ] || tm rename-window -t "$(roster_get "$l" pane)" "$w"
 }
 
+status_pane() { # the WATCH window's non-LLM pane: `fleet watch status`, split under the WATCH desk
+  local wp sp
+  [ "$watch_launched" = 1 ] || { echo "WATCH desk not launched by this run: no WATCH status pane"; return 0; }
+  if [ "$dry" = 1 ]; then
+    echo "window deskB: WATCH status pane under WATCH"
+    printf 'would run: tmux split-window -v -d -l 12 -t <WATCH pane> %q\n' "$FLEET watch status"
+    return 0
+  fi
+  wp=$(roster_get WATCH pane)
+  pane_alive "$wp" || { echo "no live WATCH desk: no WATCH status pane"; return 0; }
+  sp=$(tm list-panes -s -t "=$SESSION" -F '#{pane_id} #{pane_dead} #{@fleet-watch-status}' 2>/dev/null | awk '$2==0 && $3==1 {print $1; exit}')
+  if [ -n "$sp" ]; then echo "WATCH status pane already live (pane $sp)"; return 0; fi
+  sp=$(tm split-window -v -d -l 12 -t "$wp" -P -F '#{pane_id}' \
+    "env FLEET_STATE=$(printf %q "$STATE") $(printf %q "$FLEET") watch status")
+  tm set-option -p -t "$sp" @fleet-watch-status 1
+  tm select-pane -t "$sp" -T WATCH-status
+  echo "OK WATCH status pane $sp"
+}
+
 pair deskA ROUTE DECIDE
 pair deskB WATCH LEARN
+status_pane
 
 # fleet launch opened the session with a `home` window; drop it once deskA and deskB exist
 if [ "$created" = 1 ] && [ "$dry" = 0 ]; then tm kill-window -t "=$SESSION:home" 2>/dev/null || true; fi

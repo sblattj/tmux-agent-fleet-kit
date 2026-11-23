@@ -49,9 +49,12 @@ for cli in claude codex opencode; do
       claude)
         t "dry-run claude/$mode has --dangerously-skip-permissions" has "$out" '--dangerously-skip-permissions'
         t "dry-run claude/$mode has --disallowed-tools=AskUserQuestion" has "$out" '--disallowed-tools=AskUserQuestion'
-        t "dry-run claude/$mode has -n N1" has "$out" '-n N1' ;;
+        t "dry-run claude/$mode has -n N1" has "$out" '-n N1'
+        # resume is what fleet reopen runs: a reopened lane (even one first started outside fleet) gets peer_inbox
+        t "dry-run claude/$mode passes the fleet MCP (--mcp-config with fleet_mesh.py)" bash -c 'printf "%s" "$1" | grep -q -- "--mcp-config .*fleet_mesh.py"' _ "$out" ;;
       codex)
-        t "dry-run codex/$mode has --dangerously-bypass-approvals-and-sandbox" has "$out" '--dangerously-bypass-approvals-and-sandbox' ;;
+        t "dry-run codex/$mode has --dangerously-bypass-approvals-and-sandbox" has "$out" '--dangerously-bypass-approvals-and-sandbox'
+        t "control: dry-run codex/$mode passes no --mcp-config (codex gets the mesh from its own config)" bash -c '! printf "%s" "$1" | grep -q -- "--mcp-config"' _ "$out" ;;
       opencode)
         t "dry-run opencode/$mode has --port" has "$out" '--port'
         if [ $mode = resume ]; then t "dry-run opencode/resume has -s" has "$out" ' -s ses_abc123'

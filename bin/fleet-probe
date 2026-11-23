@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# fleet-probe: DECIDE's read-only probes (docs/design/four-desks.md section 2.5). Dispatched as `fleet probe`.
+#
+#   fleet probe start <owner/repo> [--cli C] [--what TEXT]   queue a probe; ROUTE gets one PROBE-REQUEST line
+#   fleet probe due [--start]                  probes.json targets due now (everySec), not nuked, not running
+#   fleet probe nuked [--json]                 list nuked targets (no more probes or asks until resumed)
+#   fleet probe nuke <target> | resume <target>   stop / restart probing a target (each one a log row)
+#   fleet probe stalled [--apply]              probes with no output for 15 min; --apply (ROUTE) parks them
+#   fleet probe stats [--json] | status        running now, today, per hour/day/target, with token counts
+#   fleet probe fyi <text> [--target T]        pass an fyi to ROUTE alone (logged decidedBy decide:probe)
+#   fleet probe report --id ID --found|--nothing [--summary S] [--quote Q]...   close a probe
+#   fleet probe git-log|git-show|git-diff|git-blame|gh-get|ci-status|read --id ID ...   the read verbs
+#   fleet probe tokens <id> | snapshot | check | can-host <cli> | serve
+# ---
+set -euo pipefail
+usage() { sed -n '2,/^# ---$/{/^# ---$/d;s/^# \{0,1\}//;p;}' "$0"; exit 2; }
+case ${1:-} in ''|-h|--help|help) usage ;; esac
+HERE=$(cd "$(dirname "$0")/.." && pwd)
+export FLEET_BIN=${FLEET_BIN:-$HERE/bin/fleet}
+exec python3 "$HERE/lib/fleet_probe.py" "$@"
