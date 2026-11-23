@@ -10,7 +10,16 @@
 import json, sys, time
 
 mode, target = sys.argv[1], sys.argv[2]
-for line in sys.stdin:
+
+
+def prompt():  # an empty input row, so park's pane-state guard sees a prompt it may type into
+    sys.stdout.write("> ")
+    sys.stdout.flush()
+
+
+prompt()
+for line in iter(sys.stdin.readline, ""):
+    prompt()
     line = line.strip()
     with open(target + ".typed", "a") as fh:
         fh.write(line + "\n")

@@ -975,9 +975,10 @@ cmd_park() {
     # compact before parking, so a reopen resumes the compacted context; never park on an unconfirmed compact
     before=$(pyh compactcount "$name")
     [ "$before" -ge 0 ] 2>/dev/null || die "can't read the transcript of $name to confirm a compact; not parked (fleet park $name --no-compact parks without it)"
-    tm send-keys -t "$pane" -l /compact
-    sleep 1
-    tm send-keys -t "$pane" Enter
+    # never splice /compact into text someone is typing (Q158): the mesh's guarded typer types only into an empty,
+    # quiet prompt, under the per-pane wake lock, and sends Enter only once the box reads exactly /compact
+    res=$(python3 "$HERE/../lib/fleet_mesh.py" type "$pane" /compact 2>&1) \
+      || die "can't type /compact into $name (${res:-no detail}); not parked, try again once its input box is clear (fleet park $name --no-compact parks without the compact)"
     flog "$name compact requested (finished compactions before: $before)"
     poll 'after=$(pyh compactcount "$name"); [ "$after" -gt "$before" ] 2>/dev/null' "$COMPACT_WAIT" \
       || die "compact of $name not confirmed in its transcript after ${COMPACT_WAIT}s; not parked (fleet park $name --no-compact parks without it)"

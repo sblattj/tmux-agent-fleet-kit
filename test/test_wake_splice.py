@@ -145,6 +145,51 @@ class WakeSpliceTest(unittest.TestCase):
         mesh.t_peer_inbox({"name": "cl"})  # reading the inbox clears the badge
         self.assertEqual(self.opt("@fleet_unread"), "")
 
+    def test_parallel_senders_never_merge_or_jam_the_box(self):
+        # two senders racing one empty pane: the per-pane lock serializes check, type, verify and Enter
+        script = ("import importlib.util,sys;s=importlib.util.spec_from_file_location('m',%r);m=importlib.util."
+                  "module_from_spec(s);s.loader.exec_module(m);print(m.deliver(sys.argv[1],'cl','body'))" % MESH)
+        procs = [subprocess.Popen(["python3", "-c", script, frm], env=dict(os.environ, FLEET_WAKE_SPAWN="0"),
+                                  stdout=subprocess.PIPE, universal_newlines=True) for frm in ("alpha", "beta")]
+        outs = [p.communicate(timeout=30)[0].strip() for p in procs]
+        got = _wait(lambda: len(self.submitted()) >= 1 and self.submitted(), timeout=5)
+        time.sleep(1)
+        print("RESULT parallel: outs=%r submitted=%r cursor_line=%r" % (outs, self.submitted(), self.cursor_line()))
+        notes = {mesh.wake_note(f, "cl", {"cli": "claude"}) for f in ("alpha", "beta")}
+        self.assertTrue(got)
+        self.assertTrue(set(self.submitted()) <= notes, "a merged or partial pointer was submitted")
+        self.assertEqual(self.cursor_line(), "❯", "the box was left jammed with an unsent pointer")
+
+    def test_a_pointer_left_unsent_gets_its_enter(self):
+        self.tm("send-keys", "-t", self.pane, "-l", self.note())  # an earlier wake whose Enter never went
+        self.assertTrue(_wait(lambda: "[fleet]" in self.tm("capture-pane", "-p", "-t", self.pane)),
+                        "control: leftover pointer never showed")
+        self.assertEqual(mesh.pane_busy(self.pane)[0], True, "control: a box holding text reads busy")
+        ok, why = mesh.type_wake(self.pane, self.note())
+        got = _wait(lambda: self.submitted(), timeout=3)
+        print("RESULT leftover: ok=%r why=%r submitted=%r" % (ok, why, got))
+        self.assertTrue(ok)
+        self.assertEqual(got, [self.note()])
+        # control: a leftover pointer is not cleared for a non-pointer text (fleet park's /compact): busy
+        self.tm("send-keys", "-t", self.pane, "-l", self.note())
+        _wait(lambda: self.tm("capture-pane", "-p", "-t", self.pane).count("[fleet]") >= 2)
+        self.assertIsNone(mesh.type_wake(self.pane, "/compact")[0])
+
+    def test_guarded_type_cli_refuses_a_typed_box(self):
+        self.tm("send-keys", "-t", self.pane, "-l", "good morni")
+        self.assertTrue(_wait(lambda: self.cursor_line() == "❯ good morni"), "control: human text never showed")
+        p = subprocess.run(["python3", MESH, "type", self.pane, "/compact"], stdout=subprocess.PIPE,
+                           universal_newlines=True)
+        print("RESULT type-cli busy: rc=%d out=%r line=%r" % (p.returncode, p.stdout, self.cursor_line()))
+        self.assertEqual(p.returncode, 3)
+        self.assertEqual(self.cursor_line(), "❯ good morni")
+        self.tm("send-keys", "-t", self.pane, "C-u")
+        _wait(lambda: self.cursor_line() == "❯")
+        p = subprocess.run(["python3", MESH, "type", self.pane, "/compact"], stdout=subprocess.PIPE,
+                           universal_newlines=True)
+        self.assertEqual(p.returncode, 0, p.stdout)  # control: an empty box takes it
+        self.assertEqual(_wait(lambda: self.submitted(), timeout=3), ["/compact"])
+
     def opt(self, name):
         p = subprocess.run(["tmux", "-L", self.sock, "show-options", "-p", "-v", "-t", self.pane, name],
                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, universal_newlines=True)
@@ -166,7 +211,7 @@ class WakeSpliceTest(unittest.TestCase):
         self.assertFalse(mesh.deliver("alpha", "cl", "cli body").count("SendMessage"))
         _wait(lambda: self.submitted(), timeout=3)
         self.assertEqual(self.submitted(), [self.note()], "control: the CLI send got the plain guarded wake")
-        res = mesh.t_peer_send({"to": "cl", "text": "the body"})
+        res = mesh.call_tool("peer_send", {"to": "cl", "text": "the body"})["content"][0]["text"]
         self.assertIn("SendMessage", res)
         rec = json.loads(open(os.path.join(self.state, "inbox", "cl.jsonl")).readlines()[-1])
         self.assertEqual((rec["text"], rec.get("native")), ("the body", "pending"))
@@ -178,9 +223,24 @@ class WakeSpliceTest(unittest.TestCase):
         print("RESULT native: deliver=%r mirror=%r submitted=%r" % (res, out, self.submitted()))
         self.assertEqual(self.submitted(), [self.note()], "no second pointer: the CLI line was already woken")
 
+    def test_decision_tools_go_native_only_over_mcp(self):
+        self.claude_sender()
+        with open(os.path.join(self.state, "roster.json")) as f:
+            roster = json.load(f)
+        roster["DECISIONS"] = dict(roster.pop("cl"), name="DECISIONS")
+        with open(os.path.join(self.state, "roster.json"), "w") as f:
+            json.dump(roster, f)
+        res = mesh.call_tool("decision_open", {"question": "ship it?"})["content"][0]["text"]
+        print("RESULT decision native: %r submitted=%r" % (res, self.submitted()))
+        self.assertIn("SendMessage", res)
+        # control: an engine (WATCH, probe) calling the function directly gets the guarded typed wake
+        res = mesh.t_decision_open({"from": "alpha", "question": "engine q?"})
+        self.assertNotIn("SendMessage", res)
+        self.assertEqual(len(_wait(lambda: self.submitted(), timeout=3)), 1)
+
     def test_claude_to_claude_without_sendmessage_falls_back_after_the_grace(self):
         self.claude_sender()
-        mesh.t_peer_send({"to": "cl", "text": "the body"})
+        mesh.call_tool("peer_send", {"to": "cl", "text": "the body"})["content"][0]["text"]
         time.sleep(1)
         self.assertEqual(self.submitted(), [], "control: nothing typed inside the grace")
         got = _wait(lambda: self.submitted(), timeout=10)

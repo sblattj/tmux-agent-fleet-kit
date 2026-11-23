@@ -42,6 +42,7 @@ inbox/<name>.jsonl     one JSON per line: {"id","at","from","to","text"} (+ "via
 inbox/<name>.native    ids of "native":"pending" lines whose SendMessage the mirror hook saw (no typed wake for them)
 wake/<name>.woken      inbox line count covered by the last typed pointer (the deferred waker never types twice for them)
 wake/<name>.lock       flock held by the one deferred waker of a lane (`fleet_mesh.py wake-later <name>`)
+wake/pane-<id>.lock    flock held while one wake (or park's /compact) checks, types, verifies and sends Enter
 inbox/<name>.cursor    integer: number of lines already returned by peer_inbox
 decisions.jsonl        {"id":"Q<n>","at","from","question","options":[...],"status":"open|answered","answer","answeredAt"}
 launch/<name>.sh       the window script ; launch/<name>.txt the first prompt ; launch/<name>.launch.json
@@ -227,6 +228,8 @@ python3 lib/fleet_mesh.py roster                print roster.json
 python3 lib/fleet_mesh.py mirror                PostToolUse hook: copy a native SendMessage into the mesh (stdin = hook JSON, exit 0)
 python3 lib/fleet_mesh.py wake-later <name>     deferred waker (started detached by a deferred wake; one per lane)
 python3 lib/fleet_mesh.py pane-state <pane>     "empty <why>" exit 0, or "busy <why>" exit 1: may a wake be typed now
+python3 lib/fleet_mesh.py type <pane> <text>    guarded type + Enter (the same checks, lock and Enter rule as a typed
+                                                wake): "sent" exit 0, "failed" exit 1, "busy <why>" exit 3 (fleet park)
 ```
 MCP tools: `peer_list {}`, `peer_send {to, text, from?}`, `peer_inbox {name?, all?}`,
 `decision_open {question, options?: [str], from?}` (appends decisions.jsonl and delivers to $FLEET_DECIDE),
@@ -236,9 +239,10 @@ Sender = `from` arg, else `$FLEET_NAME`, else error.
 Delivery (`deliver(frm, to, text)`): always append to inbox/<to>.jsonl, then wake by the target's roster `cli`:
 - codex: `$FLEET_CODEX_BIN queue --thread <to> --message "[fleet message from <frm>] <text>"` (PROVEN wakes an idle TUI)
 - opencode: `POST http://127.0.0.1:<port>/session/<session_id>/prompt_async` JSON `{"parts":[{"type":"text","text":"[fleet message from <frm>] <text>"}]}` (PROVEN, 204)
-- claude, sent with the `peer_send` MCP tool by a live fleet Claude lane's own MCP server (`CLAUDECODE=1`,
-  `FLEET_NAME` = sender, roster cli claude) to a live (not parked, not done) Claude lane: NO typed wake. (`fleet send`
-  and `fleet_mesh.py send` never take this route: no agent reads their result.) The inbox line gets
+- claude, sent through an MCP tool (`peer_send`, `decision_open`, `decision_answer`) by a live fleet Claude lane's own
+  MCP server (`CLAUDECODE=1`, `FLEET_NAME` = sender, roster cli claude) to a live (not parked, not done) Claude lane:
+  NO typed wake. (`fleet send`, `fleet_mesh.py send` and the WATCH, probe and DECISIONS engines never take this
+  route: no agent reads their result.) The inbox line gets
   `"native":"pending"` and the result tells the sender to call `SendMessage` to the target with the same text. That
   native message reaches the target without touching its input box; the mirror hook links it to the pending line
   (`inbox/<to>.native`) instead of writing a copy. A safety-net waker types the guarded pointer (below) only if no
@@ -272,7 +276,11 @@ lane, flock on `wake/<to>.lock`) retries with backoff (`FLEET_WAKE_BACKOFF`, dou
 the lane reads its inbox, or `FLEET_WAKE_DEFER_MAX` passes. Then it leaves a notice that types nothing:
 `display-message -d 15000` on every attached client and the pane option `@fleet_unread` ("N from X", cleared by
 `peer_inbox`; show it with `#{@fleet_unread}` in a status format).
-After typing, Enter is sent only once the input row reads exactly the pointer (whitespace ignored, wrapped rows joined).
+Check, type, verify and Enter run under a per-pane flock (`wake/pane-<id>.lock`, waits up to 8 s, else counts as
+busy), so two senders never type into one box at once. After typing, Enter is sent only once the input row reads
+exactly the pointer (whitespace ignored, wrapped rows joined). A box that holds nothing but an unsent fleet pointer (an
+earlier timeout) gets its Enter on the next wake instead of blocking every later wake. `fleet park` types `/compact`
+through the same guard (`fleet_mesh.py type`) and refuses to park when the box is busy.
 **Residual race:** a key the human presses in the milliseconds between the last check and `send-keys` still lands next
 to the pointer. The post-type check then sees more than the pointer and sends no Enter, so the human's half sentence
 is never submitted; the pointer stays in their box for them to delete. The kit cannot remove it without deleting
@@ -403,7 +411,8 @@ Desk helper `skills/running-the-decisions-desk/desk.sh` uses `fleet-goal check` 
   `/tmp/cdp-toolkit`), B = the rest. No such directory: just `chrome tabs: N`. N > `FLEET_TAB_WARN` (default 50) adds
   `WARN chrome tabs N > T (FLEET_TAB_WARN): close tabs you opened`. Chrome unreachable or bad JSON: `chrome tabs:
   unavailable`, exit status unchanged. Never opens or closes a tab.
-- `fleet park NAME [--no-compact]`: first types `/compact` and waits <= FLEET_COMPACT_WAIT (600 s) for the CLI's
+- `fleet park NAME [--no-compact]`: first types `/compact` (guarded: only into an empty, quiet prompt, else it
+  refuses with `FAIL can't type /compact into NAME (busy <why>)`) and waits <= FLEET_COMPACT_WAIT (600 s) for the CLI's
   finished-compaction record (claude `compact_boundary`, codex `compacted`, opencode completed `summary` message, kiro `tombstone` line with `kind` `summarization` in messages.jsonl, agy a
   `SYSTEM` `CHECKPOINT` row starting `# Resuming from a compaction` in transcript_full.jsonl, PROVEN written by `/compact` on 1.5.13),
   refusing to park when it never appears or the transcript is unreadable; roster gets `compactedAt`. Then it stops the CLI cleanly (claude/codex: send `C-c` twice then wait <= 20 s for the pid to exit,

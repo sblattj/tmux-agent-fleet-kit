@@ -297,6 +297,24 @@ out=$("$LC" park nc --no-compact 2>&1); rc=$?
 eq "park --no-compact parks it" parked "$(jq -r .nc.status "$FLEET_STATE/roster.json")"
 t "park --no-compact records no compactedAt" test -z "$(jq -r '.nc.compactedAt // empty' "$FLEET_STATE/roster.json")"
 eq "park --no-compact typed /compact once only (from the refused run)" 1 "$(grep -cx /compact "$CF2.typed")"
+# someone is typing in the lane's box: park never splices /compact into it (Q158), refuses, and leaves the text
+cfix claude-achieved "$(uid 34)"
+CF3=$FLEET_CLAUDE_HOME/projects/slug/$(uid 34).jsonl
+pane=$(mkwin ty "python3 $HERE/stubs/compactor claude $CF3")
+addlane ty claude worker "$(uid 34)" "$pane"
+poll_box() { for _ in $(seq 1 50); do tm capture-pane -p -t "$pane" | grep -Eq "^> ?$1\$" && return 0; sleep 0.1; done; return 1; }
+t "typed-box setup: stub prompt drawn" poll_box ""
+tm send-keys -t "$pane" -l "good morni"
+t "typed-box setup: the human's text shows" poll_box "good morni"
+out=$("$LC" park ty 2>&1); rc=$?
+t "park refuses while the box holds typed text" bash -c '[ "$1" != 0 ] && printf "%s" "$2" | grep -q "can.t type /compact into ty (busy"' _ "$rc" "$out"
+t "refused park typed nothing into the box" poll_box "good morni"
+t "refused park submitted nothing" test ! -s "$CF3.typed"
+eq "refused park left ty unparked" live "$(jq -r '.ty.status // "live"' "$FLEET_STATE/roster.json")"
+tm send-keys -t "$pane" C-u
+out=$("$LC" park ty 2>&1); rc=$?
+eq "control: with the box cleared, park compacts and parks" "0 parked" "$rc $(jq -r .ty.status "$FLEET_STATE/roster.json")"
+t "control: the cleared box got /compact" grep -qx /compact "$CF3.typed"
 # transcript missing: refuse rather than park blind
 pane=$(mkwin nt "python3 $HERE/stubs/compactor never $T/nt")
 addlane nt claude worker "$(uid 33)" "$pane"

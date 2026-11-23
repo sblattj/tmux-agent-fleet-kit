@@ -295,9 +295,10 @@ def wake(frm, to, text, entry):
         if ok:
             mark_woken(to)
         if ok is None:  # the pane is busy: never type into it now; a detached waker retries, then leaves a notice
-            spawn_waker(to)
-            return "tmux send-keys", True, "deferred (%s); retrying for up to %ds, then a tmux notice" % (
-                detail, int(_env_float("FLEET_WAKE_DEFER_MAX", DEFER_MAX)))
+            if spawn_waker(to):
+                return "tmux send-keys", True, "deferred (%s); retrying for up to %ds, then a tmux notice" % (
+                    detail, int(_env_float("FLEET_WAKE_DEFER_MAX", DEFER_MAX)))
+            return "tmux send-keys", True, "deferred (%s); no retry started, the message waits unread" % detail
         return "tmux send-keys", ok, detail
     return "none", False, "unknown cli %r" % (cli,)
 
@@ -501,9 +502,57 @@ def pane_busy(pane):
     return state != "empty", why
 
 
+_POINTER = re.compile(r"^\[fleet\]messagefrom\S+?:runpeer_inboxtoreadit(\(nopeer_inboxtool\?read\S+\))?$")
+
+
+class _PaneLock(object):
+    """flock on wake/pane-<id>.lock, so two senders never type into one pane at once (waits up to `wait` s)."""
+
+    def __init__(self, pane, wait=8.0):
+        self.path = os.path.join(state_dir(), "wake", "pane-%s.lock" % re.sub(r"[^A-Za-z0-9_-]", "_", pane))
+        self.wait, self.f = wait, None
+
+    def __enter__(self):
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        self.f = open(self.path, "a")
+        end = time.time() + self.wait
+        while True:
+            try:
+                fcntl.flock(self.f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return True
+            except OSError:
+                if time.time() > end:
+                    return False
+                time.sleep(0.05)
+
+    def __exit__(self, *exc):
+        self.f.close()  # closing drops the flock
+        return False
+
+
+def _leftover_pointer(pane):
+    """True when the input holds nothing but a fleet pointer whose Enter never went (an earlier race or timeout)."""
+    s = _read_screen(pane)
+    if not s or s[0] is None or s[3]:
+        return False
+    text = input_text(s[0], s[2])
+    return bool(text) and bool(_POINTER.match("".join(text.split())))
+
+
 def type_wake(pane, note):
     """Type `note` + Enter only into an empty, quiet prompt. Returns (True|False, detail), or (None, why) if busy."""
+    with _PaneLock(pane) as got:
+        if not got:
+            return None, "another wake is typing into %s" % pane
+        return _type_wake_locked(pane, note)
+
+
+def _type_wake_locked(pane, note):
     busy, why = pane_busy(pane)
+    if busy and not why.startswith("keys from") and _POINTER.match("".join(note.split())) and _leftover_pointer(pane):
+        log("type_wake %s: the input holds an unsent fleet pointer; sending its Enter" % pane)
+        ok, detail = _run(_tmux_argv("send-keys", "-t", pane, "Enter"))
+        return ok, ("sent Enter for a pointer left unsent earlier" if ok else detail)
     if busy:
         return None, why
     ok, detail = _run(_tmux_argv("send-keys", "-t", pane, "-l", note))
@@ -686,8 +735,9 @@ def reopen(to):
 def deliver(frm, to, text, native_ok=False):
     """Append to inbox/<to>.jsonl, then wake by roster cli. Returns a result string.
 
-    native_ok: the caller is the MCP `peer_send` tool, whose result an agent reads, so a Claude -> Claude send may ask
-    the sender to follow up with SendMessage instead of typing into the target (native_route). CLI sends never do.
+    native_ok (or an MCP tools/call in progress: peer_send, decision_open, decision_answer): the result goes back to
+    the calling agent, so a Claude -> Claude send may ask it to follow up with SendMessage instead of typing into the
+    target (native_route). CLI sends and the WATCH, probe and DECISIONS engines never do.
 
     A parked or done target is reopened first (`fleet reopen <to>`), then woken as usual."""
     _check_name(to)
@@ -696,7 +746,7 @@ def deliver(frm, to, text, native_ok=False):
     rec = {"id": msg_id, "at": ts, "from": frm, "to": to, "text": text}
     roster = load_roster()
     entry = roster.get(to)
-    native = native_ok and native_route(frm, to, entry, roster)
+    native = (native_ok or _MCP_CALL[0]) and native_route(frm, to, entry, roster)
     if native:
         rec["native"] = "pending"
     _append_line(_inbox_path(to), json.dumps(rec))
@@ -704,8 +754,8 @@ def deliver(frm, to, text, native_ok=False):
         spawn_waker(to)  # safety net: a typed wake after the grace, once the input is empty, if no SendMessage came
         log("deliver %s -> %s native pending (no typed wake)" % (frm, to))
         return ("delivered %s -> %s (inbox written; no typed wake into a Claude pane. Now call SendMessage with "
-                "to=\"%s\" and this same text: it reaches %s natively without touching its input box, and the mirror "
-                "hook links it to this inbox line. If no SendMessage follows within %ds, a typed pointer goes once "
+                "to=\"%s\" and this same text (for a decision or an answer, the question or answer line): it reaches %s "
+                "natively without touching its input box, and the mirror hook links it to this inbox line. If no SendMessage follows within %ds, a typed pointer goes once "
                 "%s's input is empty)" % (frm, to, to, to, int(_env_float("FLEET_NATIVE_GRACE", NATIVE_GRACE)), to))
     if not entry:
         log("deliver %s -> %s queued (no live lane)" % (frm, to))
@@ -858,7 +908,7 @@ def t_peer_send(args):
     to, text = args.get("to"), args.get("text")
     if not to or not isinstance(text, str) or not text:
         raise ValueError("`to` and `text` are required")
-    return deliver(_sender(args), to, text, native_ok=True)
+    return deliver(_sender(args), to, text)
 
 
 def t_peer_inbox(args):
@@ -1097,11 +1147,18 @@ TOOLS = [
 TOOL_MAP = {t[0]: t for t in TOOLS}
 
 
+_MCP_CALL = [False]  # True while an MCP tools/call runs: its result goes back to the calling agent
+
+
 def call_tool(name, args):
     if name not in TOOL_MAP:
         return {"content": [{"type": "text", "text": "unknown tool: %s" % name}], "isError": True}
     try:
-        text = TOOL_MAP[name][3](args or {})
+        _MCP_CALL[0] = True
+        try:
+            text = TOOL_MAP[name][3](args or {})
+        finally:
+            _MCP_CALL[0] = False
         return {"content": [{"type": "text", "text": text}], "isError": False}
     except Exception as e:
         log("tool %s error: %s" % (name, e))
@@ -1187,6 +1244,10 @@ def main(argv):
         busy, why = pane_busy(argv[2])
         print("%s %s" % ("busy" if busy else "empty", why))
         return 1 if busy else 0
+    if cmd == "type" and len(argv) == 4:  # guarded type + Enter (fleet park's /compact): exit 0 sent, 1 failed, 3 busy
+        ok, why = type_wake(argv[2], argv[3])
+        print("%s %s" % ({True: "sent", False: "failed", None: "busy"}[ok], why))
+        return {True: 0, False: 1, None: 3}[ok]
     if cmd == "mesh":  # one line per roster lane: "<name> yes|no" (fleet ls)
         for n, e in sorted(load_roster().items()):
             print("%s %s" % (n, "yes" if has_mesh(n, e if isinstance(e, dict) else {}) else "no"))
@@ -1195,7 +1256,7 @@ def main(argv):
         print(json.dumps(load_roster(), indent=2, sort_keys=True))
         return 0
     sys.stderr.write("usage: fleet_mesh.py serve | send <from> <to> <text> | inbox <name> | roster | mesh | mirror"
-                     " | wake-later <to> | pane-state <pane>\n")
+                     " | wake-later <to> | pane-state <pane> | type <pane> <text>\n")
     return 2
 
 
