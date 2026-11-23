@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.3.1 (2026-11-23)
+
+- Fixed: a guarded type of a slash command into Claude Code (`fleet park`'s `/compact`, `fleet_mesh.py type <pane> /mcp`) never sent Enter, so `fleet park` refused every live Claude lane. Claude Code draws a typed slash command in colour, and the post-type check read coloured cells as placeholder (an empty box). The check now also accepts the box when every cell, placeholder styling included, reads exactly the typed text; the pre-type emptiness check is unchanged. PROVEN on a live Claude Code 2.1.330 lane: guarded `/mcp` opened the menu, and `fleet park` compacted and parked.
+
 ## v0.3.0 (2026-11-23)
 
 - Fixed: a fleet wake typed into a Claude, Kiro or agy pane spliced into whatever the human was typing there (`good morni[fleet] message from ...` submitted as one line). `wake()` typed the pointer and Enter without looking (lib/fleet_mesh.py, `wake`). Now a typed wake goes only into an empty, quiet prompt (allow-list read of the cursor row with `capture-pane -e`, plus recent client keys and copy mode); a busy pane gets a detached retry with backoff (`FLEET_WAKE_DEFER_MAX`, default 900 s) and then a tmux notice and `@fleet_unread` instead of typing. Enter is sent only once the box reads exactly the pointer. Residual race documented in INTERFACES.md, Typed wakes.

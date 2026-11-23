@@ -265,6 +265,12 @@ class InputStateTest(unittest.TestCase):
             v = screens[cli + "_empty"]
             self.assertEqual(mesh.input_text(v["screen"], v["cy"]), "", cli)
 
+    def test_claude_colours_a_typed_slash_command(self):
+        # captured from a live Claude Code 2.1.330 lane after `/mcp` was typed (2026-11-23): the command is colour 153
+        screen = "\u276f\xa0\x1b[38;5;153m/mcp\x1b[39m\n\x1b[38;5;244m" + "\u2500" * 40 + "\n"
+        self.assertEqual(mesh.input_text(screen, 0), "", "control: the solid reading drops coloured cells")
+        self.assertEqual(mesh.input_text(screen, 0, every=True), "/mcp")
+
     def test_vim_normal_mode_and_bad_cursor_are_busy(self):
         self.assertEqual(mesh.input_state("❯ \n-- NORMAL --\n", 2, 0)[0], "busy")
         self.assertEqual(mesh.input_state("❯ \n", 2, 5)[0], "busy")

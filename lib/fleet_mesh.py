@@ -428,8 +428,9 @@ def input_state(screen, cx, cy):
     return "empty", "empty prompt"
 
 
-def input_text(screen, cy):
-    """The solid (non-placeholder) text of the input box holding the cursor row, prompt glyph dropped; or None."""
+def input_text(screen, cy, every=False):
+    """The solid (non-placeholder) text of the input box holding the cursor row, prompt glyph dropped; or None.
+    every=True keeps placeholder-styled cells too: Claude Code draws a typed slash command (`/compact`) in colour."""
     lines = screen.split("\n")
     if not 0 <= cy < len(lines):
         return None
@@ -449,7 +450,7 @@ def input_text(screen, cy):
         t = _plain(cells)
         if r > top and (not t.strip() or _is_rule(t)):
             break
-        out.append("".join(ch for ch, dim, _ in cells if not dim))
+        out.append("".join(ch for ch, dim, _ in cells if every or not dim))
     text = "".join(out).strip()
     return text[1:].strip() if text[:1] in PROMPT_GLYPHS else text
 
@@ -564,6 +565,9 @@ def _type_wake_locked(pane, note):
         s = _read_screen(pane)
         got = input_text(s[0], s[2]) if s and s[0] is not None else None
         if got is not None and "".join(got.split()) == want:
+            break
+        every = input_text(s[0], s[2], every=True) if s and s[0] is not None else None
+        if every is not None and "".join(every.split()) == want:  # a coloured slash command (Claude `/compact`)
             break
         if time.time() > end:
             log("type_wake %s: input read %r after typing, not the pointer alone; Enter not sent" % (pane, got))
