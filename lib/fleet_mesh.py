@@ -3,6 +3,7 @@
 
 Python 3.8+ stdlib only. See INTERFACES.md for the contract.
   fleet_mesh.py serve | send <from> <to> <text> | inbox <name> | roster | mirror (hook JSON on stdin)
+                | wake-later <to> | pane-state <pane>
 """
 import datetime
 import fcntl
@@ -11,6 +12,8 @@ import os
 import re
 import subprocess
 import sys
+import time
+import unicodedata
 import urllib.request
 
 SUPPORTED_PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")
@@ -288,12 +291,377 @@ def wake(frm, to, text, entry):
             hit = next((m for m in AGY_BLOCKING_SCREENS if m in screen), None)
             if hit:
                 return "tmux send-keys", False, "agy pane %s shows a %r screen; not typing into it" % (pane, hit)
-        note = wake_note(frm, to, entry)
-        ok, detail = _run(_tmux_argv("send-keys", "-t", pane, "-l", note))
+        ok, detail = type_wake(pane, wake_note(frm, to, entry))
         if ok:
-            ok, detail = _run(_tmux_argv("send-keys", "-t", pane, "Enter"))
+            mark_woken(to)
+        if ok is None:  # the pane is busy: never type into it now; a detached waker retries, then leaves a notice
+            spawn_waker(to)
+            return "tmux send-keys", True, "deferred (%s); retrying for up to %ds, then a tmux notice" % (
+                detail, int(_env_float("FLEET_WAKE_DEFER_MAX", DEFER_MAX)))
         return "tmux send-keys", ok, detail
     return "none", False, "unknown cli %r" % (cli,)
+
+
+def wake_result(prefix, frm, to, how, ok, detail):
+    """The result line of deliver() and fleet_decisions.rewake()."""
+    if ok and detail.startswith("deferred"):
+        return "%sdelivered %s -> %s (inbox written; typed wake %s)" % (prefix, frm, to, detail)
+    if ok:
+        return "%sdelivered %s -> %s (inbox + wake via %s ok)" % (prefix, frm, to, how)
+    return "%sdelivered %s -> %s (inbox written; wake via %s FAILED: %s)" % (prefix, frm, to, how, detail)
+
+
+# ---------------------------------------------------------------- typed wakes that never splice
+#
+# A typed wake (`tmux send-keys`) must never land in text a human is typing. Before typing, the pane must show an
+# EMPTY prompt row at the cursor (an allow-list: a prompt glyph, then nothing but a faint or coloured placeholder; any
+# other screen defers), and no attached client may have sent it keys in the last FLEET_WAKE_QUIET seconds. A busy
+# pane gets a detached waker (`fleet_mesh.py wake-later <to>`) that retries with backoff for FLEET_WAKE_DEFER_MAX
+# seconds, then leaves a notice that types nothing (display-message plus the pane option @fleet_unread). The inbox
+# line is written before any of this, so a message is never lost, only its doorbell waits.
+#
+# Residual race: the human can start typing between the last check and send-keys (two tmux calls, milliseconds).
+# Enter is only sent once the input row reads exactly the pointer, so a collision leaves the pointer in the box
+# unsent instead of submitting the human's half sentence; it cannot be undone without deleting their keys.
+
+PROMPT_GLYPHS = ("❯", "›", ">")  # Claude Code, kiro-cli, agy (captured from each, 2026-11-23)
+DEFER_MAX = 900  # seconds a deferred wake keeps retrying
+NATIVE_GRACE = 120  # seconds a Claude -> Claude message waits for its native SendMessage before a typed wake
+_SGR = re.compile(r"\x1b\[([0-9;:]*)m")
+_ESC = re.compile(r"\x1b(?:\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[()][0-9A-Za-z]|.)")
+
+
+def _env_float(name, default):
+    try:
+        return float(os.environ.get(name, default))
+    except ValueError:
+        return float(default)
+
+
+def _apply_sgr(params, faint, colored):
+    """Track SGR state: faint, and whether an explicit foreground colour is set. Typed text is drawn in the
+    default foreground by Claude Code, kiro-cli and agy (captured 2026-11-23); their placeholders and hints are
+    faint (Claude), grey truecolor (kiro) or a 256-colour (agy), so either flag marks placeholder text."""
+    ps = re.split("[;:]", params) if params else ["0"]
+    i = 0
+    while i < len(ps):
+        n = int(ps[i]) if ps[i].isdigit() else 0
+        if n == 0:
+            faint = colored = False
+        elif n == 2:
+            faint = True
+        elif n == 22:
+            faint = False
+        elif n == 39:
+            colored = False
+        elif 30 <= n <= 37 or 90 <= n <= 97:
+            colored = True
+        elif n in (38, 48) and i + 1 < len(ps):
+            if n == 38:
+                colored = True
+            i += 2 if ps[i + 1] == "5" else 4 if ps[i + 1] == "2" else 0
+        i += 1
+    return faint, colored
+
+
+def screen_cells(line):
+    """One `capture-pane -e` row as [(char, dim, width)]; dim = faint or coloured (placeholder, not typed text)."""
+    cells, faint, colored, i = [], False, False, 0
+    while i < len(line):
+        if line[i] == "\x1b":
+            m = _SGR.match(line, i)
+            if m:
+                faint, colored = _apply_sgr(m.group(1), faint, colored)
+                i = m.end()
+                continue
+            m = _ESC.match(line, i)
+            i = m.end() if m else i + 1
+            continue
+        ch = line[i]
+        w = 0 if unicodedata.combining(ch) else (2 if unicodedata.east_asian_width(ch) in "WF" else 1)
+        cells.append((ch, faint or colored, w))
+        i += 1
+    return cells
+
+
+def _solid(cells):
+    return any(not dim and not ch.isspace() for ch, dim, _ in cells)
+
+
+def _plain(cells):
+    return "".join(ch for ch, _, _ in cells)
+
+
+def _is_rule(text):
+    t = text.strip()
+    return len(t) >= 10 and t.count("─") >= 0.6 * len(t)
+
+
+def input_state(screen, cx, cy):
+    """Classify a captured screen (`capture-pane -p -e`) with the cursor at (cx, cy).
+
+    Returns ("empty", why) only for a prompt row whose text left of the cursor is just a prompt glyph and whose
+    other text is dim placeholder; every other screen is ("busy", why): typed text, a dialog, vim NORMAL mode."""
+    lines = screen.split("\n")
+    if any("-- NORMAL --" in _plain(screen_cells(ln)) for ln in lines[-8:]):
+        return "busy", "vim NORMAL mode"
+    if not 0 <= cy < len(lines):
+        return "busy", "cursor outside the captured screen"
+    col, left, right = 0, [], []
+    for c in screen_cells(lines[cy]):
+        (left if col < cx else right).append(c)
+        col += c[2]
+    lt = _plain(left).strip()
+    if lt not in PROMPT_GLYPHS:
+        if lt[:1] in PROMPT_GLYPHS:
+            return "busy", "typed text in the input"
+        return "busy", "no empty prompt at the cursor (a dialog, a menu or another screen)"
+    if _solid(right):
+        return "busy", "typed text in the input"
+    for ln in lines[cy + 1:cy + 9]:  # a multi-line draft continues below the cursor row, up to the box's rule
+        cells = screen_cells(ln)
+        if not _plain(cells).strip() or _is_rule(_plain(cells)):
+            break
+        if _solid(cells):
+            return "busy", "more input lines below the prompt"
+    return "empty", "empty prompt"
+
+
+def input_text(screen, cy):
+    """The solid (non-placeholder) text of the input box holding the cursor row, prompt glyph dropped; or None."""
+    lines = screen.split("\n")
+    if not 0 <= cy < len(lines):
+        return None
+    top = None
+    for r in range(cy, max(-1, cy - 9), -1):
+        t = _plain(screen_cells(lines[r])).strip()
+        if t[:1] in PROMPT_GLYPHS:
+            top = r
+            break
+        if not t or _is_rule(t):
+            return None
+    if top is None:
+        return None
+    out = []
+    for r in range(top, min(len(lines), top + 12)):
+        cells = screen_cells(lines[r])
+        t = _plain(cells)
+        if r > top and (not t.strip() or _is_rule(t)):
+            break
+        out.append("".join(ch for ch, dim, _ in cells if not dim))
+    text = "".join(out).strip()
+    return text[1:].strip() if text[:1] in PROMPT_GLYPHS else text
+
+
+def _tmux_out(*args):
+    try:
+        p = subprocess.run(_tmux_argv(*args), stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15,
+                           universal_newlines=True)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    return p.stdout if p.returncode == 0 else None
+
+
+def _read_screen(pane):
+    """(screen, cx, cy, in_mode) for pane, or None when tmux can't read it."""
+    info = _tmux_out("display-message", "-p", "-t", pane, "#{cursor_x}\t#{cursor_y}\t#{pane_in_mode}")
+    screen = _tmux_out("capture-pane", "-p", "-e", "-t", pane)
+    try:
+        cx, cy, mode = info.strip("\n").split("\t")
+        return screen, int(cx), int(cy), mode not in ("", "0")
+    except (AttributeError, ValueError):
+        return None
+
+
+def human_active(pane, quiet=None):
+    """True when an attached client whose current pane is `pane` sent keys in the last `quiet` seconds."""
+    quiet = _env_float("FLEET_WAKE_QUIET", 3) if quiet is None else quiet
+    if quiet <= 0:
+        return False
+    out = _tmux_out("list-clients", "-F", "#{pane_id}\t#{client_activity}") or ""
+    t = time.time()
+    for ln in out.splitlines():
+        p, _, act = ln.partition("\t")
+        if p == pane and act.isdigit() and t - int(act) < quiet:
+            return True
+    return False
+
+
+def pane_busy(pane):
+    """(busy, why). Fails closed: a pane tmux can't read counts as busy."""
+    if human_active(pane):
+        return True, "keys from an attached client in the last %ss" % os.environ.get("FLEET_WAKE_QUIET", "3")
+    got = _read_screen(pane)
+    if got is None or got[0] is None:
+        return True, "could not read pane %s" % pane
+    screen, cx, cy, in_mode = got
+    if in_mode:
+        return True, "pane is in copy mode"
+    state, why = input_state(screen, cx, cy)
+    return state != "empty", why
+
+
+def type_wake(pane, note):
+    """Type `note` + Enter only into an empty, quiet prompt. Returns (True|False, detail), or (None, why) if busy."""
+    busy, why = pane_busy(pane)
+    if busy:
+        return None, why
+    ok, detail = _run(_tmux_argv("send-keys", "-t", pane, "-l", note))
+    if not ok:
+        return False, detail
+    # race guard: Enter only once the input reads exactly the pointer; a human key in between means no Enter
+    want, got, end = "".join(note.split()), None, time.time() + 2.0
+    while True:
+        s = _read_screen(pane)
+        got = input_text(s[0], s[2]) if s and s[0] is not None else None
+        if got is not None and "".join(got.split()) == want:
+            break
+        if time.time() > end:
+            log("type_wake %s: input read %r after typing, not the pointer alone; Enter not sent" % (pane, got))
+            return False, ("typed the pointer, but the input then read %r, not the pointer alone; Enter not sent"
+                           " (a human may have typed at the same moment)" % (got or "")[:80])
+        time.sleep(0.05)
+    return _run(_tmux_argv("send-keys", "-t", pane, "Enter"))
+
+
+def _waker_lock_path(to):
+    return os.path.join(state_dir(), "wake", "%s.lock" % to)
+
+
+def spawn_waker(to):
+    """Start a detached `wake-later <to>` (it exits at once if one already holds the lock for `to`)."""
+    if os.environ.get("FLEET_WAKE_SPAWN", "1") == "0":
+        return False
+    try:
+        d = os.path.join(state_dir(), "log")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "wake-later.log"), "a") as errf:
+            subprocess.Popen([sys.executable, os.path.abspath(__file__), "wake-later", to], stdin=subprocess.DEVNULL,
+                             stdout=errf, stderr=errf, start_new_session=True, close_fds=True)
+        return True
+    except OSError as e:
+        log("spawn_waker %s failed: %s" % (to, e))
+        return False
+
+
+def _native_confirmed(to):
+    try:
+        with open(os.path.join(state_dir(), "inbox", "%s.native" % to)) as f:
+            return set(ln.strip() for ln in f if ln.strip())
+    except OSError:
+        return set()
+
+
+def _woken_path(to):
+    return os.path.join(state_dir(), "wake", "%s.woken" % to)
+
+
+def mark_woken(to):
+    """Record that a typed pointer reached `to` covering every inbox line so far (no second pointer for them)."""
+    try:
+        os.makedirs(os.path.dirname(_woken_path(to)), exist_ok=True)
+        with open(_woken_path(to) + ".tmp", "w") as f:
+            f.write(str(len(_read_lines(_inbox_path(to)))))
+        os.replace(_woken_path(to) + ".tmp", _woken_path(to))
+    except OSError as e:
+        log("mark_woken %s: %s" % (to, e))
+
+
+def _woken(to):
+    try:
+        with open(_woken_path(to)) as f:
+            return int(f.read().strip() or 0)
+    except (OSError, ValueError):
+        return 0
+
+
+def _wake_needed(to):
+    """(need, wait, frm): unread lines that still need a typed wake, and whether a native grace is still running."""
+    lines = _read_lines(_inbox_path(to))[max(read_cursor(to), _woken(to)):]
+    done, grace = _native_confirmed(to), _env_float("FLEET_NATIVE_GRACE", NATIVE_GRACE)
+    need, wait, frm = 0, False, None
+    for ln in lines:
+        try:
+            rec = json.loads(ln)
+        except ValueError:
+            rec = {}
+        if rec.get("native") == "pending":
+            if rec.get("id") in done:
+                continue
+            if time.time() - _parse_ts(rec.get("at")) < grace:
+                wait = True
+                continue
+        need += 1
+        frm = rec.get("from") or frm
+    return need, wait, frm
+
+
+def _parse_ts(ts):
+    try:
+        return datetime.datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=datetime.timezone.utc).timestamp()
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def notice(to, entry, frm, n, why):
+    """The non-typing fallback: a display-message on every attached client, and @fleet_unread on the pane."""
+    pane = entry.get("pane")
+    msg = "[fleet] %s has %d unread (latest from %s); wake not typed: %s" % (to, n, frm or "?", why)
+    for c in (_tmux_out("list-clients", "-F", "#{client_name}") or "").splitlines():
+        if c:
+            _run(_tmux_argv("display-message", "-c", c, "-d", "15000", msg))
+    if pane:
+        _run(_tmux_argv("set-option", "-p", "-t", pane, "@fleet_unread", "%d from %s" % (n, frm or "?")))
+    log("notice %s: %s" % (to, msg))
+
+
+def clear_notice(name):
+    pane = (load_roster().get(name) or {}).get("pane")
+    if pane:
+        _run(_tmux_argv("set-option", "-p", "-u", "-t", pane, "@fleet_unread"))
+
+
+def wake_later(to):
+    """Detached waker: retry the typed wake with backoff until it lands, the lane reads its inbox, or the bound
+    passes; then leave a notice. One per target (flock); returns a short result string."""
+    _check_name(to)
+    path = _waker_lock_path(to)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    lk = open(path, "a")
+    try:
+        fcntl.flock(lk, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return "another waker holds %s" % to
+    try:
+        bound = _env_float("FLEET_WAKE_DEFER_MAX", DEFER_MAX)  # counted from when a typed wake is first needed
+        start, step = None, _env_float("FLEET_WAKE_BACKOFF", 2)
+        why, frm, need = "input busy", None, 0
+        while True:
+            need, wait, frm = _wake_needed(to)
+            if not need and not wait:
+                log("wake-later %s: nothing left to wake for" % to)
+                return "nothing to wake"
+            entry = load_roster().get(to) or {}
+            if need and start is None:
+                start = time.time()
+            if need and entry.get("cli") in ("claude", "kiro", "agy") and entry.get("pane"):
+                ok, why = type_wake(entry["pane"], wake_note(frm or "?", to, entry))
+                if ok:
+                    mark_woken(to)
+                    log("wake-later %s: typed wake landed after %ds" % (to, time.time() - start))
+                    return "woke"
+                if ok is False:
+                    why = "typing failed: %s" % why
+            if start is not None and time.time() - start > bound:
+                if need:
+                    notice(to, entry, frm, need, why)
+                    return "notice"
+                return "gave up"
+            time.sleep(step)
+            step = min(step * 2, 30)
+    finally:
+        lk.close()
 
 
 def fleet_bin():
@@ -315,16 +683,30 @@ def reopen(to):
     return True, "ok"
 
 
-def deliver(frm, to, text):
+def deliver(frm, to, text, native_ok=False):
     """Append to inbox/<to>.jsonl, then wake by roster cli. Returns a result string.
+
+    native_ok: the caller is the MCP `peer_send` tool, whose result an agent reads, so a Claude -> Claude send may ask
+    the sender to follow up with SendMessage instead of typing into the target (native_route). CLI sends never do.
 
     A parked or done target is reopened first (`fleet reopen <to>`), then woken as usual."""
     _check_name(to)
     ts = now()
     msg_id = "%s-%s-%d" % (ts, to, len(_read_lines(_inbox_path(to))) + 1)
     rec = {"id": msg_id, "at": ts, "from": frm, "to": to, "text": text}
+    roster = load_roster()
+    entry = roster.get(to)
+    native = native_ok and native_route(frm, to, entry, roster)
+    if native:
+        rec["native"] = "pending"
     _append_line(_inbox_path(to), json.dumps(rec))
-    entry = load_roster().get(to)
+    if native:
+        spawn_waker(to)  # safety net: a typed wake after the grace, once the input is empty, if no SendMessage came
+        log("deliver %s -> %s native pending (no typed wake)" % (frm, to))
+        return ("delivered %s -> %s (inbox written; no typed wake into a Claude pane. Now call SendMessage with "
+                "to=\"%s\" and this same text: it reaches %s natively without touching its input box, and the mirror "
+                "hook links it to this inbox line. If no SendMessage follows within %ds, a typed pointer goes once "
+                "%s's input is empty)" % (frm, to, to, to, int(_env_float("FLEET_NATIVE_GRACE", NATIVE_GRACE)), to))
     if not entry:
         log("deliver %s -> %s queued (no live lane)" % (frm, to))
         return "queued (no live lane): %s -> %s" % (frm, to)
@@ -338,9 +720,21 @@ def deliver(frm, to, text):
         entry = load_roster().get(to) or entry
     how, ok, detail = wake(frm, to, text, entry)
     log("deliver %s -> %s wake=%s ok=%s %s" % (frm, to, how, ok, detail))
-    if ok:
-        return "%sdelivered %s -> %s (inbox + wake via %s ok)" % (prefix, frm, to, how)
-    return "%sdelivered %s -> %s (inbox written; wake via %s FAILED: %s)" % (prefix, frm, to, how, detail)
+    return wake_result(prefix, frm, to, how, ok, detail)
+
+
+def native_route(frm, to, entry, roster):
+    """True when this send should ride Claude Code's own cross-session messaging instead of a typed wake: the
+    caller is a fleet Claude lane's own MCP server (CLAUDECODE=1, FLEET_NAME=frm, roster cli claude) and the
+    target is a live fleet Claude lane. Every fleet Claude lane runs bypass, so the native message is same-class
+    and delivers at once (PROVEN 2.1.330); a parked lane has no socket, so it keeps the reopen + typed path."""
+    if os.environ.get("CLAUDECODE") != "1" or os.environ.get("FLEET_NAME") != frm or frm == to:
+        return False
+    if os.environ.get("FLEET_NATIVE", "1") == "0":
+        return False
+    if (roster.get(frm) or {}).get("cli") != "claude" or not entry or entry.get("cli") != "claude":
+        return False
+    return entry.get("status") not in ("parked", "done") and bool(entry.get("pane"))
 
 
 # ---------------------------------------------------------------- mirror (native SendMessage -> mesh)
@@ -398,6 +792,11 @@ def mirror(payload):
         if not to or to == frm:
             return "skip: %r is not another fleet lane" % (ti.get("to"),)
         _check_name(to)
+        pending = _oldest_pending(frm, to)
+        if pending:
+            _append_line(os.path.join(state_dir(), "inbox", "%s.native" % to), pending)
+            log("mirror %s -> %s linked to %s (native SendMessage after peer_send)" % (frm, to, pending))
+            return "linked %s -> %s %s" % (frm, to, pending)
         ts = now()
         rec = {"id": "%s-%s-%d" % (ts, to, len(_read_lines(_inbox_path(to))) + 1), "at": ts, "from": frm,
                "to": to, "text": text, "via": "native"}
@@ -407,6 +806,20 @@ def mirror(payload):
     except Exception as e:
         log("mirror error: %s" % e)
         return "mirror error: %s" % e
+
+
+def _oldest_pending(frm, to, max_age=1800):
+    """Id of the oldest native-pending inbox line frm -> to not yet linked to a SendMessage, or None."""
+    done = _native_confirmed(to)
+    for ln in _read_lines(_inbox_path(to))[-200:]:
+        try:
+            rec = json.loads(ln)
+        except ValueError:
+            continue
+        if (rec.get("native") == "pending" and rec.get("from") == frm and rec.get("id") not in done
+                and time.time() - _parse_ts(rec.get("at")) < max_age):
+            return rec.get("id")
+    return None
 
 
 # ---------------------------------------------------------------- decisions
@@ -445,7 +858,7 @@ def t_peer_send(args):
     to, text = args.get("to"), args.get("text")
     if not to or not isinstance(text, str) or not text:
         raise ValueError("`to` and `text` are required")
-    return deliver(_sender(args), to, text)
+    return deliver(_sender(args), to, text, native_ok=True)
 
 
 def t_peer_inbox(args):
@@ -453,6 +866,7 @@ def t_peer_inbox(args):
     if not name:
         raise ValueError("no inbox name: pass `name` or set FLEET_NAME")
     msgs = read_inbox(name, bool(args.get("all")))
+    clear_notice(name)
     if not msgs:
         return "no unread messages"
     return "\n".join("[%s] from %s%s: %s" % (m.get("at", ""), m.get("from", "?"),
@@ -766,6 +1180,13 @@ def main(argv):
             payload = {}
         print(mirror(payload if isinstance(payload, dict) else {}))
         return 0
+    if cmd == "wake-later" and len(argv) == 3:  # detached deferred waker (spawn_waker)
+        print(wake_later(argv[2]))
+        return 0
+    if cmd == "pane-state" and len(argv) == 3:  # "empty <why>" (exit 0) or "busy <why>" (exit 1) for a pane
+        busy, why = pane_busy(argv[2])
+        print("%s %s" % ("busy" if busy else "empty", why))
+        return 1 if busy else 0
     if cmd == "mesh":  # one line per roster lane: "<name> yes|no" (fleet ls)
         for n, e in sorted(load_roster().items()):
             print("%s %s" % (n, "yes" if has_mesh(n, e if isinstance(e, dict) else {}) else "no"))
@@ -773,7 +1194,8 @@ def main(argv):
     if cmd == "roster":
         print(json.dumps(load_roster(), indent=2, sort_keys=True))
         return 0
-    sys.stderr.write("usage: fleet_mesh.py serve | send <from> <to> <text> | inbox <name> | roster | mesh | mirror\n")
+    sys.stderr.write("usage: fleet_mesh.py serve | send <from> <to> <text> | inbox <name> | roster | mesh | mirror"
+                     " | wake-later <to> | pane-state <pane>\n")
     return 2
 
 

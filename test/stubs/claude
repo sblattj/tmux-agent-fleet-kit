@@ -2,4 +2,8 @@
 # stub CLI: record argv and env for the fleet tests, then stay alive
 printf '%s\n' "$@" > "${FLEET_STATE:?}/stub-claude.argv"
 env | sort > "$FLEET_STATE/stub-claude.env"
+# draw an idle prompt row and redraw it after every submitted line (the launcher's /rename, a wake), so the fleet's
+# guarded typed wake (lib/fleet_mesh.py type_wake) sees an empty input; without a tty the read ends at once
+printf '> '
+while IFS= read -r _line; do printf '> '; done
 sleep 300

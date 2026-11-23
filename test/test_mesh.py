@@ -18,6 +18,26 @@ spec.loader.exec_module(mesh)
 
 FAKE = "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done >> \"$0.argv\"\nprintf -- '--END--\\n' >> \"$0.argv\"\nif [ \"$1 $2 $3\" = \"-L testsock capture-pane\" ] && [ -f \"$0.screen\" ]; then cat \"$0.screen\"; fi\n"
 
+# a fake tmux that behaves like an idle prompt: capture-pane shows `❯ ` (or $0.screen), display-message reports the
+# cursor right after the glyph, `send-keys -l` makes the input row read the typed text, Enter clears it
+FAKE_TMUX = r"""#!/bin/sh
+for a in "$@"; do printf '%s\n' "$a"; done >> "$0.argv"
+printf -- '--END--\n' >> "$0.argv"
+case "$3" in
+  capture-pane)
+    if [ -f "$0.typed" ]; then cat "$0.typed"; elif [ -f "$0.screen" ]; then cat "$0.screen"; else printf '\342\235\257 \n'; fi ;;
+  display-message)
+    if [ "$4" = "-p" ]; then printf '2\t0\t0\n'; fi ;;
+  send-keys)
+    if [ "$6" = "-l" ]; then printf '\342\235\257 %s\n' "$7" > "$0.typed"; elif [ "$6" = "Enter" ]; then rm -f "$0.typed"; fi ;;
+esac
+"""
+
+
+def keys(path):
+    """Only the send-keys calls a fake tmux recorded (the reads around them are the guard, tested elsewhere)."""
+    return [c for c in calls(path) if "send-keys" in c]
+
 
 class Recorder(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
@@ -45,9 +65,9 @@ class MeshBase(unittest.TestCase):
         os.makedirs(self.bin)
         self.codex = os.path.join(self.bin, "codex")
         self.tmux = os.path.join(self.bin, "tmux")
-        for p in (self.codex, self.tmux):
+        for p, body in ((self.codex, FAKE), (self.tmux, FAKE_TMUX)):
             with open(p, "w") as f:
-                f.write(FAKE)
+                f.write(body)
             os.chmod(p, 0o755)
         self.srv = http.server.HTTPServer(("127.0.0.1", 0), Recorder)
         self.srv.posts = []
@@ -61,6 +81,8 @@ class MeshBase(unittest.TestCase):
                     "CODEX_HOME": os.path.join(self.tmp, "codex"), "KIRO_HOME": os.path.join(self.tmp, "kiro"),
                     "FLEET_AGY_HOME": os.path.join(self.tmp, "agy"),
                     "XDG_CONFIG_HOME": os.path.join(self.tmp, "xdg"),
+                    # no detached wakers out of unit tests, no key-activity probe, and not a Claude caller
+                    "FLEET_WAKE_SPAWN": "0", "FLEET_WAKE_QUIET": "0", "CLAUDECODE": "",
                     "PATH": self.bin + os.pathsep + os.environ.get("PATH", "")}
         self._saved = {k: os.environ.get(k) for k in self.env}
         os.environ.update(self.env)
@@ -109,7 +131,7 @@ class MeshBase(unittest.TestCase):
             fh.write("exec claude --mcp-config /tmp/m.json  # fleet_mesh.py serve\n")
         self.assertTrue(mesh.has_mesh("cl", self.roster["cl"]))
         mesh.deliver("alpha", "cl", "hi")
-        self.assertEqual(calls(self.tmux)[0][-1], "[fleet] message from alpha: run peer_inbox to read it")
+        self.assertEqual(keys(self.tmux)[0][-1], "[fleet] message from alpha: run peer_inbox to read it")
         # control: kiro lane with no fleet server in its config and no roster flag
         self.assertFalse(mesh.has_mesh("ki", self.roster["ki"]))
         self.assertEqual(mesh.wake_note("alpha", "ki", self.roster["ki"]), self.note("alpha", "ki"))
@@ -146,7 +168,7 @@ class MeshBase(unittest.TestCase):
     def test_wake_names_an_inbox_file_that_holds_the_message(self):
         """A lane with no fleet MCP reads the file the wake line names; that file must hold the message."""
         mesh.deliver("alpha", "cl", "body for a lane with no mcp")
-        typed = calls(self.tmux)[0][-1]
+        typed = keys(self.tmux)[0][-1]
         path = typed.split("no peer_inbox tool? read ", 1)[1].rstrip(")")
         self.assertTrue(path.startswith(self.state), path)
         with open(path) as fh:
@@ -194,7 +216,7 @@ class TestDelivery(MeshBase):
     def test_send_claude(self):
         res = mesh.deliver("alpha", "cl", "secret body")
         self.assertTrue(os.path.exists(self.tmux + ".argv"), "control: fake tmux never ran")
-        self.assertEqual(calls(self.tmux), [
+        self.assertEqual(keys(self.tmux), [
             ["-L", "testsock", "send-keys", "-t", "%3", "-l",
              self.note("alpha", "cl")],
             ["-L", "testsock", "send-keys", "-t", "%3", "Enter"],
@@ -207,7 +229,7 @@ class TestDelivery(MeshBase):
     def test_send_kiro(self):
         res = mesh.deliver("alpha", "ki", "kiro secret body")
         self.assertTrue(os.path.exists(self.tmux + ".argv"), "control: fake tmux never ran")
-        self.assertEqual(calls(self.tmux), [
+        self.assertEqual(keys(self.tmux), [
             ["-L", "testsock", "send-keys", "-t", "%4", "-l",
              self.note("alpha", "ki")],
             ["-L", "testsock", "send-keys", "-t", "%4", "Enter"],
@@ -221,8 +243,8 @@ class TestDelivery(MeshBase):
     def test_send_agy(self):
         res = mesh.deliver("alpha", "ag", "agy secret body")
         self.assertTrue(os.path.exists(self.tmux + ".argv"), "control: fake tmux never ran")
-        self.assertEqual(calls(self.tmux), [
-            ["-L", "testsock", "capture-pane", "-p", "-t", "%5"],
+        self.assertEqual(calls(self.tmux)[0], ["-L", "testsock", "capture-pane", "-p", "-t", "%5"])
+        self.assertEqual(keys(self.tmux), [
             ["-L", "testsock", "send-keys", "-t", "%5", "-l",
              self.note("alpha", "ag")],
             ["-L", "testsock", "send-keys", "-t", "%5", "Enter"],
@@ -248,7 +270,7 @@ class TestDelivery(MeshBase):
             self.assertEqual(sent, [], "typed into %r" % screen)
         # control: an idle agy prompt still gets the wake
         with open(self.tmux + ".screen", "w") as fh:
-            fh.write("> \n? for shortcuts\n")
+            fh.write("> \n" + "\u2500" * 40 + "\n? for shortcuts\n")
         os.remove(self.tmux + ".argv")
         res = mesh.deliver("alpha", "ag", "x")
         self.assertNotIn("FAILED", res)
@@ -444,7 +466,7 @@ class TestReopen(MeshBase):
         self.assertEqual(calls(self.fleet), [["reopen", "ki"]])
         self.assertIn("reopened", res)
         self.assertIn("tmux send-keys", res)
-        self.assertEqual(calls(self.tmux), [
+        self.assertEqual(keys(self.tmux), [
             ["-L", "testsock", "send-keys", "-t", "%4", "-l",
              self.note("alpha", "ki")],
             ["-L", "testsock", "send-keys", "-t", "%4", "Enter"],

@@ -23,6 +23,12 @@ and `$FLEET_ROUTE` (default `ROUTE`). There is no alias layer: a message goes to
 | KIRO_HOME | `~/.kiro` | Kiro's global dir (sessions, leases, agents, settings, steering); passed to kiro lanes when set; read by install/kiro.sh and bin/fleet-lifecycle |
 | FLEET_KIRO_GOAL_MAX | `20` | kiro goal mode rewrites `/goal ` to `/goal --max N `; positive integer (Kiro's own default is 5, DOC) |
 | FLEET_AGY_BIN | `agy` | Antigravity CLI binary (tests point it at a stub) |
+| FLEET_WAKE_DEFER_MAX | `900` | seconds a deferred typed wake keeps retrying before it leaves a notice instead (see Typed wakes) |
+| FLEET_WAKE_BACKOFF | `2` | first retry gap of a deferred wake, in seconds; doubles, capped at 30 |
+| FLEET_WAKE_QUIET | `3` | a pane that got keys from an attached client this many seconds ago counts as busy; `0` turns the check off |
+| FLEET_NATIVE_GRACE | `120` | seconds a Claude to Claude `peer_send` waits for the sender's `SendMessage` before the typed fallback |
+| FLEET_NATIVE | `1` | `0` turns the Claude to Claude native route off (every Claude target gets the guarded typed wake) |
+| FLEET_WAKE_SPAWN | `1` | `0` never starts a detached waker (unit tests); a busy pane then just keeps its unread message |
 | FLEET_AGY_HOME | `~/.gemini` | where agy keeps `config/` and `antigravity-cli/` (agents, rules, mcp_config.json, brain/<conversation>/ transcripts); passed to agy lanes when set; read by install/agy.sh and bin/fleet-lifecycle. agy itself always uses `$HOME/.gemini` (PROVEN 1.5.13), so this must point there |
 
 ## State layout ($FLEET_STATE)
@@ -31,7 +37,11 @@ and `$FLEET_ROUTE` (default `ROUTE`). There is no alias layer: a message goes to
 roster.json            {"<name>": {"name","cli","mode","pane","session_id","port","dir","model","pid","at"}}
                        cli: claude|codex|opencode|kiro|agy ; pane: tmux pane id like "%12" ; port: int or null ;
                        session_id: claude uuid | codex thread uuid | opencode "ses_..." | kiro "sess_<uuid>" | agy conversation uuid | null until known
-inbox/<name>.jsonl     one JSON per line: {"id","at","from","to","text"}
+inbox/<name>.jsonl     one JSON per line: {"id","at","from","to","text"} (+ "via":"native" for a mirror copy,
+                       + "native":"pending" for a Claude to Claude peer_send waiting for its SendMessage)
+inbox/<name>.native    ids of "native":"pending" lines whose SendMessage the mirror hook saw (no typed wake for them)
+wake/<name>.woken      inbox line count covered by the last typed pointer (the deferred waker never types twice for them)
+wake/<name>.lock       flock held by the one deferred waker of a lane (`fleet_mesh.py wake-later <name>`)
 inbox/<name>.cursor    integer: number of lines already returned by peer_inbox
 decisions.jsonl        {"id":"Q<n>","at","from","question","options":[...],"status":"open|answered","answer","answeredAt"}
 launch/<name>.sh       the window script ; launch/<name>.txt the first prompt ; launch/<name>.launch.json
@@ -215,6 +225,8 @@ python3 lib/fleet_mesh.py send <from> <to> <text>    CLI delivery (same code pat
 python3 lib/fleet_mesh.py inbox <name>          print unread, advance cursor
 python3 lib/fleet_mesh.py roster                print roster.json
 python3 lib/fleet_mesh.py mirror                PostToolUse hook: copy a native SendMessage into the mesh (stdin = hook JSON, exit 0)
+python3 lib/fleet_mesh.py wake-later <name>     deferred waker (started detached by a deferred wake; one per lane)
+python3 lib/fleet_mesh.py pane-state <pane>     "empty <why>" exit 0, or "busy <why>" exit 1: may a wake be typed now
 ```
 MCP tools: `peer_list {}`, `peer_send {to, text, from?}`, `peer_inbox {name?, all?}`,
 `decision_open {question, options?: [str], from?}` (appends decisions.jsonl and delivers to $FLEET_DECIDE),
@@ -224,11 +236,18 @@ Sender = `from` arg, else `$FLEET_NAME`, else error.
 Delivery (`deliver(frm, to, text)`): always append to inbox/<to>.jsonl, then wake by the target's roster `cli`:
 - codex: `$FLEET_CODEX_BIN queue --thread <to> --message "[fleet message from <frm>] <text>"` (PROVEN wakes an idle TUI)
 - opencode: `POST http://127.0.0.1:<port>/session/<session_id>/prompt_async` JSON `{"parts":[{"type":"text","text":"[fleet message from <frm>] <text>"}]}` (PROVEN, 204)
-- claude: `tmux [-L sock] send-keys -t <pane> -l "[fleet] message from <frm>: run peer_inbox to read it"` then `send-keys -t <pane> Enter`
-  (never the message body itself: typed input is treated as the human's). PROVEN on Claude 2.1.330. Not the native socket:
-  see Messaging model.
-- kiro: same typed pointer line and `Enter` as claude (PROVEN: starts a turn on an idle lane; the lane then runs `peer_inbox`)
-- agy: same typed pointer line and `Enter` as claude (PROVEN typed text + Enter starts a turn on an idle agy 1.5.13 TUI;
+- claude, sent with the `peer_send` MCP tool by a live fleet Claude lane's own MCP server (`CLAUDECODE=1`,
+  `FLEET_NAME` = sender, roster cli claude) to a live (not parked, not done) Claude lane: NO typed wake. (`fleet send`
+  and `fleet_mesh.py send` never take this route: no agent reads their result.) The inbox line gets
+  `"native":"pending"` and the result tells the sender to call `SendMessage` to the target with the same text. That
+  native message reaches the target without touching its input box; the mirror hook links it to the pending line
+  (`inbox/<to>.native`) instead of writing a copy. A safety-net waker types the guarded pointer (below) only if no
+  `SendMessage` was linked after `FLEET_NATIVE_GRACE` seconds. See Messaging model for why this is safe.
+- claude, any other sender: `tmux [-L sock] send-keys -t <pane> -l "[fleet] message from <frm>: run peer_inbox to read it"`
+  then `send-keys -t <pane> Enter`, guarded (see Typed wakes: only into an empty, quiet input box)
+  (never the message body itself: typed input is treated as the human's). PROVEN on Claude 2.1.330.
+- kiro: same guarded typed pointer line and `Enter` as claude (PROVEN: starts a turn on an idle lane; the lane then runs `peer_inbox`)
+- agy: same guarded typed pointer line and `Enter` as claude (PROVEN typed text + Enter starts a turn on an idle agy 1.5.13 TUI;
   the woken lane then runs `peer_inbox`: PROVEN by the kit's live proof run (agy 1.5.13)). No pane in the roster: inbox only and the result says the wake failed.
   Before typing, delivery reads the agy pane (`capture-pane -p`) and refuses to type when it shows agy's trust dialog,
   color-scheme or Terms of Service onboarding, or a sign-in wait (its Enter would answer that screen for the human; the
@@ -236,6 +255,30 @@ Delivery (`deliver(frm, to, text)`): always append to inbox/<to>.jsonl, then wak
   the inbox and the result says the wake FAILED.
 - target missing from roster: inbox only, result says `queued (no live lane)`.
 Result text names the wake used and whether it succeeded; a failed wake still leaves the message in the inbox.
+A deferred wake reads `delivered X -> Y (inbox written; typed wake deferred (<why>); retrying for up to Ns, then a tmux notice)`.
+
+**Typed wakes (claude, kiro, agy).** `type_wake()` never types into text a human is writing. Before typing:
+1. No attached client whose current pane is the target sent a key in the last `FLEET_WAKE_QUIET` seconds
+   (`list-clients -F '#{pane_id} #{client_activity}'`).
+2. The pane is not in copy mode, and no vim `-- NORMAL --` line shows.
+3. The row under the cursor (`display-message -p '#{cursor_x} #{cursor_y}'`, `capture-pane -p -e`) is an EMPTY prompt:
+   the text left of the cursor is exactly a prompt glyph (`❯` Claude Code, `›` kiro-cli, `>` agy), and every other
+   cell on that row and on the rows below it, up to the box's rule line, is placeholder: faint (Claude) or drawn in an
+   explicit colour (kiro's grey hint, agy's mode hint). Typed text is drawn in the default foreground by all three
+   (captured 2026-11-23, `test/fixtures/wake_screens.json`). It is an allow-list: a dialog, a held-message modal, a menu
+   or any screen not matching counts as busy.
+Any check failing, or the pane unreadable, means busy: nothing is typed, and a detached `wake-later <to>` (one per
+lane, flock on `wake/<to>.lock`) retries with backoff (`FLEET_WAKE_BACKOFF`, doubling to 30 s) until the wake lands,
+the lane reads its inbox, or `FLEET_WAKE_DEFER_MAX` passes. Then it leaves a notice that types nothing:
+`display-message -d 15000` on every attached client and the pane option `@fleet_unread` ("N from X", cleared by
+`peer_inbox`; show it with `#{@fleet_unread}` in a status format).
+After typing, Enter is sent only once the input row reads exactly the pointer (whitespace ignored, wrapped rows joined).
+**Residual race:** a key the human presses in the milliseconds between the last check and `send-keys` still lands next
+to the pointer. The post-type check then sees more than the pointer and sends no Enter, so the human's half sentence
+is never submitted; the pointer stays in their box for them to delete. The kit cannot remove it without deleting
+their keys too. PROVEN on throwaway panes (tmux -L) of Claude Code 2.1.330, kiro-cli 3.5.0 and agy 1.5.13: an empty
+prompt got the wake and the lane answered (190-char pointer wrapped on a 120-column pane, too); a pane holding
+`good morni` or `abc` with the cursor at the start was left exactly as it was.
 
 ## bin/fleet-goal
 
@@ -404,14 +447,15 @@ flags were PROVEN on hand-launched Claude 2.1.330 lanes (a real Claude through `
 
 | Target cli | Wake used by `deliver()` | Status |
 |---|---|---|
-| claude | typed pointer line + Enter (`tmux send-keys`) | PROVEN 2.1.330 (hand-launched lane, launcher flags): idle bypass lane ran `peer_inbox`, cursor advanced |
-| kiro | typed pointer line + Enter | PROVEN kiro-cli 3.5.0 |
-| agy | typed pointer line (`send-keys -l`) + Enter | PROVEN agy 1.5.13 that typed text + Enter starts a turn; the full `peer_inbox` round trip through `fleet launch`: PROVEN by the kit's live proof run (agy 1.5.13) |
+| claude, from a live fleet Claude lane | none typed: the sender's own `SendMessage` (native cross-session message), typed fallback after `FLEET_NATIVE_GRACE` | PROVEN 2.1.330: a bypass lane's `SendMessage` to a bypass session ran a background turn with `good morni` still in the receiver's box |
+| claude, from anyone else | guarded typed pointer line + Enter (`tmux send-keys`), only into an empty input | PROVEN 2.1.330 (hand-launched lane, launcher flags): idle bypass lane ran `peer_inbox`, cursor advanced |
+| kiro | guarded typed pointer line + Enter | PROVEN kiro-cli 3.5.0 |
+| agy | guarded typed pointer line (`send-keys -l`) + Enter | PROVEN agy 1.5.13 that typed text + Enter starts a turn; the full `peer_inbox` round trip through `fleet launch`: PROVEN by the kit's live proof run (agy 1.5.13) |
 | codex | `codex queue --thread` (body included) | PROVEN |
 | opencode | `POST /session/<id>/prompt_async` (body included) | PROVEN |
 
-Claude's native socket (`messagingSocketPath` in `~/.claude/sessions/<pid>.json`, e.g. `/tmp/cc-socks/<pid>.sock`)
-is NOT used. Measured on 2.1.330 with an honest plain frame `{"type":"user","message":{"role":"user","content":"..."}}`
+The kit itself never writes to Claude's native socket (`messagingSocketPath` in `~/.claude/sessions/<pid>.json`, e.g.
+`/tmp/cc-socks/<pid>.sock`); a Claude sender's own `SendMessage` does (above). Measured on 2.1.330 with an honest plain frame `{"type":"user","message":{"role":"user","content":"..."}}`
 written by python3:
 
 | Receiver permission mode | Result |
@@ -426,6 +470,20 @@ is consumed by the modal (Deny) and the lane stays asleep (observed). Hence the 
 The socket would only help a lane that is not bypass, or one whose user set `"crossSessionInbound": "accept"`; fleet
 launches neither.
 
+`crossSessionInbound` (2.1.330: `accept` | `hold` | `refuse`; read from policy, `--settings` and user settings; project
+and local settings can only tighten it), measured on a throwaway bypass session (2026-11-23):
+
+| Value | `SendMessage` from a fleet Claude lane (bypass) | plain python3 frame (no mode) |
+|---|---|---|
+| unset (default) | delivered in the background, mode attested | HELD (modal) |
+| `hold` | held | held |
+| `accept` | delivered | delivered |
+
+`accept` lets any process of the same user (the socket is 0600 in a 0700 dir) start a turn in the session, so the kit
+does not set it; the default already lets Claude lanes reach each other. Native delivery to a STOPPED session fails at
+send time ("No agent named ... is reachable", by name and by session id): nothing is queued, and a resumed session
+receives nothing. So a parked Claude target keeps the mesh path: inbox line, reopen, guarded typed wake.
+
 **Mirror rule.** A message one fleet lane sends another natively must also land in the mesh inbox. Mechanism: every
 `roles/<role>.claude.json` has a `PostToolUse` hook, matcher `SendMessage`, running
 `python3 "$FLEET_MESH" mirror` (exit 0 always). `mirror` reads the hook JSON (`tool_input.to`, `tool_input.message`),
@@ -433,6 +491,8 @@ maps `to` to a roster lane (a lane name, `name [ref]`, or `uds:<socket>` matched
 `~/.claude/sessions/<roster pid>.json` whose `sessionId` equals the roster `session_id`), and appends
 `{id, at, from: $FLEET_NAME, to, text, via: "native"}` to `inbox/<to>.jsonl`. No wake and no reopen: the native
 message already reached the lane. Skipped: no `FLEET_NAME`, target not on the roster, target is the sender.
+When the sender's `peer_send` already wrote a `"native":"pending"` line to that lane, `mirror` links the SendMessage to
+the oldest unlinked one (appends its id to `inbox/<to>.native`) instead of writing a second copy.
 `peer_inbox` shows these as `from X (native copy)`. Until the receiver reads them they count as unread
 (`peer_list`, `fleet tick`). Lanes launched before this change get the hook and the MCP on their next relaunch or reopen. PROVEN on two live bypass lanes: `SendMessage to="LANEB"` and
 `to="uds:/tmp/cc-socks/<pid>.sock"` both produced `via: "native"` lines, and LANEB also got the message natively.

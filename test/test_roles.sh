@@ -415,8 +415,8 @@ t "dry run: no tmux server started, no roster" bash -c '! tmux -L "$1" has-sessi
 AD=$T/beside; mkdir -p "$AD"
 ad() { env FLEET_STATE=$AD FLEET_TMUX_SOCKET=beside-$$ FLEET_TMUX_SESSION=asess "$@"; }
 ad tmux -L beside-$$ new-session -d -s asess -n home "sleep 300"
-pO=$(ad tmux -L beside-$$ new-window -d -P -F '#{pane_id}' -t =asess: -n ORCHESTRATOR "cat > $AD/o.keys")
-pD=$(ad tmux -L beside-$$ new-window -d -P -F '#{pane_id}' -t =asess: -n DECISIONS "cat > $AD/d.keys")
+pO=$(ad tmux -L beside-$$ new-window -d -P -F '#{pane_id}' -t =asess: -n ORCHESTRATOR "printf \"> \"; exec cat > $AD/o.keys")
+pD=$(ad tmux -L beside-$$ new-window -d -P -F '#{pane_id}' -t =asess: -n DECISIONS "printf \"> \"; exec cat > $AD/d.keys")
 jq -n --arg o "$pO" --arg d "$pD" '{ORCHESTRATOR:{name:"ORCHESTRATOR",cli:"claude",mode:"prompt",role:"orchestrator",pane:$o},DECISIONS:{name:"DECISIONS",cli:"claude",mode:"desk",role:"desk",pane:$d}}' > "$AD/roster.json"
 old=$(jq -cS '{ORCHESTRATOR,DECISIONS}' "$AD/roster.json")
 ad "$FLEET" desks up --no-proof --dir "$T" > "$AD/up.out" 2>&1; rc=$?  # as the human runs it (FLEET_ROLE unset)

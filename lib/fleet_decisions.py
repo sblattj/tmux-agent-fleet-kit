@@ -475,9 +475,7 @@ def rewake(frm, to, text):
         prefix = "reopened %s; " % to
         entry = mesh.load_roster().get(to) or entry
     how, ok, detail = mesh.wake(frm, to, text, entry)
-    if ok:
-        return "%sdelivered %s -> %s (inbox + wake via %s ok)" % (prefix, frm, to, how)
-    return "%sdelivered %s -> %s (inbox written; wake via %s FAILED: %s)" % (prefix, frm, to, how, detail)
+    return mesh.wake_result(prefix, frm, to, how, ok, detail)
 
 
 def retry(cid):
