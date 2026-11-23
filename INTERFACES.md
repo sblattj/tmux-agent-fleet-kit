@@ -677,3 +677,21 @@ engine's send refuses `ROUTE` and the `orch_name()` value. Every ask's `decision
 - HTTP: `POST /hook/<name>`. 202 `{accepted: n}`; 200 for a GitHub ping; 401 bad or missing signature; 404
   unknown route; 405 not POST; 411 no Content-Length; 413 over 1 MiB; 501 target kind has no mapping; 503
   secret did not resolve. Responses never carry the secret or a digest.
+
+## Side-run usage (lib/fleet_side_usage.py, issue #13)
+
+Pure functions over files; nothing here reads or writes `$FLEET_STATE/sides.jsonl`.
+
+- `usage(row) -> {"tokensIn", "tokensOut", "children", "source"}`: each value an int or `None` (unknown, never 0).
+  Token sources, first hit wins: `row["result"]` as an ach RunResult (`tokens[]`, in = input + cacheRead +
+  cacheWrite, `source="ach"`); `row["result"]` as `{"tokens": {"in": N, "out": N}}` (`source="result"`);
+  `host == "codex"` with `row["sessionId"]` via `fleet_probe.tokens_for("codex", sid)` plus every helper session
+  below it (`source="codex"`). `children` is `row["children"]` as stored.
+- Codex helpers: a rollout's first line `session_meta` names its parent in `payload.parent_thread_id` or
+  `payload.source.subagent.thread_spawn.parent_thread_id` (checked on codex 0.153.4 to 0.166.0). Helpers of helpers
+  count too. `CODEX_HOME` overrides `~/.codex`.
+- `sample_children(row) -> int`: live (non-zombie) processes in the tree rooted at `row["pid"]`, root included, from
+  `ps -axo pid=,ppid=,stat=`; 0 when the root is gone. The watcher stores the max over polls in `row["children"]`.
+- `fmt(row, now=None) -> str`: `codex gpt-x 7m/30m 2.1M tok` (host, model if set, elapsed/bound in minutes, in + out
+  tokens); the clock stops at `endedAt`; unknown tokens print `? tok`.
+- Row field read beyond the #11 schema: optional `sessionId` (the host's session id, codex only today).

@@ -1,0 +1,2 @@
+{"type":"session_meta","payload":{"id":"33333333-cccc-7000-8000-000000000003","cli_version":"0.153.4","source":{"subagent":{"thread_spawn":{"parent_thread_id":"22222222-bbbb-7000-8000-000000000002","depth":2}}}}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":30,"output_tokens":3}}}}

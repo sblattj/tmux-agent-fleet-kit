@@ -1,0 +1,2 @@
+{"type":"session_meta","payload":{"id":"44444444-dddd-7000-8000-000000000004","cli_version":"0.166.0","parent_thread_id":"99999999-0000-7000-8000-000000000009"}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":9999,"output_tokens":9999}}}}
