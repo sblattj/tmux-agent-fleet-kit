@@ -495,8 +495,10 @@ tmux session "fleet"
   windows 2..:       goal lanes
 ```
 
-`fleet desks up` creates the two windows in that order (idempotent: a live desk is left alone, and a rerun on a live
-fleet changes nothing), and `fleet layout` shows them. There is no separate WATCH or LEARN window and no alias for the
+`fleet desks up` creates the two windows and puts them at those indexes on every run (idempotent: a live desk is left
+alone, a rerun on a live fleet launches nothing, and a desk window found at another index is moved, or swapped with
+the window at its index, without changing any pane or window id). `fleet launch` opens a lane window at the first free
+index from 2, so 0 and 1 stay free for the desks (issue #9). `fleet layout` shows them. There is no separate WATCH or LEARN window and no alias for the
 old window name `desks` (Q110 c). Later phases add their panes inside deskB rather than new windows: the `fleet watch status`
 pane under WATCH (opened by `fleet desks up` when it launches WATCH), the call listener (`fleet watch --call`) beside WATCH, the `fleet learn quiz` TUI beside LEARN.
 

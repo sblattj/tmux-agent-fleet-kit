@@ -350,6 +350,9 @@ t "desks up second run: same layout" test "$lay2" = "$lay1"
 t "desks up second run: same window and pane ids" test "$ids2" = "$ids1"
 t "desks up second run: all four already live" bash -c 'for d in ROUTE DECIDE WATCH LEARN; do printf "%s" "$1" | grep -q "^$d already live" || exit 1; done' _ "$o2"
 t "desks up second run launches nothing" hasnot "$o2" "OK launched"
+widx() { tmux -L "$1" list-windows -t "=$2" -F '#{window_index}:#{window_name}' 2>/dev/null | tr '\n' ' '; }
+t "desks up: fresh fleet puts deskA at index 0 and deskB at index 1 (got: $(widx desks-$$ dsess))" test "$(widx desks-$$ dsess)" = "0:deskA 1:deskB "
+t "desks up second run: deskA and deskB already at their index" bash -c 'printf "%s" "$1" | grep -q "^window deskA already at index 0" && printf "%s" "$1" | grep -q "^window deskB already at index 1"' _ "$o2"
 t "desks up: roster DECIDE role decide, ROUTE role route" bash -c 'test "$(jq -r .DECIDE.role "$1")" = decide && test "$(jq -r .ROUTE.role "$1")" = route' _ "$DS/roster.json"
 t "desks up writes no alias map" test ! -e "$DS/aliases.json"
 t "desks up: roster WATCH role watch, LEARN role learn, all four mode desk" jq -e '.WATCH.role=="watch" and .LEARN.role=="learn" and ([.DECIDE,.ROUTE,.WATCH,.LEARN]|all(.mode=="desk"))' "$DS/roster.json"
@@ -401,6 +404,51 @@ sw=$(dlayout byhand-$$ hsess "$HB")
 t "control: dlayout reports a swapped deskA as DECIDE|ROUTE" test "$sw" = "deskA:DECIDE|ROUTE deskB:WATCH|LEARN"
 tmux -L byhand-$$ kill-server >/dev/null 2>&1
 
+# ---- desk slots (issue #9): deskA at index 0, deskB at 1, lanes at 2+, no pane or window id changes, focus kept
+SL=$T/slots; mkdir -p "$SL"
+sl() { env FLEET_STATE=$SL FLEET_TMUX_SOCKET=slots-$$ FLEET_TMUX_SESSION=ssess "$@"; }
+stm() { tmux -L slots-$$ "$@"; }
+# a fleet whose lanes took 0 and 1 and whose desks (live, built by hand) sit at 3 and 5
+stm new-session -d -s ssess -n L0 "sleep 300"
+sL0=$(stm display -p -t =ssess:L0 '#{window_id}')
+sL1=$(stm new-window -d -P -F '#{window_id}' -t =ssess:1 -n L1 "sleep 300")
+sR=$(stm new-window -d -P -F '#{pane_id}' -t =ssess:3 -n deskA "sleep 300")
+sD=$(stm split-window -d -h -P -F '#{pane_id}' -t "$sR" "sleep 300")
+sW=$(stm new-window -d -P -F '#{pane_id}' -t =ssess:5 -n deskB "sleep 300")
+sLn=$(stm split-window -d -h -P -F '#{pane_id}' -t "$sW" "sleep 300")
+jq -n --arg r "$sR" --arg d "$sD" --arg w "$sW" --arg l "$sLn" '{ROUTE:{name:"ROUTE",cli:"claude",mode:"desk",role:"route",pane:$r},DECIDE:{name:"DECIDE",cli:"claude",mode:"desk",role:"decide",pane:$d},WATCH:{name:"WATCH",cli:"claude",mode:"desk",role:"watch",pane:$w},LEARN:{name:"LEARN",cli:"claude",mode:"desk",role:"learn",pane:$l}}' > "$SL/roster.json"
+stm select-window -t "$sL1"
+sids=$(dpanes slots-$$ ssess); sros=$(jq -cS . "$SL/roster.json")
+t "control: before desks up, lanes sit at 0 and 1 and the desks at 3 and 5" test "$(widx slots-$$ ssess)" = "0:L0 1:L1 3:deskA 5:deskB "
+so=$(sl "$FLEET" desks up --no-proof --dir "$T" 2>&1); src=$?
+t "slots: desks up exits 0" test "$src" = 0
+t "slots: deskA moved to index 0, deskB to index 1 (got: $(widx slots-$$ ssess))" bash -c 'printf "%s" "$1" | grep -q "^0:deskA 1:deskB "' _ "$(widx slots-$$ ssess)"
+t "slots: the lanes moved to index 2 or more (got: $(widx slots-$$ ssess))" bash -c 'for w in L0 L1; do i=$(printf "%s" "$1" | tr " " "\n" | grep ":$w$" | cut -d: -f1); [ -n "$i" ] && [ "$i" -ge 2 ] || exit 1; done' _ "$(widx slots-$$ ssess)"
+t "slots: every window and pane id unchanged" test "$(dpanes slots-$$ ssess)" = "$sids"
+t "slots: roster unchanged" test "$(jq -cS . "$SL/roster.json")" = "$sros"
+t "slots: the current window is still L1" test "$(stm display -p -t =ssess: '#{window_id}')" = "$sL1"
+t "slots: launched nothing, said it moved both" bash -c '! printf "%s" "$1" | grep -q "OK launched" && printf "%s" "$1" | grep -q "^OK window deskA moved to index 0" && printf "%s" "$1" | grep -q "^OK window deskB moved to index 1"' _ "$so"
+sids2=$(dpanes slots-$$ ssess); swin2=$(widx slots-$$ ssess)
+so2=$(sl "$FLEET" desks up --no-proof --dir "$T" 2>&1)
+t "slots rerun: no-op (same indexes, same ids, nothing moved)" bash -c 'test "$1" = "$2" && test "$3" = "$4" && ! printf "%s" "$5" | grep -q "moved to index"' _ "$(widx slots-$$ ssess)" "$swin2" "$(dpanes slots-$$ ssess)" "$sids2" "$so2"
+# deskB at 0, deskA at 1: both swap into place
+stm swap-window -d -s "$(stm display -p -t "$sR" '#{window_id}')" -t "$(stm display -p -t "$sW" '#{window_id}')"
+t "control: deskA and deskB swapped" bash -c 'printf "%s" "$1" | grep -q "^0:deskB 1:deskA "' _ "$(widx slots-$$ ssess)"
+sl "$FLEET" desks up --no-proof --dir "$T" >/dev/null 2>&1
+t "slots: swapped desks put back to 0:deskA 1:deskB" bash -c 'printf "%s" "$1" | grep -q "^0:deskA 1:deskB "' _ "$(widx slots-$$ ssess)"
+# a lane launched on this fleet opens at the first free index from 2, even with 2 free below a busy 3
+stm kill-window -t "$sL0"; stm kill-window -t "$sL1"; stm new-window -d -t =ssess:3 -n L3 "sleep 300"
+sl "$FLEET" launch --no-proof --dir "$T" LN1 prompt "$T/prompt.txt" >/dev/null 2>&1
+t "slots: a lane launch lands at index 2 (got: $(widx slots-$$ ssess))" bash -c 'printf "%s" "$1" | grep -q " 2:LN1 "' _ "$(widx slots-$$ ssess)"
+sl "$FLEET" launch --no-proof --dir "$T" LN2 prompt "$T/prompt.txt" >/dev/null 2>&1
+t "slots: the next lane skips the busy 3 and lands at 4 (got: $(widx slots-$$ ssess))" bash -c 'printf "%s" "$1" | grep -q " 4:LN2 "' _ "$(widx slots-$$ ssess)"
+stm kill-server >/dev/null 2>&1
+# no desks at all: a lane launch on a new session still leaves 0 and 1 free
+NL=$T/nodesks; mkdir -p "$NL"
+env FLEET_STATE=$NL FLEET_TMUX_SOCKET=nodesks-$$ FLEET_TMUX_SESSION=nsess "$FLEET" launch --no-proof --dir "$T" LZ prompt "$T/prompt.txt" >/dev/null 2>&1
+t "no desks: the first lane opens at index 2, beside home at 0 (got: $(widx nodesks-$$ nsess))" test "$(widx nodesks-$$ nsess)" = "0:home 2:LZ "
+tmux -L nodesks-$$ kill-server >/dev/null 2>&1
+
 # ---- desks up --dry-run shows the two split windows and touches nothing
 DR=$T/dry; mkdir -p "$DR"
 dro=$(env FLEET_STATE=$DR FLEET_TMUX_SOCKET=dry-$$ FLEET_TMUX_SESSION=drsess "$FLEET" desks up --dry-run --no-proof --dir "$T" 2>&1); drc=$?
@@ -409,6 +457,7 @@ t "dry run: names window deskA ROUTE left | DECIDE right" has "$dro" "window des
 t "dry run: names window deskB WATCH left | LEARN right" has "$dro" "window deskB: WATCH (left) | LEARN (right)"
 t "dry run: DECIDE splits right of ROUTE, LEARN right of WATCH" bash -c 'printf "%s" "$1" | grep -q "would run:.*--split-right-of ROUTE DECIDE desk" && printf "%s" "$1" | grep -q "would run:.*--split-right-of WATCH LEARN desk"' _ "$dro"
 t "dry run: shows the WATCH status pane under WATCH running fleet watch status" bash -c 'printf "%s" "$1" | grep -q "WATCH status pane under WATCH" && printf "%s" "$1" | grep -q "would run: tmux split-window.*watch\\\\ status"' _ "$dro"
+t "dry run: shows deskA placed at index 0 and deskB at 1" bash -c 'printf "%s" "$1" | grep -q "^window deskA: placed at index 0" && printf "%s" "$1" | grep -q "^window deskB: placed at index 1"' _ "$dro"
 t "dry run: no tmux server started, no roster" bash -c '! tmux -L "$1" has-session 2>/dev/null && test ! -e "$2/roster.json"' _ "dry-$$" "$DR"
 
 # ---- desks up beside old-named ORCHESTRATOR and DECISIONS lanes (Q110 c): they keep their windows, panes, roster and mail

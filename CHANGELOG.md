@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- `fleet desks up` always leaves window `deskA` at tmux index 0 and `deskB` at 1, live desks included: a desk window elsewhere is moved, or swapped with whatever window holds its index, with no pane or window id change and the current window kept. Before, a fresh `desks up` left them at 1 and 2 (the `home` window took 0), and lanes took any free index. Refs #9.
+- `fleet launch` opens a lane window at the first free index from 2, so 0 and 1 stay for the desks even before `desks up` has run.
+
 ## v0.3.2 (2026-11-23)
 
 - Fixed: a typed wake into a Claude Code lane in vim NORMAL mode lost its first characters. NORMAL keys ran as vim commands, so `[fleet] mes` was eaten and `sage from ...` was left in the box (seen on a live lane). Claude Code shows `-- INSERT --` while inserting and nothing in NORMAL mode, so the old `-- NORMAL --` check never fired. Now, when `editorMode` is `vim` in `~/.claude.json` (or `$FLEET_CLAUDE_JSON`), a Claude prompt with no `-- INSERT --` in the footer counts as busy, and the wake defers instead of typing.

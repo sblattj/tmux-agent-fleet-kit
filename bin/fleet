@@ -78,6 +78,11 @@ usage() { sed -n '2,/^# ---$/{/^# ---$/d;s/^# \{0,1\}//;p;}' "$0"; exit 2; }
 die() { printf 'FAIL %s\n' "$*" >&2; exit 1; }
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 tm() { if [ -n "$SOCKET" ]; then tmux -L "$SOCKET" "$@"; else tmux "$@"; fi; }
+LANE_MIN_INDEX=2 # tmux window indexes 0 and 1 are kept for deskA and deskB (bin/fleet-desks)
+lane_index() { # the first window index from LANE_MIN_INDEX that no window in $SESSION uses
+  tm list-windows -t "=$SESSION" -F '#{window_index}' 2>/dev/null |
+    awk -v m="$LANE_MIN_INDEX" '{u[$1]=1} END {i=m; while (i in u) i++; print i}'
+}
 flog() { mkdir -p "$STATE/log"; printf '%s %s\n' "$(now)" "$*" >> "$STATE/log/fleet.log"; }
 role_guard() { # verb : only an unset FLEET_ROLE (the human) or ROUTE may do lane lifecycle
   case "${FLEET_ROLE:-}" in ""|route) ;; *) die "role $FLEET_ROLE can't $1" ;; esac
@@ -421,7 +426,7 @@ EOF
     fi
     tmcmd="$tmprefix split-window -d $splitflags -P -F '#{pane_id}' -t ${splitpane:-<pane of $split>} -c $q_dir bash $q_sh"
   else
-    tmcmd="$tmprefix new-window -d -P -F '#{pane_id}' -t =$SESSION: -n $name -c $q_dir bash $q_sh"
+    tmcmd="$tmprefix new-window -d -P -F '#{pane_id}' -t =$SESSION:<first free index from $LANE_MIN_INDEX> -n $name -c $q_dir bash $q_sh"
   fi
 
   if [ "$dry" = 1 ]; then
@@ -448,7 +453,12 @@ EOF
   if [ -n "$split" ]; then
     pane=$(tm split-window -d $splitflags -P -F '#{pane_id}' -t "$splitpane" -c "$dir" "bash $q_sh") || die "tmux split-window failed"
   else
-    pane=$(tm new-window -d -P -F '#{pane_id}' -t "=$SESSION:" -n "$name" -c "$dir" "bash $q_sh") || die "tmux new-window failed"
+    local idx try=0
+    while :; do # windows 0 and 1 are deskA and deskB (fleet desks up): a lane takes the first free index from 2
+      idx=$(lane_index)
+      pane=$(tm new-window -d -P -F '#{pane_id}' -t "=$SESSION:$idx" -n "$name" -c "$dir" "bash $q_sh" 2>/dev/null) && break
+      try=$((try + 1)); [ "$try" -lt 5 ] || die "tmux new-window failed (index $idx)"  # lost a race for the index
+    done
   fi
   tm select-pane -t "$pane" -T "$name" 2>/dev/null || true
   local panepid at

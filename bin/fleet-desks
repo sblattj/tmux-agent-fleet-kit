@@ -10,7 +10,9 @@
 #           only with a WATCH desk this run launched, once per session (a live one is left alone), so a fleet whose
 #           desks are all live already is not touched.
 # Every desk pane is tagged @fleet-desk <role>. Idempotent: a desk whose roster pane is live is left alone, so a rerun
-# on a live fleet prints '<D> already live' four times and changes nothing. A dead desk is relaunched into its
+# on a live fleet prints '<D> already live' four times and launches nothing. Every run (live desks too) then puts
+# window deskA at tmux index 0 and deskB at 1: a window already there swaps to the desk's old index, and no pane or
+# window id changes. Lanes open at index 2 and up (fleet launch). A dead desk is relaunched into its
 # pair's window: a dead right desk splits right of the live left one, a dead left desk splits beside the live right
 # one and is swapped to the left.
 # Never touches other lanes: a live ORCHESTRATOR or DECISIONS (pre-desks names) keeps its window, pane, roster
@@ -109,10 +111,32 @@ status_pane() { # the WATCH window's non-LLM pane: `fleet watch status`, split u
   echo "OK WATCH status pane $sp"
 }
 
+slot() { # window left-desk index: move the desk window to that tmux window index; pane and window ids never change
+  local w=$1 d=$2 idx=$3 wid cur occ
+  if [ "$dry" = 1 ]; then echo "window $w: placed at index $idx"; return 0; fi
+  pane_alive "$(roster_get "$d" pane)" || { echo "no live $d: window $w not placed"; return 0; }
+  wid=$(tm display-message -p -t "$(roster_get "$d" pane)" '#{window_id}')
+  cur=$(tm display-message -p -t "$wid" '#{window_index}')
+  [ "$cur" != "$idx" ] || { echo "window $w already at index $idx"; return 0; }
+  occ=$(tm list-windows -t "=$SESSION" -F '#{window_index} #{window_id}' | awk -v i="$idx" '$1==i {print $2; exit}')
+  if [ -n "$occ" ]; then tm swap-window -d -s "$wid" -t "$occ"  # the window that sat there takes the desk's old index
+  else tm move-window -d -s "$wid" -t "=$SESSION:$idx"
+  fi
+  echo "OK window $w moved to index $idx"
+}
+
 pair deskA ROUTE DECIDE
 pair deskB WATCH LEARN
 status_pane
 
 # fleet launch opened the session with a `home` window; drop it once deskA and deskB exist
 if [ "$created" = 1 ] && [ "$dry" = 0 ]; then tm kill-window -t "=$SESSION:home" 2>/dev/null || true; fi
+
+# deskA always sits at window index 0 and deskB at 1 (lanes open at 2 and up, see fleet launch); the human's
+# current window stays current (swap-window moves focus even with -d, so select it back)
+active=
+[ "$dry" = 1 ] || active=$(tm display-message -p -t "=$SESSION:" '#{window_id}' 2>/dev/null || true)
+slot deskA ROUTE 0
+slot deskB WATCH 1
+[ -z "$active" ] || tm select-window -t "$active" 2>/dev/null || true
 [ "$dry" = 1 ] || echo "OK desks up: deskA ROUTE=$(roster_get ROUTE pane) | DECIDE=$(roster_get DECIDE pane), deskB WATCH=$(roster_get WATCH pane) | LEARN=$(roster_get LEARN pane)"

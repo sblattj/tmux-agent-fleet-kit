@@ -380,6 +380,13 @@ Desk helper `skills/running-the-decisions-desk/desk.sh` uses `fleet-goal check` 
   nothing changes (no launch, rename or tag). A dead right desk is relaunched split right of the live left one; a dead
   left desk is split beside the live right one and swapped to the left. The window is renamed `deskA`/`deskB` only
   when something in it was launched.
+- Window slots: every run, live desks included, ends with window `deskA` at tmux index 0 and `deskB` at 1. A desk
+  window elsewhere is moved there with `move-window`, or `swap-window` with the window at that index (which takes the
+  desk's old index); pane and window ids never change, and the session's current window is selected back.
+  Prints `OK window deskA moved to index 0`, `window deskA already at index 0`, or under `--dry-run`
+  `window deskA: placed at index 0` (same for deskB at 1).
+- `fleet launch` (no `--split`) opens the lane window at the first free index from 2 (`new-window -t =SESSION:N`,
+  retried up to 5 times if another launch took N first), so a lane never takes 0 or 1, desks up or not.
 - Beside a running fleet: other lanes, including pre-rename ORCHESTRATOR and DECISIONS sessions, keep their windows,
   panes, roster entries and inboxes; nothing is typed into them and no alias map is written.
 - WATCH status pane: when the run launched the WATCH desk, a non-LLM pane split under it (`split-window -v -l 12`)
