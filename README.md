@@ -15,7 +15,7 @@ tmux session "fleet"   (attach from any terminal: fleet attach)
   more lanes, each claude | codex | opencode | kiro | agy
 ```
 
-`fleet desks up [--cli C] [--model M] [--dir D] [--no-proof] [--dry-run]` builds the two desk windows, `deskA` (ROUTE left, DECIDE right) and `deskB` (WATCH left, LEARN right), with no separate WATCH or LEARN window; each desk is an LLM lane in desk mode, and WATCH and LEARN start on a read-only "look for work" brief (docs/design/four-desks.md). It is idempotent: a desk whose pane is live is left alone, so a rerun on a live fleet prints `<D> already live` for each desk and changes nothing; a dead desk is relaunched into its half of its window. It never touches other lanes: a fleet still running the older ORCHESTRATOR and DECISIONS sessions keeps them, with their windows, roster entries and inboxes, and the new desks start beside them under their own names. Names are fixed: there is no alias from the old names to the new ones.
+`fleet desks up [--cli C] [--model M] [--dir D] [--no-proof] [--dry-run]` builds the two desk windows, `deskA` (ROUTE left, DECIDE right) and `deskB` (WATCH left, LEARN right), with no separate WATCH or LEARN window; each desk is an LLM lane in desk mode, and WATCH and LEARN start on a read-only "look for work" brief (docs/design/four-desks.md). When it launches WATCH it also opens a small non-LLM pane under it running `fleet watch status` (tagged `@fleet-watch-status`, one per session). It is idempotent: a desk whose pane is live is left alone, so a rerun on a live fleet prints `<D> already live` for each desk and changes nothing; a dead desk is relaunched into its half of its window. It never touches other lanes: a fleet still running the older ORCHESTRATOR and DECISIONS sessions keeps them, with their windows, roster entries and inboxes, and the new desks start beside them under their own names. Names are fixed: there is no alias from the old names to the new ones.
 
 - `bin/fleet` launches and lists lanes (`fleet launch`, `fleet ls`, `fleet attach`, `fleet layout`, `fleet stop`).
 - `bin/fleet-goal` creates, validates and turns a living goal file into a `/goal` condition.
@@ -25,7 +25,7 @@ tmux session "fleet"   (attach from any terminal: fleet attach)
 
 ## Quick start
 
-Common first steps: clone the repo, then run the installer for your CLI. Every installer is idempotent, takes `--dry-run` (prints every change, writes nothing), `--prefix DIR` (default `$HOME/.local`; symlinks `bin/fleet` and `bin/fleet-goal` into `DIR/bin`, so put that on PATH) and `--trust DIR` where the CLI needs it. Placeholders in the rules come from `FLEET_HUMAN`, `FLEET_DECIDE` (default `DECIDE`) and `FLEET_ROUTE` (default `ROUTE`).
+Common first steps: clone the repo, then run the installer for your CLI. Every installer is idempotent, retires the v0.1.x role names (desk, orchestrator, listener) on upgrade, takes `--dry-run` (prints every change, writes nothing), `--prefix DIR` (default `$HOME/.local`; symlinks `bin/fleet` and `bin/fleet-goal` into `DIR/bin`, so put that on PATH) and `--trust DIR` where the CLI needs it. Placeholders in the rules come from `FLEET_HUMAN`, `FLEET_DECIDE` (default `DECIDE`) and `FLEET_ROUTE` (default `ROUTE`).
 
 ### Claude Code
 ```bash
@@ -70,7 +70,7 @@ Try anything first with `fleet launch --dry-run ...` (prints the window script, 
 
 ## Roles
 
-`fleet launch --role route|decide|watch|learn|worker` (default `worker`; `desk` mode defaults to `decide`). The role is exported as `FLEET_ROLE` in the lane's window and stored in the roster. The old names `orchestrator`, `desk` and `listener` are refused at launch in every mode, resume included (`FAIL role desk is renamed decide`); their files were removed once the pre-rename sessions retired. `probe` is reserved for DECIDE's probe lanes (refused until phase 4).
+`fleet launch --role route|decide|watch|learn|worker|probe` (default `worker`; `desk` mode defaults to `decide`). The role is exported as `FLEET_ROLE` in the lane's window and stored in the roster. The old names `orchestrator`, `desk` and `listener` are refused at launch in every mode, resume included (`FAIL role desk is renamed decide`); their files were removed once the pre-rename sessions retired. `probe` is DECIDE's read-only probe lane (docs/design/four-desks.md 2.5): no shell, no writes, only the `fleet-probe` read verbs over a throwaway shallow clone. It launches only on a CLI whose live lockdown test (`FLEET_PROBE_LIVE=1 test/test_probe_live.sh --cli <cli>`) proved the probe can't run a shell command or write a file while a worker on the same CLI can: today that is claude, opencode and kiro (live runs 2026-11-22: Claude Code 2.1.330 15/0, OpenCode 1.19.0 17/0, kiro-cli 3.5.0 17/0); codex and agy are refused outright (`FAIL role probe refused on --cli codex`), because they can't drop their shell tool on a proven path; a missing `fleet-probe` profile fails the launch instead of launching without it.
 
 | Role | Does | Denied |
 |---|---|---|
@@ -94,6 +94,23 @@ Tags: **PROVEN** = run locally; **DOC** = vendor docs; **UNVERIFIED** = not prov
 
 The launcher warns once and launches without the role when the Codex profile, OpenCode agent, Kiro agent or agy agent is not installed (agy deny rules still apply then, they come from the per-lane settings). The `fleet` role guard is an accident guard, not a security boundary: it trusts `FLEET_ROLE`, which any shell can unset. The per-CLI deny lists (Claude, OpenCode, Kiro, agy) add a second layer; Codex has only the role text, and Kiro's deny misses `sh -c` wrappers.
 
+### LEARN: the ledger and the quiz
+
+`fleet learn` keeps `$FLEET_STATE/learn/`: an append-only ledger of what the fleet decided or shipped (origin
+`fleet`) and what changed outside it (origin `outside`), quiz cards, reviews and a proof cache.
+
+- `fleet learn sync` reads `decisions-log.jsonl` (it appears with the first answered call), WATCH events with
+  score >= `learn.minScore`, and the goal files of lanes whose goal is achieved. Call decisions
+  (`decided-on-call`) arrive as `heard` and are never quizzed until a desk answer or `fleet learn confirm`
+  backs them.
+- `fleet learn quiz` runs recall (self-rated), multiple choice (distractors are other ledger rows, never
+  invented) and source check (paste a verbatim line) on FSRS intervals (`"scheduler": "fixed"` in `learn/learn.json` keeps 1/3/7/21 days). Explain back and
+  apply cards are graded by an optional `command` grader in `learn.json`, else self-graded.
+- An item is learned only with a recall pass and a checkable pass, the latest at least 24 h after the first
+  review, and no fail since. `fleet learn proof --check` rebuilds proof.json from reviews.jsonl and compares.
+- `fleet learn snapshot` gives counts per origin, never one blended total. `fleet learn export` writes one
+  markdown file per topic.
+
 ## Lifecycle
 
 ROUTE keeps the fleet small by parking lanes that are finished and bringing them back when needed. `fleet tick` (read-only) shows who is due.
@@ -111,11 +128,12 @@ ROUTE keeps the fleet small by parking lanes that are finished and bringing them
 - **Compact before park.** `fleet park` types `/compact` into the lane and waits (up to `FLEET_COMPACT_WAIT`, 600 s) for the CLI's own record of a finished compaction: a `compact_boundary` line in the Claude transcript, a `compacted` line in the Codex rollout, a completed `summary` message in the OpenCode session, a `tombstone` line with `kind` `summarization` in the Kiro session's `messages.jsonl`, a `SYSTEM` `CHECKPOINT` row starting `# Resuming from a compaction` in the agy conversation's `transcript_full.jsonl` (PROVEN agy writes it on `/compact`). Only then does it stop the CLI, so a reopen resumes the compacted context. If no record appears, or the transcript can't be read, it refuses to park and leaves the lane running; `fleet park NAME --no-compact` parks without compacting. The roster keeps `compactedAt` next to `parkedAt`. PROVEN on Claude, Codex, OpenCode and Kiro, and for agy by the kit's live proof run (`fleet park` compacted, then `fleet send` reopened the same conversation id and the lane answered on it): after a compacted park, `fleet send` reopened the same session id and the lane named the word it had written before the compact.
 - **Reopen** (`fleet reopen NAME`) resumes the same session id by default. `--fresh` starts a new lane from a handoff, and is for a reason only: context too big, transcript missing, or stale. If `$FLEET_STATE/handoff/NAME.md` is absent it is generated from the transcript (`fleet handoff NAME`).
 - **Cleanup** (`fleet cleanup`, dry run) reports goal-less workers quiet for more than 2 hours, tmux windows with no roster lane, roster entries whose pane or pid is gone, and CLI processes naming a lane with no pane. `--apply` parks and marks the first and third and archives the roster first; `--kill-orphans` is needed to kill the others.
+- **Forget** (`fleet forget NAME`) archives one roster row with its inbox and cursor under `$FLEET_STATE/archive/forgotten/` and drops it, for a lane that is gone for good (a retired desk such as ORCHESTRATOR or DECISIONS, which `fleet tick` marks `forget` once its pane is dead). It refuses a lane whose pane is alive unless `--force`.
 
 ## Routing
 
 - Messages go through `fleet send` / `peer_send` (fleet-mesh). Delivery always appends to the target's inbox, then wakes the lane. When the target is parked or done, delivery first runs `fleet reopen <to>` (timeout 180 s, `$FLEET_BIN` or `bin/fleet`), re-reads the roster, and wakes as usual; the result says `reopened`. A failed reopen still leaves the inbox line and says so.
-- Decision answers go straight to the asker, not through ROUTE (the DECISIONS UI also sends ROUTE a copy; see below). Each answer (from `decision_answer` or `desk.sh answer`) is appended to `$FLEET_STATE/decisions-log.jsonl` as `{id, at, asker, verbatim, relayedTo}`, which ROUTE reads.
+- Decision answers go straight to the asker, not through ROUTE (the DECISIONS UI also sends ROUTE a copy; see below). Each answer (from `decision_answer` or `desk.sh answer`) is appended to `$FLEET_STATE/decisions-log.jsonl` as `{id, at, asker, verbatim, relayedTo}` (`decision_answer` adds `by`, the answering lane's `FLEET_NAME`), which ROUTE reads.
 - New work, scope changes and launch or park requests go through ROUTE.
 
 ## Per-CLI matrix
@@ -138,7 +156,7 @@ Tags: **PROVEN** = run locally on 2026-11-18 (see Proven on below); **DOC** = cu
 **Mesh is the mailbox, native is the doorbell.** Every message lands in the target's fleet-mesh inbox; a native channel only wakes the lane. A Claude lane's `SendMessage` to another fleet lane is copied into the mesh inbox by a `PostToolUse` hook in `roles/*.claude.json`. A2A is deferred. Details: INTERFACES.md, Messaging model.
 
 ### Waking a Claude, Kiro or agy lane from a non-Claude peer
-fleet-mesh types one line into the Claude (or Kiro, or agy) pane with `tmux send-keys`: `[fleet] message from X: run peer_inbox to read it`. It arrives as typed input, so it carries a pointer only, never the message body, and the rules tell lanes to treat it as a pointer. This is the chosen default; a development channel (blocked on managed org plans per the docs) and "no wake, check `peer_inbox` at phase ends" are the alternatives. PROVEN on a live idle Claude 2.1.330 bypass lane: `fleet_mesh.py send` typed the pointer, the lane ran `peer_inbox` (fleet MCP from `--mcp-config`) and repeated the body. Claude's own messaging socket is not used for this: it holds a non-Claude sender's message on a bypass lane (see INTERFACES.md). PROVEN for Kiro: the same typed pointer line plus Enter woke an idle Kiro lane, which ran `peer_inbox` and answered through `peer_send`. agy gets the same line as literal keys (`send-keys -l`) plus a separate Enter; PROVEN by the kit's live proof run (agy 1.5.13): the woken lane ran `peer_inbox` and replied through `peer_send`.
+fleet-mesh types one line into the Claude (or Kiro, or agy) pane with `tmux send-keys`: `[fleet] message from X: run peer_inbox to read it`. A lane `fleet ls` shows as `mesh=no` (not started by `fleet launch`, so no fleet MCP and no `peer_inbox`) gets ` (no peer_inbox tool? read $FLEET_STATE/inbox/<name>.jsonl)` appended. It arrives as typed input, so it carries a pointer only, never the message body, and the rules tell lanes to treat it as a pointer. This is the chosen default; a development channel (blocked on managed org plans per the docs) and "no wake, check `peer_inbox` at phase ends" are the alternatives. PROVEN on a live idle Claude 2.1.330 bypass lane: `fleet_mesh.py send` typed the pointer, the lane ran `peer_inbox` (fleet MCP from `--mcp-config`) and repeated the body. Claude's own messaging socket is not used for this: it holds a non-Claude sender's message on a bypass lane (see INTERFACES.md). PROVEN for Kiro: the same typed pointer line plus Enter woke an idle Kiro lane, which ran `peer_inbox` and answered through `peer_send`. agy gets the same line as literal keys (`send-keys -l`) plus a separate Enter; PROVEN by the kit's live proof run (agy 1.5.13): the woken lane ran `peer_inbox` and replied through `peer_send`.
 
 ## Environment
 
@@ -192,6 +210,28 @@ Config `$FLEET_STATE/decisions-ui.json` (all optional):
 
 `jsonl` and `command` sources yield lines (JSON with `text`, `at`, `id`, or plain text) that name a call id; `candidates` yields `{id, quote, path, kind}` rows whose quote must appear verbatim in `path`. Python 3.8+ stdlib only, one static HTML file (`lib/decisions-ui.html`).
 
+## LEARN page
+
+`fleet learn serve` is the web front end on the LEARN desk (phase 7): proof per origin, never blended ("fleet: 2 of 3
+learned", "outside: 0 of 2"), score history per topic (one point per day with reviews: passes over reviews, as a
+sparkline per topic and origin), the heard-only rows that are never taught as decided, the last 20 reviews, and the
+same quiz as `fleet learn quiz`. It reads `fleet_learn.snapshot()` and `reviews()`, and answers through
+`fleet_learn.review()`, the verb the terminal quiz calls, so an answer in the page and one in the TUI end in the same
+state (tested: reviews, card schedules, `proof.json` and the snapshot compared, with a control that must differ).
+
+    fleet learn serve --open      # http://127.0.0.1:7341/?t=<token>, opened in the background browser
+
+- **Quiz**: due cards in the TUI's order. Recall: type from memory, Reveal shows the source quote, then rate
+  again / hard / good / easy. Choice: click one of four. Source check: paste the line; it must be a verbatim substring
+  of the quote. Only due cards take an answer, so a double click or a second tab is a 409 and writes nothing.
+  The page never sees a card's answer before it is graded (recall reveals only after the attempt).
+- **Security**: as the DECISIONS UI. Loopback bind only (127.0.0.1, ::1 or localhost), a random token per launch
+  (`?t=` for page loads, the `X-Fleet-Token` header for every POST), Host and Origin checks, text rendered with
+  `textContent` only, the token kept out of the request log, the URL written to `$FLEET_STATE/learn-ui.url` (mode
+  0600). Only the human takes quizzes: with `FLEET_ROLE` set to anything, `serve` refuses (exit 4), since a lane
+  answering cards would fake proof of learning.
+- **Port**: `--port`, else `servePort` in `$FLEET_STATE/learn/learn.json`, else 7341.
+
 ## Tests
 
 ```bash
@@ -199,12 +239,27 @@ python3 -m unittest test/test_listen.py # WATCH UI: parsing, routing, secrets, c
 bash test/test_listen.sh      # WATCH UI in a real tmux pane on a private socket: layout, live filter, page, quit
 python3 -m unittest test/test_mesh.py   # fleet-mesh delivery, reopen, decisions log
 python3 -m unittest test/test_decisions.py   # DECISIONS UI: cards, pick relay, badges, refresh A/B, server auth, tmux fallback
+python3 -m unittest test/test_watch_serve.py   # WATCH page: loopback + token (403 without), page action = pane key, same state
+python3 -m unittest test/test_probe.py test/test_probe_roles.py   # DECIDE probes: read verbs, calls, nuke/resume, stats, host allow-list
+bash test/test_probe_stall_park.sh            # a probe silent 15 min is parked as stalled by fleet cleanup --apply
+bash test/test_forget.sh                      # fleet forget archives one row; a live lane is refused without --force
+FLEET_PROBE_LIVE=1 test/test_probe_live.sh --cli claude   # launches 2 real lanes: the probe can't shell or write, a worker can
+FLEET_PROBE_ACH=1 test/test_probe_ach.sh                  # the same bar through ach on claude, opencode and kiro (model calls)
+bash test/test_probe_opencode_tools.sh                     # OpenCode offers the fleet-probe verbs to fleet-probe only (FLEET_PROBE_OC_LIVE=1: live)
 bash test/test_goal.sh        # fleet-goal and the desk helper (incl. decisions log), with a broken-file control
 bash test/test_installs.sh    # installers against a throwaway HOME with stubbed CLIs
 bash test/test_lifecycle.sh   # tick, park, reopen, handoff, cleanup against stub CLIs and fixture transcripts
 bash test/test_fleet.sh       # fleet launch (dry run + stub CLIs on a private tmux socket); run with FLEET_* unset
 bash test/test_roles.sh       # role files and launch wiring; run with FLEET_* unset
 bash test/test_privacy.sh     # no personal data in the repo (FLEET_PRIVACY_TERMS=a|b adds names)
+python3 -m unittest test/test_contracts.py   # four-desks contracts (WATCH, probe) and the watch|learn|probe dispatch
+bash test/test_learn.sh       # fleet learn: ledger, sync, quiz, 24 h proof with an injected clock, export
+python3 -m unittest test.test_fsrs test.test_explain   # FSRS against py-fsrs reference values; explain back grader
+python3 -m unittest test/test_learn_serve.py   # LEARN page: token/loopback, page answer == TUI answer, score history per topic
+python3 -m unittest test/test_watch.py   # WATCH engine: replay counts, scrub, dedupe, filters, quiet hours, literal-credential refusal
+python3 -m unittest test/test_watch_rate.py   # WATCH per-source token bucket: wait, defer, X-RateLimit-Remaining drain (injected clock)
+python3 -m unittest test/test_watch_ado.py test/test_watch_gitlab.py test/test_watch_confluence.py test/test_watch_github.py test/test_watch_jira.py test/test_watch_bitbucket.py   # WATCH adapters on recorded fixtures
+python3 -m unittest test/test_watch_webhook.py   # WATCH webhook receiver: signatures, loopback-only bind, spool, webhook+poll dedupe
 ```
 
 ## Limits
@@ -219,7 +274,34 @@ bash test/test_privacy.sh     # no personal data in the repo (FLEET_PRIVACY_TERM
 - Waking an idle Claude lane from a non-Claude peer relies on typed input into the pane (see above).
 - Kiro: the role deny misses `sh -c "fleet park X"` (PROVEN it ran), so a Kiro role is not a hard fence. `KIRO_API_KEY` is passed through as-is; behaviour when it is set is UNVERIFIED. Whether Kiro's own auto-compaction writes the same `tombstone` marker is UNVERIFIED. A goal that stops at max iterations being read as `stopped` is UNVERIFIED. Live Kiro lanes on Linux are UNVERIFIED.
 - agy: the role deny's reach beyond the named shell commands (edit tools, artifacts, `sh -c` wrappers) is UNVERIFIED, so an agy role is not a hard fence. agy has no config-dir override, so lanes share the user's `~/.gemini` sign-in and conversations. Whether agy's own auto-compaction writes the same `CHECKPOINT` marker is UNVERIFIED. Live agy lanes on Linux are UNVERIFIED.
-- Nothing is pushed or sent anywhere by the kit; the only network calls are the two plugin `git clone`s in `install/opencode.sh`.
+- Nothing is pushed or sent anywhere by the kit; the only network calls are the two plugin `git clone`s in `install/opencode.sh` and the WATCH sources you list in `watch.json`.
+
+## WATCH: the engine
+
+```
+fleet watch run [--once] [--force] [--source NAME] [--json]   poll due sources; route to DECIDE and LEARN, never ROUTE
+fleet watch check [--config PATH] [--resolve]                   validate watch.json; exit 1 on a literal credential
+fleet watch status [--once] [--interval S]                      terminal status pane (j/k select, p poll, z pause, r resume, h release held, q quit)
+fleet watch stats [--json]                                      counts per kind, dropped per rule
+fleet watch snapshot [--compact]                                snapshot() JSON
+fleet watch poll-now|pause|resume NAME, fleet watch release-held   the pane's verbs (shared with `fleet watch serve`)
+fleet watch webhook serve [--config F] [--bind A] [--port N]    optional loopback webhook receiver (7349)
+fleet watch serve --open             # http://127.0.0.1:7342/?t=<token>: sources, counts, recent events; poll now, pause, resume, release held asks
+```
+
+Run `fleet watch status` as the WATCH window's non-LLM pane, and `fleet watch run` (the poll loop) in its own pane
+or a launchd/systemd job; it sleeps until the next source is due (at most 60 s per sleep). Credentials in
+`$FLEET_STATE/watch.json` are `env:`, `keychain:` or `cmd:` references only; `fleet watch check` exits 1 on a literal.
+
+GitHub without a token: every request spends one of 60 per hour (a 304 too), so `pollSec` 900 fits about 15 quiet
+repos. Past ~10 repos, add a read-only token: `"auth": {"type": "bearer", "token": "cmd:gh auth token"}`.
+
+## WATCH webhooks (optional)
+
+`fleet watch webhook serve` listens on 127.0.0.1 only (any other bind is refused). It never opens a public port;
+expose it through your own tunnel if you want push. Each `webhook` source in watch.json is one route,
+`POST /hook/<name>`, with its HMAC secret given by reference. A delivery with a bad signature is refused. A good one
+lands in the same pipeline as the poll, so a webhook plus the next catch-up poll of the same change make one event.
 
 ## WATCH UI
 

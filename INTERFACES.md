@@ -44,7 +44,7 @@ Writers update roster.json atomically (write temp file in the same dir, then `mv
 ```
 fleet launch [--cli claude|codex|opencode|kiro|agy] [--role R] [--model M] [--dir D] [--split-right-of NAME] [--dry-run] [--no-proof]
              <name> goal <condition.txt> | prompt <text|file> | desk [text|file] | resume <session-id>
-fleet ls                      roster + liveness (pane alive?) one line per lane
+fleet ls                      roster + liveness (pane alive?) + mesh=yes|no, one line per lane
 fleet attach                  tmux attach -t $FLEET_TMUX_SESSION
 fleet layout                  print the tmux window/pane map
 fleet stop <name>             kill that pane (asks nothing; used by tests and retire)
@@ -114,7 +114,25 @@ fleet decisions pick <id> <letter|--text T|--edit T|--refuse [why]>   exit 0 rel
 fleet decisions retry <id> | snooze <id> [minutes] | state [--json] | find "<text>" | report <id> ok|fail [note]
 fleet decisions ask "<q>" [--options a,b] [--allow ...] [--wait] [--timeout 30m] [--new]   exit 0 picked, 1 refused/own/changes, 2 no answer
 fleet decisions refresh [--json] | refresh choose <id> A|B | refresh confirm <id>   confirm needs a prior "choose B"
+fleet decisions intake ["<lines>"|-]      WATCH TASK-CANDIDATE/FYI lines -> task calls / fyi forward (role decide or none; exit 4 otherwise)
+fleet decisions forward                  forward each task call the desk answered yes with decision_answer (log row by == $FLEET_DECIDE), once
+fleet decisions learn [<id>]             one LEARN row with the human's verbatim answer (newest answered call by default); exit 3 if already learned
 ```
+- Cards and Called rows carry `watch` ({sourceKind, source, ref, url, eid}; url http(s) only) from the decisions.jsonl row,
+  else from `$FLEET_STATE/decide/calls.json` (written by `fleet_decisions.register_call(cid, kind, watch=None, task=None, **extra)`,
+  kind task-candidate | probe | ask). The page shows a source badge and a link (rel noopener noreferrer); the TUI prints
+  `[sourceKind] ref url`. `decision_open` keeps only those five keys (one-line strings, at most 500 chars) and refuses a
+  non-object `watch`; `decision_answer`'s log row adds `by` (the answering lane's FLEET_NAME, else the desk).
+- Task calls (kind task-candidate or probe) offer `yes: start a writing lane | learn only | no: drop`. Inside the pick
+  lock, a yes delivers `TASK <eid> <ref> "<quote>" <url|-> by human:<Qn>` from `$FLEET_DECIDE` to `$FLEET_ROUTE`, once per
+  call (`settledAt` in calls.json); task calls get no "[DECISIONS UI copy]". "learn only" on a task candidate sends the
+  event to LEARN (`add_learn_item`). A probe call also calls `fleet_probe.on_pick(cid, choice, meta)`; its errors are
+  logged and noted, never raised. A task call answered outside a pick forwards (via `fleet decisions forward`) only when
+  its log row's `by` is `$FLEET_DECIDE`; anything else is reported `unverified` and sends nothing.
+- `FYI` intake delivers `FYI <n> events: <eids> decidedBy: decide:probe` to ROUTE once per eid set
+  (`decide/fyi-forwarded.json`) and logs a `fleet_probe_contract.log_row("fyi-forward", ...)` row. Rows with an `action`
+  key are not Called answers.
+- `POST /api/learn {id}` (token and loopback checks as every route; 409 when already learned) = TUI key `l`.
 - A call = a `decisions.jsonl` row and/or a desk goal `openForHuman[]` item with the same id; open only while every store
   that has it says `open`. Open calls with the same normalized question (`fleet_mesh._norm`) form one card: the oldest id
   is primary, the rest are `dupIds`; askers = each id's `from` + `relayTo`, unique, in order. An id whose two stores
@@ -151,6 +169,41 @@ fleet decisions refresh [--json] | refresh choose <id> A|B | refresh confirm <id
   the environment, so it stops a lane that runs the command by mistake, not one that unsets its own role on purpose.
 - `serve` on a busy port exits 1 with one `can't listen on ...` line. The curses TUI sends stderr (mesh delivery log
   lines) to `$FLEET_STATE/decisions-tui.log` while it runs, and its text prompts block until Enter.
+
+## LEARN page (lib/fleet_learn_serve.py; `fleet learn serve`)
+
+    fleet learn serve [--port P] [--bind 127.0.0.1|::1|localhost] [--open]   first stdout line: "LEARN UI: http://127.0.0.1:P/?t=TOKEN"
+
+- Exit 1 on a non-loopback `--bind` or a port in use (one line, no traceback); exit 4 when `FLEET_ROLE` is set.
+- Writes only `$FLEET_STATE/learn-ui.url` (0600). Every `learn/` write goes through `fleet_learn.review()`.
+- HTTP: `GET /` and `GET /api/state` need `?t=` or `X-Fleet-Token`. `/api/state` =
+  `{snapshot: fleet_learn.snapshot(), history: [{topic, origin, points: [{day, reviews, passes, score}]}],
+  quiz: [{cid, lid, format, origin, prompt, source, options (choice only)}]}`; quiz items never carry `answer` or
+  `grounding`. History covers the last 60 days of `reviews()`, joined to topics through `items(include_retired=True)`.
+- `POST /api/review {cid, answer, rating?, latencyMs?}` -> `{review: <reviews.jsonl row>, answer: <source quote>}`;
+  `POST /api/reveal {cid}` (recall only, writes nothing) -> `{cid, answer, source}`. Both need the `X-Fleet-Token`
+  header (a `?t=` query is not enough). Not due -> 409; unknown card -> 404; bad id, recall without a rating, or a
+  body that is not a JSON object -> 400; wrong or missing token, a foreign Host or a foreign Origin -> 403.
+- `learn/learn.json` `servePort` (optional) sets the default port.
+
+## WATCH page (lib/fleet_watch_serve.py; `fleet watch serve`)
+
+    fleet watch serve [--port P] [--bind 127.0.0.1|::1|localhost] [--open]   first stdout line: "WATCH UI: http://127.0.0.1:P/?t=TOKEN"
+
+- A second front end on the WATCH desk: reads `fleet_watch.snapshot()` and calls the status pane's verbs
+  (`poll_now`, `pause`, `resume`, `release_held`), so a page action and the same pane key end in the same state.
+  `release_held` returns a list of Q ids, one per held ask.
+- Default port 7342. `$FLEET_STATE/watch-ui.url` (0600) holds the URL while it runs.
+- HTTP: `GET /`, `/api/state` need `?t=` or `X-Fleet-Token`; `POST /api/poll {source}`, `/api/pause {source}`,
+  `/api/resume {source}`, `/api/release {}` need the `X-Fleet-Token` header (a `?t=` query is not enough). Wrong or
+  missing token, a Host other than `127.0.0.1:P` / `localhost:P` / `[::1]:P`, or a foreign `Origin` -> 403. Unknown
+  source -> 404, missing source -> 400. A bind other than loopback is refused (exit 1).
+- Role guard: runs only with `FLEET_ROLE` unset or `watch`.
+
+## Reserved loopback ports
+
+7340 DECISIONS UI (`fleet decisions serve`), 7341 LEARN page (`fleet learn serve`), 7342 WATCH page (`fleet watch serve`),
+7349 WATCH webhook receiver (`fleet watch webhook serve`). 7343-7348 are free.
 
 ## lib/fleet_mesh.py
 
@@ -196,7 +249,45 @@ Desk helper `skills/running-the-decisions-desk/desk.sh` uses `fleet-goal check` 
 ### Roles
 - `fleet launch --role route|decide|watch|learn|worker` (default `worker`; `desk` mode defaults to role `decide`).
   `--role orchestrator|desk|listener` exits 1 with `FAIL role <old> is renamed <new>` in every mode, `resume`
-  included, so `fleet reopen` of a lane whose roster role is an old name is refused; `probe` is refused as reserved.
+  included, so `fleet reopen` of a lane whose roster role is an old name is refused. `fleet tick` gives such a row
+  the action `forget` once its pane is dead (a live one shows `-`); they are not standing desks.
+- `fleet forget NAME [--force]` (ROUTE or the human; other roles get `FAIL role <r> can't forget`): moves the roster
+  row to `$FLEET_STATE/archive/forgotten/NAME-<utc ts>/roster-entry.json`, moves `inbox/NAME.jsonl` and
+  `inbox/NAME.cursor` there too, deletes the row and logs `NAME forgotten` to `log/fleet.log`. A lane whose pane is
+  alive is refused (`FAIL lane NAME is live (pane %N)`) unless `--force`, which drops the row, prints a WARN and
+  leaves the pane running. Unlike `cleanup --apply` it touches one row only.
+- Mesh: `fleet ls` prints `mesh=yes|no` per lane (`lib/fleet_mesh.py mesh`, `has_mesh`). Evidence, first match wins:
+  the roster row's `mesh` bool; claude: `$FLEET_STATE/launch/<name>.sh` passes `fleet_mesh.py`, or a `fleet` server
+  in `~/.claude.json` (`$FLEET_CLAUDE_JSON`; user or the lane dir's project) or `<dir>/.mcp.json`; codex, opencode,
+  kiro, agy: a `fleet` server in the CLI's global MCP config (`$CODEX_HOME`, `$XDG_CONFIG_HOME/opencode`,
+  `$KIRO_HOME`, `$FLEET_AGY_HOME`).
+- Wake line (claude, kiro, agy panes): `[fleet] message from X: run peer_inbox to read it`; a mesh=no lane gets
+  ` (no peer_inbox tool? read $FLEET_STATE/inbox/<to>.jsonl)` appended, the absolute path of its inbox.
+  `fleet reopen` resumes through `fleet launch`, so a reopened claude lane gets `--mcp-config` with the fleet mesh.
+- `--role probe` (phase 4): `bin/fleet` asks `lib/fleet_probe.py can-host <cli>` and dies on a NO
+  (`FAIL role probe refused on --cli <cli>: ...`). Allowed hosts are `PROBE_ALLOWED`: a CLI joins
+  only after `FLEET_PROBE_LIVE=1 test/test_probe_live.sh --cli <cli>` proves the probe can't run a shell command or
+  write a file and a worker on the same CLI can. Allowed: `claude`, `opencode`, `kiro`. Evidence, 2026-11-22,
+  test_probe_live.sh at 2ee61a8 with isolated CLI config: Claude Code 2.1.330 15 PASS / 0 FAIL, OpenCode 1.19.0
+  17 / 0, kiro-cli 3.5.0 17 / 0. In each run both lanes started real sessions, the worker control wrote its file and
+  POSTed to the fake API, the probe did neither, closed its row with probe_report and removed its clone, and the
+  global CLI config hash was unchanged. Second evidence set, 2026-11-23, `FLEET_PROBE_ACH=1 test/test_probe_ach.sh`
+  at c5bf601 through ach 0.32.0 (probe vs worker judged at tool-call level): 51 PASS / 0 FAIL / 0 INCONCLUSIVE
+  across claude, opencode and kiro. Stated limit: on all three CLIs the probe's shell and write tools were absent
+  (never offered), so no refusal was exercised. The bar "can't run a shell command or write a file, while a worker
+  can" is met; "refused when tried" is unproven. codex and agy are refused (no proven way to drop shell/apply_patch).
+  `FLEET_PROBE_ALLOW_UNVERIFIED=<cli>[,<cli>]` is a test-only override the live test sets: it can only reach a CLI
+  `PROBE_HOSTS` marks True, logs `WARN FLEET_PROBE_ALLOW_UNVERIFIED=...` to stderr on every use, and is ignored when
+  unset. A claude probe launches with `--tools Read,Grep,Glob,WebFetch --strict-mcp-config` and an `--mcp-config`
+  holding only `fleet` and `fleet-probe`; a missing opencode/kiro `fleet-probe` agent fails the launch.
+- OpenCode probe verbs: `install/opencode.sh` registers the `fleet-probe` MCP globally, and OpenCode 1.19 resolves
+  tool rules last-match-wins with the global `permission` after the global `tools`, so `tools["fleet-probe_*"]=false`
+  alone left the verbs on every agent (a live run listed all 8 on fleet-worker). Every agent but `fleet-probe` (each
+  `.agent` key plus the built-in `build`, `plan`, `general`) gets `permission["fleet-probe_*"] = "deny"`; a string
+  permission becomes `{"*": <it>, "fleet-probe_*": "deny"}`. `test/test_probe_opencode_tools.sh` checks it through
+  `opencode debug agent` (and with `FLEET_PROBE_OC_LIVE=1` through live runs), with the pre-fix config as control.
+- `fleet tick`/`fleet cleanup`: a live probe lane silent over 900 s gets `park-stalled`; `cleanup --apply` parks it
+  `--no-compact` and marks its probes.jsonl row `stalled` (`fleet-probe stalled --apply`). `FLEET_NOW` fixes the clock for tests.
   The window script exports `FLEET_ROLE=<role>`; the roster entry gets `"role"`.
 - Files: `roles/<role>.md` (role context), `roles/<role>.claude.json` (a Claude `--settings` file with
   `permissions.deny` only: allow rules do nothing in bypass mode), `roles/<role>.codex.toml` (Codex profile body:
@@ -238,6 +329,12 @@ Desk helper `skills/running-the-decisions-desk/desk.sh` uses `fleet-goal check` 
   when something in it was launched.
 - Beside a running fleet: other lanes, including pre-rename ORCHESTRATOR and DECISIONS sessions, keep their windows,
   panes, roster entries and inboxes; nothing is typed into them and no alias map is written.
+- WATCH status pane: when the run launched the WATCH desk, a non-LLM pane split under it (`split-window -v -l 12`)
+  runs `FLEET_STATE=<state> fleet watch status`, tagged `@fleet-watch-status 1` and titled `WATCH-status`
+  (`OK WATCH status pane %N`). One per session: a live tagged pane is reused (`WATCH status pane already live`).
+  A run that did not launch WATCH adds none (`WATCH desk not launched by this run: no WATCH status pane`), so a fleet
+  whose desks are all live is untouched. `--dry-run` prints `window deskB: WATCH status pane under WATCH` and the
+  `would run: tmux split-window ...` line.
 
 ### Lifecycle (bin/fleet-lifecycle; bin/fleet dispatches `tick|park|reopen|cleanup` to it)
 - Roster additions: `status` (`live|parked|done|archived`, default live), `parkedAt`, `goalState`
@@ -379,3 +476,126 @@ is drawn and served (at draw time) as well as to routing.
 - Page routes: `/` (HTML), `/state.json` (`say`, `routed`, `marks`, `explainer`, `counts`, last 50 `lines`),
   `/lines.json?before=N&limit=M` (load more).
 
+## Four desks (docs/design/four-desks.md, v0.2.0)
+
+- `bin/fleet` dispatches `watch|learn|probe` to `bin/fleet-watch`, `bin/fleet-learn`, `bin/fleet-probe` (no role guard;
+  each engine fences its own writes). A verb not built yet prints `fleet <x>: not built yet` and exits 2.
+- WATCH contract: `lib/fleet_watch_contract.py` (Source interface, Event schema, `watch.json` validator with
+  credential references only, `snapshot()` shape, `SOURCES` registry of `lib/watch_sources/<kind>.py`). Event:
+  `sourceKind` is the source type, `kind` the routing class `ask|task-candidate|fyi`, `to` always `DECIDE`; a
+  learn-item is an extra delivery for `score >= learn.minScore`. `poll()`'s `next_poll_sec` is a floor:
+  wait = max(60, pollSec, next_poll_sec). The engine injects `cfg["me"] = {"names", "id"}` per source.
+- Probe contract: `lib/fleet_probe_contract.py` (`decide/probes.json` targets, `decide/probes.jsonl` rows
+  `{id,target,lane,cli,startedAt,endedAt,tokensIn,tokensOut,found,callId,status,eid}`, `decide/probes-nuked.json`,
+  decisions-log rows with `decidedBy: decide:probe`, `human: false` for alone actions).
+- `fleet learn` (bin/fleet-learn -> lib/fleet_learn.py). State: `$FLEET_STATE/learn/{ledger.jsonl, cards.jsonl,
+  reviews.jsonl, proof.json, cursors.json, learn.json, export/}`; every write resolves inside `learn/`.
+  Schemas and the Python API (add_item, add_learn_item, confirm, supersede, drop, items, item, sync, make_cards,
+  due, review, reviews, use_scheduler, rebuild_proof, snapshot, export): lib/fleet_learn_contract.md.
+  `FLEET_LEARN_NOW=<ISO UTC>` pins the clock. Exit codes: 0 ok, 1 refused (`FAIL ...`), 2 usage.
+
+### fleet learn grader and scheduler (lib/fleet_learn_explain.py, lib/fleet_fsrs.py)
+
+```
+$FLEET_STATE/learn/learn.json: {"grader": {"kind": "command", "run": "<shell command>", "timeoutSec": 20, "maxTokens": 400},
+             "scheduler": "fsrs" (default) | "fixed", "fsrs": {"desiredRetention": 0.9, "weights": [21 floats], "maximumInterval": 36500}}
+
+stdin:  one JSON {"card": {cid, lid, format, prompt, grounding}, "answer", "quote", "rubric", "format", "maxTokens"}
+stdout: one item per line: `KIND: text | quote: <verbatim words from the source> [| minor]`
+        KIND is COVERED, MISSING, WRONG or NOTE; any other line is ignored and counted.
+bound:  killed (process group) after timeoutSec. A model behind the command needs its own max_tokens and deadline.
+```
+
+- An item's quote must be a normalized substring of the card's grounding.quote (apply cards: or its rubric).
+  A WRONG line with no quote, or a quote not in the source, is dropped; the same rule holds for COVERED and MISSING.
+  A line carrying a secret is dropped and its text is not recorded.
+- pass = at least one grounded COVERED, no grounded WRONG, no grounded MISSING without `| minor`.
+  Rating handed to the scheduler: good on a pass, again on any fail (a fail is a lapse in proof.json).
+- Timeout, non-zero exit, or no grounded item -> self-grading with the source shown (gradedBy: self). Never a pass by
+  silence. No grader configured -> self-grading.
+- A bad `fsrs` section in learn.json is refused when the scheduler is selected, never silently defaulted.
+
+### fleet watch verbs (bin/fleet-watch, lib/fleet_watch.py)
+
+```
+fleet watch run [--once] [--force] [--source NAME] [--json]   poll due sources; route to DECIDE and LEARN, never ROUTE
+fleet watch check [--config PATH] [--resolve]                   validate watch.json; exit 1 on a literal credential
+fleet watch status [--once] [--interval S]                      terminal status pane (j/k select, p poll, z pause, r resume, h release held, q quit)
+fleet watch stats [--json]                                      counts per kind, dropped per rule
+fleet watch snapshot [--compact]                                snapshot() JSON
+fleet watch poll-now|pause|resume NAME, fleet watch release-held   the pane's verbs (shared with `fleet watch serve`)
+fleet watch webhook serve [--config F] [--bind A] [--port N]    optional loopback webhook receiver (7349)
+```
+
+State files are listed in docs/design/four-desks.md section 6. Rate: `ratePerMin` (default 30, per source or in
+`defaults`) feeds a per-source token bucket around `urllib.request.urlopen`; a wait over 5 s defers the poll, and
+`fleet watch run --json` lists those under `deferred`. LEARN-ITEMs go to `$FLEET_LEARN`, else `LEARN`; the
+engine's send refuses `ROUTE` and the `orch_name()` value. Every ask's `decision_open` carries
+`watch: {sourceKind, source, ref, url (http/https only), eid}`.
+
+### WATCH sources: per-kind config keys and change types
+
+- `ado` (Azure DevOps Boards): `{"name", "kind": "ado", "org", "project", "auth": {"type": "pat", "token": "env:ADO_PAT"}}`.
+  Two-step poll (WIQL with `timePrecision=true`, then a batch get); cursor = last ChangedDate + ids at that instant.
+  Keeps a per-item memory in `state["items"]` (at most 2000) to tell transition, assigned and comment apart, so the
+  engine must persist Source.state. Webhooks: a `webhook` route `{"for": "<ado source>", "signature": "basic",
+  "auth": {"type": "basic", "user": <name or ref>, "secret": <ref>}}`; the receiver's built-in basic verifier checks
+  it (ADO service hooks sign nothing), and `accept_webhook` only normalizes, taking previous values from the hook's
+  `oldValue`/`newValue` pairs so the eid matches the poll's. Boards only; ADO Repos pull requests are not covered.
+- `gitlab` (GitLab and Gitea, one module): `{"name", "kind": "gitlab", "flavor": "gitlab"|"gitea", "base",
+  "repos": [...], "branches": [...] (optional), "lookbackSec" (optional, first-poll window, default pollSec),
+  "auth": {"type": "bearer", "token": "env:..."}}`. Token scope: read_api (GitLab) / read:repository (Gitea).
+  Webhooks: a `webhook` route `{"for": "<gitlab source>", "signature": "gitlab"|"gitea", "auth": {"type": "hmac",
+  "secret": <ref>}, "pollSec": 60}`. gitlab.py registers both verifiers at import: `gitlab` checks a `whsec_`
+  token's Standard Webhooks `webhook-signature` inside a 300 s `webhook-timestamp` window, else the plain
+  `X-Gitlab-Token` in constant time; `gitea` checks `X-Gitea-Signature` (hex HMAC-SHA256 of the body, empty refused). Change types: `pr.opened`, `pr.review_requested`, `pr.pushed`,
+  `pr.merged`, `pr.closed`, `pr.reopened`, `pr.updated`, `branch.pushed`; tags `review-requested`, `mention`,
+  `assigned-to-me`, `my-pr`.
+- `github`: `{"name", "kind": "github", "repos": ["owner/repo", ...], "auth" (optional: `{type: bearer, token:
+  "cmd:gh auth token"}`), "backfill" (false: the first poll of a repo primes the cursor and emits nothing)}`. Cursor:
+  per repo ETag, recent event ids and lastAt, plus the notifications Last-Modified. `next_poll_sec` returns the
+  server's `X-Poll-Interval`, or the largest `Retry-After` of a repo that failed while others succeeded (a partial
+  failure returns events, not an error). Unauthenticated: no `/notifications`, and every request (304s too) spends
+  one of 60/h, so with `pollSec` 900 about 15 quiet repos fit; past ~10 repos add a read-only token. Without
+  `me.id` no `me`, `review-requested`, `assigned-to-me` or `mention` tags. `review_requested` reaches WATCH only via
+  `/notifications` or a webhook. Webhooks: the receiver's `github` verifier (`X-Hub-Signature-256`).
+- Engine duty every adapter relies on: save the Source's `state` after every poll, including one that RAISES
+  (`failStreak` drives the exponential backoff; GitHub's backoff test builds a fresh Source per poll on one dict).
+- `jira`: `{"name", "kind": "jira", "base", "auth", "deployment" ("cloud" when the host ends in .atlassian.net,
+  else "server"), "query" (JQL scope, ANDed with the relative updated window; a query with ORDER BY is refused),
+  "instance" (default: the host), "sinceSec" (0)}`. Cursor `{updated, ids}`; `state["myself"]` caches `/myself` ids
+  (no secret), so mentions and assignments resolve without `me.ids`. `health()` adds `truncated` (changes over
+  `maxEventsPerPoll` for one issue, oldest kept). Webhook route: `signature: "hmac"`, `header: "X-Hub-Signature"`.
+- `bitbucket` (Bitbucket Cloud): `{"name", "kind": "bitbucket", "repos": ["ws/repo"], "branches": [...], "auth":
+  {"type": "bearer", "token": <ref>} (or basic: user + app password / API token), "api" (default
+  https://api.bitbucket.org/2.0), "web" (default https://bitbucket.org), "maxRequestsPerPoll" (30)}`. Read scope:
+  repository read and pull request read. Webhook route: `"signature": "bitbucket"` (bitbucket.py registers it at
+  import; `X-Hub-Signature: sha256=<hex HMAC>`). `pullrequest:updated` emits nothing (a review request for me
+  excepted); the next poll reports `pr.pushed` or `pr.updated`. `rateRemaining` is always null.
+- `confluence`: `{"name", "kind": "confluence", "base" (with `/wiki` on Cloud), "auth", "spaces": [...],
+  "timeZone": "+HH:MM" (the API user's profile zone, CQL dates are read in it; default "+00:00"), "overlapSec" (3600),
+  "pageLimit" (50), "cql" (extra clause, ANDed), "firstLookbackSec" (0), "maxPages" (20)}`. Cursor `{since, ids}` plus
+  `pending: {next, hi, hiIds}` while a poll stopped with pages left. Change types `page.created`, `page.edited`,
+  `page.commented`; tags `mention`, `my-page`. No webhooks.
+- The engine puts `maxEventsPerPoll` and `quoteChars` (from `source_settings`) and `me` (`source_cfg_with_me`) into
+  the cfg a Source is built with.
+
+### WATCH webhook receiver (lib/watch_sources/webhook.py; `fleet watch webhook serve`)
+
+- `fleet watch webhook serve [--config F] [--bind 127.0.0.1|::1] [--port N]`: loopback only. Exit 2 for a
+  non-loopback bind, a bad config or no webhook sources; 0 on Ctrl-C. Default port 7349.
+- The receiver is the only place a signature is checked (VERIFIERS: `github`, `hmac`, `basic`, plus any name an
+  adapter registers with `register_verifier` at import). It then calls the target adapter's `accept_webhook` with
+  empty creds (normalize only) and appends the Events to the route's spool.
+- State: `$FLEET_STATE/watch/webhook/<route>.jsonl` (`state_paths(...)["webhook"]`), mode 0600, directory 0700.
+  The `webhook` source's poll() drains it (cursor = byte offset, kept in cursors.json by the engine). A fully
+  drained spool over 1 MiB is truncated.
+- watch.json `webhook` source keys: `name`, `kind: "webhook"`, `for` (optional, a polled source name),
+  `signature` (`github` | `hmac` | `basic` | a registered name), `header`/`prefix`/`algo` (hmac only),
+  `auth {type: "hmac", secret: <ref>}` (or `{type: "basic", user: <name or ref>, secret: <ref>}`), `bind`
+  (loopback only), `port`, `pollSec`. One receiver serves every route, so all routes agree on bind/port.
+- Latency: the engine drains a route's spool every `pollSec`; set `pollSec: 60` (the floor) on webhook sources.
+  Both the receiver and the engine resolve the route's secret reference; an unresolvable ref fails that poll.
+- HTTP: `POST /hook/<name>`. 202 `{accepted: n}`; 200 for a GitHub ping; 401 bad or missing signature; 404
+  unknown route; 405 not POST; 411 no Content-Length; 413 over 1 MiB; 501 target kind has no mapping; 503
+  secret did not resolve. Responses never carry the secret or a digest.

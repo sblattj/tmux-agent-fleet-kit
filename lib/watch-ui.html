@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>WATCH</title>
+<style>
+  :root { --bg:#0f1418; --card:#18212a; --line:#2a3642; --fg:#e6edf3; --dim:#8b98a5; --ok:#3fb68b;
+          --warn:#e3b341; --bad:#f85149; --info:#58a6ff; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:var(--bg);
+         color:var(--fg); }
+  header { position:sticky; top:0; z-index:2; display:flex; gap:12px; align-items:center; padding:12px 20px;
+           background:#0b1014ee; border-bottom:1px solid var(--line); }
+  header h1 { font-size:17px; margin:0; letter-spacing:.06em; }
+  header .meta { color:var(--dim); font-size:13px; }
+  header .sp { flex:1; }
+  button { font:inherit; color:var(--fg); background:#223040; border:1px solid var(--line); border-radius:8px;
+           padding:5px 11px; cursor:pointer; }
+  button:hover:not(:disabled) { border-color:var(--info); }
+  button:disabled { opacity:.38; cursor:default; }
+  main { max-width:1080px; margin:0 auto; padding:18px 20px 80px; }
+  h2 { font-size:13px; text-transform:uppercase; letter-spacing:.1em; color:var(--dim); margin:26px 0 10px; }
+  .counts { display:flex; gap:10px; flex-wrap:wrap; }
+  .count { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:10px 16px; min-width:120px; }
+  .count b { display:block; font-size:24px; }
+  .count span { color:var(--dim); font-size:12px; text-transform:uppercase; letter-spacing:.08em; }
+  table { width:100%; border-collapse:collapse; background:var(--card); border:1px solid var(--line); border-radius:12px; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); font-size:14px; vertical-align:top; }
+  th { color:var(--dim); font-weight:600; font-size:12px; text-transform:uppercase; letter-spacing:.06em; }
+  tr:last-child td { border-bottom:0; }
+  .ok { color:var(--ok); } .bad { color:var(--bad); } .warn { color:var(--warn); } .dim { color:var(--dim); }
+  .acts { display:flex; gap:6px; flex-wrap:wrap; }
+  .ev { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:10px 14px; margin:0 0 8px;
+        animation: fadein .35s ease-out both; }
+  @keyframes fadein { from { opacity:0; transform:translateY(-6px); } to { opacity:1; transform:none; } }
+  .ev .top { display:flex; gap:10px; flex-wrap:wrap; align-items:baseline; font-size:13px; color:var(--dim); }
+  .ev .ref { color:var(--fg); font-weight:700; }
+  .kind { font-size:11px; padding:1px 8px; border-radius:99px; border:1px solid var(--line); }
+  .k-ask { color:var(--warn); border-color:var(--warn); }
+  .k-task-candidate { color:var(--info); border-color:var(--info); }
+  .k-fyi { color:var(--dim); }
+  .quote { white-space:pre-wrap; margin-top:4px; }
+  .msg { min-height:1.3em; font-size:13px; }
+  a { color:var(--info); }
+</style>
+</head>
+<body>
+<header>
+  <h1>WATCH</h1>
+  <span class="meta" id="at"></span>
+  <span class="meta" id="quiet"></span>
+  <span class="sp"></span>
+  <span class="msg" id="msg"></span>
+  <button id="release" disabled>Release held asks</button>
+</header>
+<main>
+  <h2>Routed</h2>
+  <div class="counts" id="counts"></div>
+  <h2>Sources</h2>
+  <table>
+    <thead><tr><th>Source</th><th>Kind</th><th>Last ok</th><th>Next poll</th><th>Rate left</th><th>Status</th><th></th></tr></thead>
+    <tbody id="sources"></tbody>
+  </table>
+  <h2>Dropped by rule</h2>
+  <div id="dropped" class="dim"></div>
+  <h2>Recent events</h2>
+  <div id="recent"></div>
+</main>
+<script>
+"use strict";
+// Every string from the snapshot comes from outside feeds: it reaches the DOM through textContent only.
+const TOKEN = new URLSearchParams(location.search).get("t") || "";
+const $ = (id) => document.getElementById(id);
+
+function el(tag, attrs, ...kids) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "class") n.className = v;
+    else if (k === "text") n.textContent = v;
+    else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
+    else if (v !== null && v !== undefined && v !== false) n.setAttribute(k, v === true ? "" : v);
+  }
+  for (const k of kids) if (k) n.appendChild(typeof k === "string" ? document.createTextNode(k) : k);
+  return n;
+}
+function clear(n) { while (n.firstChild) n.removeChild(n.firstChild); }
+function safeUrl(u) {
+  try { const p = new URL(String(u)); return (p.protocol === "https:" || p.protocol === "http:") ? p.href : null; }
+  catch (e) { return null; }
+}
+function ago(iso) {
+  if (!iso) return "never";
+  const t = Date.parse(iso); if (isNaN(t)) return String(iso);
+  const s = Math.round((Date.now() - t) / 1000), a = Math.abs(s);
+  const txt = a < 90 ? a + "s" : a < 5400 ? Math.round(a / 60) + "m" : a < 129600 ? Math.round(a / 3600) + "h" : Math.round(a / 86400) + "d";
+  return s >= 0 ? txt + " ago" : "in " + txt;
+}
+
+async function api(path, body) {
+  const r = await fetch(path + (body ? "" : "?t=" + encodeURIComponent(TOKEN)), {
+    method: body ? "POST" : "GET", headers: { "X-Fleet-Token": TOKEN, "Content-Type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || ("http " + r.status));
+  return j;
+}
+
+function say(text, cls) { const m = $("msg"); m.className = "msg " + (cls || ""); m.textContent = text; }
+
+async function act(path, body, label) {
+  say(label + "...", "dim");
+  try {
+    const r = await api(path, body);
+    const res = Array.isArray(r.result) ? (r.result.length ? r.result.join(" ") : "nothing held") : r.result;
+    say(label + ": done" + (res ? " (" + String(res) + ")" : ""), "ok");
+  } catch (e) { say(label + ": " + e.message, "bad"); }
+  load();
+}
+
+function sourceRow(s) {
+  const status = s.stateRefused ? el("span", { class: "bad", text: "state refused: " + s.stateRefused })
+    : s.paused ? el("span", { class: "warn", text: "paused" })
+    : s.failStreak ? el("span", { class: "bad", text: "failing x" + s.failStreak + (s.lastError ? ": " + s.lastError : "") })
+    : el("span", { class: "ok", text: "ok" });
+  const acts = el("div", { class: "acts" },
+    el("button", { text: "Poll now", title: "pane key p", onclick: () => act("/api/poll", { source: s.name }, "poll " + s.name) }),
+    s.paused
+      ? el("button", { text: "Resume", title: "pane key r", onclick: () => act("/api/resume", { source: s.name }, "resume " + s.name) })
+      : el("button", { text: "Pause", title: "pane key z", onclick: () => act("/api/pause", { source: s.name }, "pause " + s.name) }));
+  return el("tr", { "data-source": s.name },
+    el("td", {}, el("b", { text: s.name })), el("td", { text: s.kind || "" }),
+    el("td", { text: ago(s.lastOk) }), el("td", { text: s.nextPollAt ? ago(s.nextPollAt) : "" }),
+    el("td", { text: s.rateRemaining === null || s.rateRemaining === undefined ? "" : String(s.rateRemaining) }),
+    el("td", {}, status), el("td", {}, acts));
+}
+
+function eventCard(e) {
+  const url = safeUrl(e.url);
+  return el("div", { class: "ev" },
+    el("div", { class: "top" },
+      el("span", { class: "kind k-" + e.kind, text: e.kind }),
+      el("span", { class: "ref", text: e.ref }),
+      el("span", { text: e.source + " / " + e.type }),
+      e.actor ? el("span", { text: "by " + e.actor }) : null,
+      e.count > 1 ? el("span", { text: "x" + e.count }) : null,
+      el("span", { text: ago(e.at) }),
+      url ? el("a", { href: url, target: "_blank", rel: "noopener noreferrer", text: "open" }) : null),
+    e.title ? el("div", { text: e.title }) : null,
+    e.quote ? el("div", { class: "quote dim", text: e.quote }) : null);
+}
+
+function render(s) {
+  $("at").textContent = "as of " + (s.at || "");
+  $("quiet").textContent = s.quiet ? "quiet hours: " + s.held + " held" : (s.held ? s.held + " held" : "");
+  $("release").disabled = !s.held;
+  const c = $("counts"); clear(c);
+  for (const k of ["ask", "task-candidate", "fyi", "learn-item"])
+    c.appendChild(el("div", { class: "count" }, el("b", { text: String(s.counts[k] || 0) }), el("span", { text: k })));
+  const t = $("sources"); clear(t);
+  if (!s.sources.length) t.appendChild(el("tr", {}, el("td", { colspan: "7", class: "dim", text: "No sources configured." })));
+  for (const src of s.sources) t.appendChild(sourceRow(src));
+  const d = $("dropped"); clear(d);
+  const rules = Object.entries(s.counts.dropped || {});
+  d.textContent = rules.length ? rules.map(([r, n]) => r + ": " + n).join("   ") : "none";
+  const r = $("recent"); clear(r);
+  if (!s.recent.length) r.appendChild(el("div", { class: "dim", text: "No events yet." }));
+  for (const e of s.recent.slice().reverse()) r.appendChild(eventCard(e));
+}
+
+async function load() {
+  try { render(await api("/api/state")); }
+  catch (e) { say("state: " + e.message, "bad"); }
+}
+$("release").addEventListener("click", () => act("/api/release", {}, "release held asks"));
+load();
+setInterval(load, 5000);
+</script>
+</body>
+</html>

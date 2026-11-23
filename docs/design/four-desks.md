@@ -265,11 +265,12 @@ Tag legend as in README: **DOC** = vendor docs seen in the prior-art scan; **UNV
 
 | Source | Poll query | Cursor | Change types | Tag |
 |---|---|---|---|---|
-| Jira (Cloud/DC) | JQL `updated >= "<cursor>" ORDER BY updated ASC` on the search endpoint, then changelog per issue | last `updated` seen + ids at that instant | created, transition, assignee, comment, mention | UNVERIFIED |
-| Azure DevOps Boards | WIQL `[System.ChangedDate] >= '<explicit ISO date>'`, then a batch get of the returned ids (WIQL returns ids only) | last ChangedDate | same as Jira | DOC (WIQL returns ids only; expand macros like `@today` for REST) |
-| Azure DevOps Repos / Bitbucket / GitLab / Gitea | pull-request list filtered by updated time, per watched repo | last updated | PR opened, review requested, merged, pushed to a watched branch | UNVERIFIED |
-| GitHub | `/repos/{o}/{r}/events` and `/notifications` with `If-None-Match` | ETag + last event id | push, PR, review, release, issue | DOC (ETag 304s do not cost rate limit; obey `X-Poll-Interval`) |
-| Confluence | CQL `lastmodified >= "<cursor>"` in watched spaces | last modified | page created, edited, commented | UNVERIFIED (the scan found no doc page) |
+| Jira (Cloud/DC) | JQL `<query> AND updated >= "-<N>m" ORDER BY updated ASC` (N = minutes since the cursor + 15; a relative date has no time zone) on Cloud v3 `/search/jql` (nextPageToken) or DC v2 `/search` (startAt), then changelog per issue | last `updated` seen + ids at that instant | created, transition, assignee, comment; a mention is the tag `mention` on `issue.comment` | DOC (endpoints and changelog; webhook `X-Hub-Signature` HMAC-SHA256). eid at second precision |
+| Azure DevOps Boards | WIQL `[System.ChangedDate] >= '<explicit ISO date>'`, then a batch get of the returned ids (WIQL returns ids only) | last ChangedDate + ids at that instant (the query is >=) | same as Jira | DOC (WIQL returns ids only; expand macros like `@today` for REST; `timePrecision=true` on the WIQL call, else the time of day is dropped) |
+| Azure DevOps Repos / GitLab / Gitea | pull-request list filtered by updated time, per watched repo | last updated | PR opened, review requested, merged, pushed to a watched branch | UNVERIFIED |
+| Bitbucket Cloud | `GET /2.0/repositories/{ws}/{repo}/pullrequests` with `state` repeated (default is OPEN only), `q=updated_on >= <since>` (second precision), `sort=updated_on`, `next` links; reviewers from the by-id URL; activity log for comments, approvals and change requests; `refs/branches/{name}` for watched branches | last `updated_on` + ids at that instant, per repo | PR opened, review requested, approved, changes requested, commented, merged, declined, pushed to a watched branch | DOC. No remaining-count rate header (only `X-RateLimit-NearLimit`), so `rateRemaining` is null. Webhook `pullrequest:updated` makes no event (the payload cannot tell a push from an edit), so pushes and edits arrive at poll latency. Data Center / Server not built |
+| GitHub | `/repos/{o}/{r}/events` and `/notifications` with `If-None-Match` | ETag + last event id | push, PR, review, release, issue | DOC + LIVE (2026-11-23): `X-Poll-Interval` is 60 s for `/events`; ETag 304s are free only when authenticated (an unauthenticated 304 still spends one of 60 req/h); `/notifications` needs a token (401 without). Events-API ids are not monotonic (push and issue events use different counters in one page), so the cursor is a set of recent ids. |
+| Confluence | CQL `type in (page, blogpost, comment) AND space in (...) AND lastmodified >= "yyyy/MM/dd HH:mm" ORDER BY lastmodified ASC` on `GET {base}/rest/api/content/search` (cursor pagination via `_links.next`) | last `version.when` seen + `id:version` at that instant | page.created, page.edited, page.commented | DOC (endpoint, params, schemas: Atlassian `swagger.v3.json`; `lastmodified` operators and date formats: cql-fields page). UNVERIFIED: `ORDER BY lastmodified`, `_links.webui`, DC pagination |
 | call | today's `fleet listen` sources | file offset | utterance | PROVEN (shipped) |
 | command | any program printing Event-shaped JSON lines | the program's own | anything | n/a |
 
@@ -285,7 +286,7 @@ Azure DevOps and Bitbucket entries below show the generic shape the later adapte
 ```jsonc
 {
   "me": {"names": ["Human_Example"], "ids": {"acme-tracker": "acct-123", "github": "human-example"}},
-  "defaults": {"pollSec": 900, "maxEventsPerPoll": 200, "quoteChars": 600, "batchSec": 30},
+  "defaults": {"pollSec": 900, "maxEventsPerPoll": 200, "quoteChars": 600, "batchSec": 30, "ratePerMin": 30},
   "sources": [
     {"name": "acme-tracker", "kind": "jira", "base": "https://acme.example",
      "auth": {"type": "basic", "user": "env:ACME_TRACKER_USER", "token": "keychain:acme-tracker-token"},
@@ -339,7 +340,8 @@ Azure DevOps and Bitbucket entries below show the generic shape the later adapte
 
 - **Dedupe:** `watch/seen.db` (stdlib `sqlite3`) holds `eid` for 30 days; a second key `(kind, ref, type)` within
   `batchSec` collapses bursts (ten field edits in one save become one event with `count: 10`).
-- **Rate limits:** per source token bucket (default 30 req/min), honor `Retry-After`, `X-RateLimit-Remaining`,
+- **Rate limits:** per source token bucket (default 30 req/min, `ratePerMin`); a request that would wait more than 5 s
+  defers the poll instead of calling out (no request, cursor and failStreak unchanged); honor `Retry-After`, `X-RateLimit-Remaining`,
   `X-Poll-Interval`; exponential backoff with jitter on 429/5xx, capped at 30 min; ETag/`If-Modified-Since` where the
   API supports it. A source failing 3 times in a row shows once in the status bar and once to DECIDE as an fyi, then stays
   quiet until it recovers (same rule as `roles/listener.md:13`).
@@ -431,8 +433,11 @@ The grader contract matches today's classifier contract (`lib/fleet_listen.py:33
 stdin (`card`, `answer`, `quote`, `maxTokens`), lines on stdout, bounded by `timeoutSec`; a model behind it needs its
 own token cap and deadline. Without a grader, explain back falls back to self-grading with the source shown.
 
-**Scheduling (phase 5).** FSRS-style memory model (stability, difficulty, due date) implemented in stdlib Python in
-`lib/fleet_learn.py`, not the `fsrs` package (stdlib-only rule, INTERFACES.md:4). Desired retention default 0.9.
+**Scheduling (phase 5).** FSRS memory model (stability, difficulty, due date), reimplemented in stdlib Python in
+`lib/fleet_fsrs.py` from py-fsrs (MIT, attribution in the file), not the `fsrs` package (stdlib-only rule,
+INTERFACES.md:4). FSRS replaces the fixed intervals: it is the default scheduler, and `$FLEET_STATE/learn/learn.json`
+`"scheduler": "fixed"` opts back into the phase 3 intervals. Desired retention default 0.9, set by `learn.json`
+`{"fsrs": {"desiredRetention": 0.9}}`. No fuzz, so a replay is deterministic.
 
 ### 4.4 What counts as proof of learning
 
@@ -492,8 +497,8 @@ tmux session "fleet"
 
 `fleet desks up` creates the two windows in that order (idempotent: a live desk is left alone, and a rerun on a live
 fleet changes nothing), and `fleet layout` shows them. There is no separate WATCH or LEARN window and no alias for the
-old window name `desks` (Q110 c). Later phases add their panes inside deskB rather than new windows: the `fleet watch`
-feed and call listener (`fleet watch --call`) beside WATCH, the `fleet learn quiz` TUI beside LEARN.
+old window name `desks` (Q110 c). Later phases add their panes inside deskB rather than new windows: the `fleet watch status`
+pane under WATCH (opened by `fleet desks up` when it launches WATCH), the call listener (`fleet watch --call`) beside WATCH, the `fleet learn quiz` TUI beside LEARN.
 
 ### 5.2 Roles
 
@@ -579,9 +584,13 @@ New state (all under `$FLEET_STATE`, nothing in the repo):
 ```
 watch.json               config (3.3); credential references only
 watch/events.jsonl       normalized events, append-only (secret-scrubbed, quote-capped)
-watch/seen.db            dedupe keys (sqlite3, 30 days)
-watch/cursors.json       per-source cursor, ETag, backoff state
-watch/health.json        per-source last ok, last error, rate headroom
+watch/seen.db            dedupe keys (sqlite3, 30 days); sha256 of each eid, so no event text lands in the db
+watch/cursors.json       per-source cursor, Source.state (ETag, item memory), nextPollAt, failStreak, paused, bucket {tokens, at}
+watch/health.json        per-source last ok, last error, rate headroom, rate {calls, waitedSec, perMin}
+watch/stats.json         cumulative counts per kind and dropped per rule (`fleet watch stats`)
+watch/held.jsonl         asks held during quiet hours, each opened as its own decision after
+watch/watch.log          one line per run and per failure: names and counts, never event text
+watch/webhook/<route>.jsonl  webhook spool per route (optional receiver, 0600), drained by that route's poll
 learn/...                (4.5)
 ```
 

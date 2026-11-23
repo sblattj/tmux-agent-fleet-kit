@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>LEARN</title>
+<style>
+  :root { --bg:#0f1418; --card:#18212a; --line:#2a3642; --fg:#e6edf3; --dim:#8b98a5; --ok:#3fb68b;
+          --warn:#e3b341; --bad:#f85149; --info:#58a6ff; --fleet:#58a6ff; --outside:#d2a8ff; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:var(--bg);
+         color:var(--fg); }
+  header { position:sticky; top:0; z-index:2; display:flex; gap:12px; align-items:center; padding:12px 20px;
+           background:#0b1014ee; border-bottom:1px solid var(--line); }
+  header h1 { font-size:17px; margin:0; letter-spacing:.06em; }
+  header .meta { color:var(--dim); font-size:13px; }
+  header .sp { flex:1; }
+  button { font:inherit; color:var(--fg); background:#223040; border:1px solid var(--line); border-radius:8px;
+           padding:7px 12px; cursor:pointer; }
+  button:hover:not(:disabled) { border-color:var(--info); }
+  button:disabled { opacity:.38; cursor:default; }
+  main { max-width:980px; margin:0 auto; padding:18px 20px 80px; }
+  h2 { font-size:13px; text-transform:uppercase; letter-spacing:.1em; color:var(--dim); margin:26px 0 10px; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px 16px; margin:0 0 12px; }
+  .origin { font-size:11px; padding:1px 8px; border-radius:99px; border:1px solid; white-space:nowrap; }
+  .o-fleet { color:var(--fleet); } .o-outside { color:var(--outside); }
+  .big { font-size:28px; font-weight:700; }
+  .dim { color:var(--dim); font-size:13px; }
+  .bar { height:6px; background:#0b1014; border-radius:99px; overflow:hidden; margin:8px 0 4px; }
+  .bar i { display:block; height:100%; background:var(--ok); }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  td, th { text-align:left; padding:8px 6px; border-bottom:1px solid var(--line); vertical-align:middle; }
+  th { color:var(--dim); font-weight:500; font-size:12px; }
+  svg.spark { display:block; }
+  .top { display:flex; gap:10px; align-items:baseline; flex-wrap:wrap; color:var(--dim); font-size:13px; }
+  .top .id { color:var(--fg); font-weight:700; font-size:14px; }
+  .q { margin:6px 0 10px; font-size:16px; white-space:pre-wrap; }
+  .opt { display:flex; width:100%; text-align:left; gap:10px; margin:6px 0; padding:9px 12px; }
+  .opt .l { font-weight:700; min-width:1.2em; }
+  .row { display:flex; gap:8px; margin-top:10px; flex-wrap:wrap; }
+  .row input { flex:1; min-width:240px; font:inherit; color:var(--fg); background:#0f1418; border:1px solid var(--line);
+               border-radius:8px; padding:8px 10px; }
+  .quote { font-style:italic; white-space:pre-wrap; border-left:3px solid var(--line); padding-left:10px; margin:8px 0; }
+  .pass { color:var(--ok); font-weight:700; } .fail { color:var(--bad); font-weight:700; }
+  .empty { color:var(--dim); padding:14px 0; }
+  .err { color:var(--bad); }
+  @media (max-width:700px) { .grid { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>LEARN</h1>
+  <span class="meta" id="meta">loading</span>
+  <span class="sp"></span>
+  <button id="reload">Reload</button>
+</header>
+<main>
+  <div class="grid" id="origins"></div>
+
+  <h2>Quiz</h2>
+  <div id="quiz"></div>
+
+  <h2>Score history per topic</h2>
+  <div class="card"><table id="topics"></table></div>
+
+  <h2>Heard only (not taught as decided)</h2>
+  <div id="heard"></div>
+
+  <h2>Recent reviews</h2>
+  <div class="card"><table id="recent"></table></div>
+</main>
+<script>
+"use strict";
+const TOKEN = new URLSearchParams(location.search).get("t") || "";
+let STATE = null, current = null, shownAt = 0;
+
+function el(tag, attrs, ...kids) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "class") n.className = v;
+    else if (k === "text") n.textContent = v;
+    else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
+    else if (v !== null && v !== undefined && v !== false) n.setAttribute(k, v === true ? "" : v);
+  }
+  for (const k of kids) if (k) n.appendChild(typeof k === "string" ? document.createTextNode(k) : k);
+  return n;
+}
+function clear(n) { n.innerHTML = ""; }
+function originTag(o) { return el("span", { class: "origin o-" + (o === "outside" ? "outside" : "fleet"), text: o }); }
+const ORIGIN_TEXT = { fleet: "we decided or shipped it", outside: "someone else changed it" };
+
+async function api(path, body) {
+  const r = await fetch(path + (body ? "" : "?t=" + encodeURIComponent(TOKEN)), {
+    method: body ? "POST" : "GET", headers: { "X-Fleet-Token": TOKEN, "Content-Type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || ("http " + r.status));
+  return j;
+}
+
+function spark(points) {
+  const W = 180, H = 34, n = points.length;
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("class", "spark"); svg.setAttribute("width", W); svg.setAttribute("height", H);
+  svg.setAttribute("viewBox", "0 0 " + W + " " + H);
+  const xy = points.map((p, i) => [n === 1 ? W / 2 : 4 + i * (W - 8) / (n - 1), H - 4 - (p.score / 100) * (H - 8)]);
+  if (n > 1) {
+    const pl = document.createElementNS(ns, "polyline");
+    pl.setAttribute("points", xy.map(a => a.join(",")).join(" "));
+    pl.setAttribute("fill", "none"); pl.setAttribute("stroke", "#3fb68b"); pl.setAttribute("stroke-width", "2");
+    svg.appendChild(pl);
+  }
+  xy.forEach(([x, y], i) => {
+    const c = document.createElementNS(ns, "circle");
+    c.setAttribute("cx", x); c.setAttribute("cy", y); c.setAttribute("r", 2.5); c.setAttribute("fill", "#e6edf3");
+    const t = document.createElementNS(ns, "title");
+    t.textContent = points[i].day + ": " + points[i].passes + " of " + points[i].reviews + " passed";
+    c.appendChild(t); svg.appendChild(c);
+  });
+  return svg;
+}
+
+function renderOrigins(s) {
+  const box = document.getElementById("origins"); clear(box);
+  for (const o of ["fleet", "outside"]) {
+    const b = s.byOrigin[o] || { items: 0, learned: 0, due: 0, heard: 0, confirmed: 0 };
+    const pct = b.items ? Math.round(100 * b.learned / b.items) : 0;
+    box.appendChild(el("div", { class: "card" },
+      el("div", { class: "top" }, originTag(o), el("span", { text: ORIGIN_TEXT[o] })),
+      el("div", { class: "big", text: b.learned + " of " + b.items + " learned" }),
+      el("div", { class: "bar" }, el("i", { style: "width:" + pct + "%" })),
+      el("div", { class: "dim", text: b.due + " due, " + b.confirmed + " confirmed, " + b.heard + " heard only" })));
+  }
+}
+
+function renderTopics(st) {
+  const t = document.getElementById("topics"); clear(t);
+  t.appendChild(el("tr", {}, el("th", { text: "topic" }), el("th", { text: "origin" }),
+    el("th", { text: "learned" }), el("th", { text: "daily quiz score" }), el("th", { text: "last" })));
+  const hist = {};
+  for (const h of st.history) hist[h.origin + "\u0000" + h.topic] = h.points;
+  if (!st.snapshot.topics.length) {
+    t.appendChild(el("tr", {}, el("td", { colspan: 5, class: "empty", text: "No ledger rows yet." })));
+  }
+  for (const tp of st.snapshot.topics) {
+    const pts = hist[tp.origin + "\u0000" + tp.topic] || [];
+    const last = pts[pts.length - 1];
+    t.appendChild(el("tr", { "data-topic": tp.topic },
+      el("td", { text: tp.topic || "(none)" }), el("td", {}, originTag(tp.origin)),
+      el("td", { text: tp.learned + " of " + tp.items + " (" + tp.pct + "%)" }),
+      el("td", {}, pts.length ? spark(pts) : el("span", { class: "dim", text: "no reviews yet" })),
+      el("td", { class: "dim", text: last ? last.day + ": " + last.score + "%" : "" })));
+  }
+}
+
+function renderHeard(s) {
+  const box = document.getElementById("heard"); clear(box);
+  if (!s.heard.length) { box.appendChild(el("div", { class: "empty", text: "None." })); return; }
+  for (const h of s.heard) {
+    const src = h.source || {};
+    box.appendChild(el("div", { class: "card" },
+      el("div", { class: "top" }, el("span", { class: "id", text: h.lid }),
+        el("span", { text: (src.type || "") + " " + (src.ref || "") })),
+      el("div", { class: "quote", text: h.quote })));
+  }
+}
+
+function renderRecent(s) {
+  const t = document.getElementById("recent"); clear(t);
+  t.appendChild(el("tr", {}, el("th", { text: "at" }), el("th", { text: "card" }), el("th", { text: "format" }),
+    el("th", { text: "origin" }), el("th", { text: "grade" })));
+  const rows = s.recent.slice().reverse();
+  if (!rows.length) t.appendChild(el("tr", {}, el("td", { colspan: 5, class: "empty", text: "No reviews yet." })));
+  for (const r of rows) {
+    t.appendChild(el("tr", {}, el("td", { class: "dim", text: r.at }), el("td", { text: r.cid + " " + r.lid }),
+      el("td", { text: r.format }), el("td", {}, r.origin ? originTag(r.origin) : null),
+      el("td", { class: r.grade === "pass" ? "pass" : "fail", text: r.grade })));
+  }
+}
+
+function renderQuiz() {
+  const box = document.getElementById("quiz"); clear(box);
+  const q = STATE.quiz;
+  if (!q.length) { box.appendChild(el("div", { class: "empty", text: "Nothing due." })); current = null; return; }
+  if (!current || !q.find(c => c.cid === current.cid)) { current = q[0]; shownAt = Date.now(); }
+  const c = current;
+  const card = el("div", { class: "card", id: "card-" + c.cid },
+    el("div", { class: "top" }, el("span", { class: "id", text: c.cid }), el("span", { text: c.lid }),
+      el("span", { text: c.format }), originTag(c.origin),
+      el("span", { text: q.length + " due" })),
+    el("div", { class: "q", text: c.prompt }));
+  const out = el("div", { class: "status" });
+  const done = (res) => {
+    clear(out);
+    out.appendChild(el("div", { class: res.review.grade === "pass" ? "pass" : "fail",
+      text: res.review.grade === "pass" ? "PASS" : "FAIL" }));
+    out.appendChild(el("div", { class: "quote", text: "source: " + res.answer }));
+    out.appendChild(el("div", { class: "row" }, el("button", { text: "Next", onclick: () => { current = null; load(); } })));
+  };
+  const fail = (e) => { out.appendChild(el("div", { class: "err", text: e.message })); };
+  const send = (body, btns) => {
+    btns.forEach(b => b.disabled = true);
+    api("/api/review", Object.assign({ cid: c.cid, latencyMs: Date.now() - shownAt }, body))
+      .then(done).catch(e => { btns.forEach(b => b.disabled = false); fail(e); });
+  };
+  if (c.format === "choice") {
+    const btns = (c.options || []).map((o, i) => el("button", { class: "opt" },
+      el("span", { class: "l", text: "abcd"[i] }), el("span", { text: o })));
+    btns.forEach((b, i) => b.addEventListener("click", () => send({ answer: "abcd"[i] }, btns)));
+    btns.forEach(b => card.appendChild(b));
+  } else if (c.format === "recall") {
+    const inp = el("input", { placeholder: "answer from memory, then reveal" });
+    const rev = el("button", { text: "Reveal" });
+    card.appendChild(el("div", { class: "row" }, inp, rev));
+    rev.addEventListener("click", () => {
+      rev.disabled = true; inp.disabled = true;
+      api("/api/reveal", { cid: c.cid }).then(r => {
+        card.appendChild(el("div", { class: "quote", text: "source quote: " + r.answer }));
+        const rates = ["again", "hard", "good", "easy"].map(k => el("button", { text: k }));
+        rates.forEach(b => b.addEventListener("click", () => send({ answer: inp.value, rating: b.textContent }, rates)));
+        card.appendChild(el("div", { class: "row" }, ...rates));
+      }).catch(e => { rev.disabled = false; inp.disabled = false; fail(e); });
+    });
+  } else {
+    const inp = el("input", { placeholder: "paste the line from the source" });
+    const go = el("button", { text: "Check" });
+    go.addEventListener("click", () => send({ answer: inp.value }, [go]));
+    card.appendChild(el("div", { class: "row" }, inp, go));
+  }
+  card.appendChild(out);
+  box.appendChild(card);
+}
+
+async function load() {
+  try {
+    STATE = await api("/api/state");
+    document.getElementById("meta").textContent = "as of " + STATE.snapshot.at;
+    renderOrigins(STATE.snapshot); renderTopics(STATE); renderHeard(STATE.snapshot); renderRecent(STATE.snapshot);
+    renderQuiz();
+  } catch (e) {
+    document.getElementById("meta").textContent = "error: " + e.message;
+  }
+}
+document.getElementById("reload").addEventListener("click", () => load());
+load();
+</script>
+</body>
+</html>
