@@ -146,6 +146,34 @@ for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do [ -s "$FLEET_STA
 t "codex stub argv has --dangerously-bypass-approvals-and-sandbox" grep -qx -e '--dangerously-bypass-approvals-and-sandbox' "$FLEET_STATE/stub-codex.argv"
 t "split onto a missing lane is refused" bash -c '! "$1" launch --no-proof --split-right-of NOPE X prompt hi 2>/dev/null' _ "$FLEET"
 
+# ---- (4b) split above / below (issue #6): pane geometry against A's pane
+geom() { tm display-message -p -t "$(jq -r ".$1.pane" "$FLEET_STATE/roster.json")" '#{pane_top} #{pane_left} #{pane_height}'; }
+a_before=$(geom A)
+t "launch L --split above --of A exits 0" "$FLEET" launch --no-proof --split above --of A --size 30 --dir "$T" L prompt "$T/prompt.txt"
+read -r lt ll lh <<EOF2
+$(geom L)
+EOF2
+read -r at al ah <<EOF2
+$(geom A)
+EOF2
+t "L sits above A (L top < A top)" test "$lt" -lt "$at"
+t "L shares A's left edge" test "$ll" = "$al"
+t "L's pane is inside A's window" bash -c 'tmux -L "$1" list-panes -t "$2:A" -F "#{pane_id}" | grep -qx "$(jq -r .L.pane "$3")"' _ "$FLEET_TMUX_SOCKET" "$FLEET_TMUX_SESSION" "$FLEET_STATE/roster.json"
+t "--size 30 makes L shorter than A" test "$lh" -lt "$ah"
+t "launch U --split below --of A exits 0" "$FLEET" launch --no-proof --split below --of A --dir "$T" U prompt "$T/prompt.txt"
+read -r ut ul uh <<EOF2
+$(geom U)
+EOF2
+read -r at al ah <<EOF2
+$(geom A)
+EOF2
+t "U sits below A (U top > A top)" test "$ut" -gt "$at"
+t "a bad --split direction is refused" bash -c '! "$1" launch --no-proof --split sideways --of A X prompt hi 2>/dev/null' _ "$FLEET"
+t "--split without --of is refused" bash -c '! "$1" launch --no-proof --split above X prompt hi 2>/dev/null' _ "$FLEET"
+t "--size outside 1-99 is refused" bash -c '! "$1" launch --no-proof --split above --of A --size 120 X prompt hi 2>/dev/null' _ "$FLEET"
+t "dry run prints split-window -v -b" bash -c '"$1" launch --dry-run --split above --of A Y prompt hi | grep -q "split-window -d -v -b"' _ "$FLEET"
+t "fleet stop L leaves A alive" bash -c '"$1" stop L >/dev/null 2>&1; "$1" ls | grep -q "^A .*alive"' _ "$FLEET"
+
 # opencode window
 rm -f "$FLEET_STATE/stub-opencode.argv"
 t "launch C (opencode) exits 0" "$FLEET" launch --no-proof --cli opencode --dir "$T" C prompt "$T/prompt.txt"

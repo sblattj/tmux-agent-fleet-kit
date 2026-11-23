@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `fleet launch --split right|left|above|below --of NAME [--size PCT]`: open a lane as a pane on any side of another lane's pane (for example a call-following pane above ROUTE). `--split-right-of NAME` stays as an alias for `--split right --of NAME`. Closes #6.
+
 ## v0.2.0 (2026-11-22)
 
 Phases 2 to 7 of the four desks (`docs/design/four-desks.md`).

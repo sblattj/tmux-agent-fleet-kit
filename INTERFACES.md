@@ -42,7 +42,7 @@ Writers update roster.json atomically (write temp file in the same dir, then `mv
 ## bin/fleet
 
 ```
-fleet launch [--cli claude|codex|opencode|kiro|agy] [--role R] [--model M] [--dir D] [--split-right-of NAME] [--dry-run] [--no-proof]
+fleet launch [--cli claude|codex|opencode|kiro|agy] [--role R] [--model M] [--dir D] [--split right|left|above|below --of NAME [--size PCT] | --split-right-of NAME] [--dry-run] [--no-proof]
              <name> goal <condition.txt> | prompt <text|file> | desk [text|file] | resume <session-id>
 fleet ls                      roster + liveness (pane alive?) + mesh=yes|no, one line per lane
 fleet attach                  tmux attach -t $FLEET_TMUX_SESSION
@@ -53,8 +53,10 @@ fleet stop <name>             kill that pane (asks nothing; used by tests and re
 - goal mode condition lint (same as today's launcher): starts with `/goal `, <= 4000 chars, names a `*.json` goal file,
   contains `file wins`, contains `stop after`. desk mode refuses text starting with `/goal`.
 - desk mode default text: `You are <name>, the standing decisions desk for $FLEET_HUMAN. Load the running-the-decisions-desk skill and run it. Never set a /goal.`
-- Opening: `tmux new-window -d -P -F '#{pane_id}' -t <session>: -n <name> -c <dir> <script>`; with `--split-right-of X`:
-  `tmux split-window -d -h -P -F '#{pane_id}' -t <pane of X from roster> -c <dir> <script>`. Create the session
+- Opening: `tmux new-window -d -P -F '#{pane_id}' -t <session>: -n <name> -c <dir> <script>`; with `--split DIR --of X`:
+  `tmux split-window -d <flags> -P -F '#{pane_id}' -t <pane of X from roster> -c <dir> <script>`, flags `-h` (right),
+  `-h -b` (left), `-v` (below), `-v -b` (above), plus `-l PCT%` for `--size PCT`. `--split-right-of X` is
+  `--split right --of X`. Create the session
   with `tmux new-session -d -s <session>` if `has-session` fails. Nothing else: no terminal-emulator calls.
 - The window script (bash) unsets CLAUDE_CODE_CHILD_SESSION CLAUDECODE CLAUDE_CODE_SESSION_ID CLAUDE_CODE_AGENT
   CLAUDE_CODE_MESSAGING_SOCKET CLAUDE_CODE_MESSAGING_TOKEN CLAUDE_JOB_DIR CLAUDE_PID CLAUDE_CODE_ENTRYPOINT

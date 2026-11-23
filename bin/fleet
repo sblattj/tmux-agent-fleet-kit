@@ -25,7 +25,10 @@
 #   --cli claude|codex|opencode|kiro|agy  which CLI (default claude; agy = Antigravity CLI)
 #   --model M                     model (claude default: opus; others: the CLI default)
 #   --dir D                       working dir (default $FLEET_DIR, else $PWD)
-#   --split-right-of NAME         open as a pane right of NAME's pane instead of a new window
+#   --split right|left|above|below --of NAME
+#                                 open as a pane on that side of NAME's pane instead of a new window
+#   --split-right-of NAME         same as --split right --of NAME
+#   --size PCT                    with a split: the new pane's share of NAME's pane, 1-99 percent
 #   --role route|decide|watch|learn|worker|probe
 #                                 role context + deny list (default worker; desk mode defaults to decide)
 #                                 the old names orchestrator, desk and listener are refused in every mode (renamed route, decide, watch)
@@ -154,13 +157,16 @@ worker_block() { # mode condition-text keep-flag
 
 # ---------------------------------------------------------------- launch
 cmd_launch() {
-  local cli=claude model= dir= split= dry=0 noproof=0 role= keep=
+  local cli=claude model= dir= split= splitdir= size= dry=0 noproof=0 role= keep=
   while [ $# -gt 0 ]; do
     case $1 in
       --cli) [ $# -ge 2 ] || usage; cli=$2; shift 2 ;;
       --model) [ $# -ge 2 ] || usage; model=$2; shift 2 ;;
       --dir) [ $# -ge 2 ] || usage; dir=$2; shift 2 ;;
-      --split-right-of) [ $# -ge 2 ] || usage; split=$2; shift 2 ;;
+      --split-right-of) [ $# -ge 2 ] || usage; split=$2; splitdir=${splitdir:-right}; shift 2 ;;
+      --split) [ $# -ge 2 ] || usage; splitdir=$2; shift 2 ;;
+      --of) [ $# -ge 2 ] || usage; split=$2; shift 2 ;;
+      --size) [ $# -ge 2 ] || usage; size=$2; shift 2 ;;
       --role) [ $# -ge 2 ] || usage; role=$2; shift 2 ;;
       --keep-tools) [ $# -ge 2 ] || usage; keep=$2; shift 2 ;;
       --dry-run) dry=1; shift ;;
@@ -171,6 +177,21 @@ cmd_launch() {
     esac
   done
   [ $# -ge 2 ] || usage
+  local splitflags=
+  if [ -n "$splitdir" ] || [ -n "$split" ] || [ -n "$size" ]; then
+    [ -n "$split" ] || die "--split $splitdir needs --of NAME"
+    case ${splitdir:-right} in
+      right) splitflags="-h" ;;
+      left) splitflags="-h -b" ;;
+      below) splitflags="-v" ;;
+      above) splitflags="-v -b" ;;
+      *) die "--split must be right, left, above or below: $splitdir" ;;
+    esac
+    if [ -n "$size" ]; then
+      printf '%s' "$size" | grep -Eq '^[1-9][0-9]?$' || die "--size must be a percent 1-99: $size"
+      splitflags="$splitflags -l $size%"
+    fi
+  fi
   local name=$1 mode=$2 arg=${3:-}
   printf '%s' "$name" | grep -Eq '^[A-Za-z0-9._-]+$' || die "name must match [A-Za-z0-9._-]+: $name"
   case $cli in claude|codex|opencode|kiro|agy) ;; *) die "unknown --cli $cli (claude|codex|opencode|kiro|agy)" ;; esac
@@ -396,9 +417,9 @@ EOF
   if [ -n "$split" ]; then
     splitpane=$(roster_get "$split" pane)
     if [ "$dry" = 0 ]; then
-      pane_alive "$splitpane" || die "--split-right-of $split: no live pane for $split in the roster"
+      pane_alive "$splitpane" || die "--split ${splitdir:-right} --of $split: no live pane for $split in the roster"
     fi
-    tmcmd="$tmprefix split-window -d -h -P -F '#{pane_id}' -t ${splitpane:-<pane of $split>} -c $q_dir bash $q_sh"
+    tmcmd="$tmprefix split-window -d $splitflags -P -F '#{pane_id}' -t ${splitpane:-<pane of $split>} -c $q_dir bash $q_sh"
   else
     tmcmd="$tmprefix new-window -d -P -F '#{pane_id}' -t =$SESSION: -n $name -c $q_dir bash $q_sh"
   fi
@@ -425,7 +446,7 @@ EOF
   fi
   local pane
   if [ -n "$split" ]; then
-    pane=$(tm split-window -d -h -P -F '#{pane_id}' -t "$splitpane" -c "$dir" "bash $q_sh") || die "tmux split-window failed"
+    pane=$(tm split-window -d $splitflags -P -F '#{pane_id}' -t "$splitpane" -c "$dir" "bash $q_sh") || die "tmux split-window failed"
   else
     pane=$(tm new-window -d -P -F '#{pane_id}' -t "=$SESSION:" -n "$name" -c "$dir" "bash $q_sh") || die "tmux new-window failed"
   fi
