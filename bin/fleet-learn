@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# fleet-learn: the LEARN desk's ledger, cards, quiz and proof (lib/fleet_learn.py; `fleet-learn -h`).
+# bin/fleet dispatches `fleet learn ...` here. Writes only under $FLEET_STATE/learn/.
+set -eu
+SELF=$0
+while [ -L "$SELF" ]; do
+  _l=$(readlink "$SELF"); case $_l in /*) SELF=$_l ;; *) SELF=$(dirname "$SELF")/$_l ;; esac
+done
+ROOT=$(cd "$(dirname "$SELF")/.." && pwd -P)
+exec python3 "$ROOT/lib/fleet_learn.py" "$@"
