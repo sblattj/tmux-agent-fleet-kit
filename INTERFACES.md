@@ -677,3 +677,30 @@ engine's send refuses `ROUTE` and the `orch_name()` value. Every ask's `decision
 - HTTP: `POST /hook/<name>`. 202 `{accepted: n}`; 200 for a GitHub ping; 401 bad or missing signature; 404
   unknown route; 405 not POST; 411 no Content-Length; 413 over 1 MiB; 501 target kind has no mapping; 503
   secret did not resolve. Responses never carry the secret or a digest.
+
+## Side runs (lib/fleet_side.py; `fleet side ...`)
+
+A side run is a process a lane (the parent) starts outside the fleet's tmux panes: codex, agy, gemini, an `ach run`,
+any CLI. The kit tracks only its pid, log path and result path, so it stays host-agnostic.
+
+- Store: `$FLEET_STATE/sides.jsonl`, one JSON row per run, rewritten whole under an exclusive flock on the file
+  (the `fleet_probe._flock_rw` pattern). Never in `roster.json` (jq rewrites it with no lock).
+- Row: `{"id": "S<n>", "parent", "host", "model", "pid", "log", "result", "boundSec", "startedAt", "status",
+  "endedAt", "exit", "tokensIn", "tokensOut", "children", "notifiedAt", "source", "sessionId"}`. `id` is the highest `S<n>` + 1,
+  allocated under the lock. `log`/`result` are absolute (or null). Times are UTC `...Z`. `status`: `running | done |
+  failed | timeout | killed | orphan`. `children` starts at 0, `source` is `cli` for `fleet side start`.
+  `sessionId` is the host's session/thread id (a string) or null; #13 usage reads it to find codex rollouts.
+- `fleet side start --parent NAME --host H [--model M] --pid PID [--log P] [--result P] [--bound 30m] [--session-id ID]`:
+  prints the id.
+  `--parent` defaults to `$FLEET_NAME`. `--bound` takes `90s`, `30m`, `2h` or seconds; default 30m. Refused (stderr
+  `FAIL <reason>`, exit 1): a parent not in the roster (`no lane NAME in the roster`), a pid that isn't alive, a
+  bound over 12h.
+- `fleet side end ID [--status done|failed] [--exit N]`: sets `status`, `endedAt` and `exit`. Idempotent: a row that
+  already has `endedAt` is left unchanged (exit 0). Unknown id: exit 1.
+- `fleet side ls [--parent NAME] [--json]`: one line per row, or the rows as a JSON array.
+  `fleet side show ID`: the row as JSON; unknown id exits 1. No subcommand or an unknown one: usage, exit 2.
+- Python API (`import fleet_side`): `start(**fields) -> row` (fields include `sessionId=`; raises `SideError` when refused), `end(id, status,
+  exit=None) -> row`, `update(id, fn) -> row` (fn gets a copy of the row and returns the new row, or None for no
+  change), `rows(parent=None)`, `get(id)` (None when unknown).
+- Extending: add the subcommand to `COMMANDS` in `lib/fleet_side.py` (one line) and keep its logic in its own
+  module (`fleet_side_watch.py`, `fleet_side_run.py`, `fleet_side_ach.py`).
