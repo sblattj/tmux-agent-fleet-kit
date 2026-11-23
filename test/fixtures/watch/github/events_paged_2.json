@@ -1,0 +1,58 @@
+{
+ "_note": "hand-written page 2 of the pagination fixture",
+ "status": 200,
+ "headers": {},
+ "body": [
+  {
+   "id": "27989000002",
+   "type": "PushEvent",
+   "actor": {
+    "login": "Carol_Example"
+   },
+   "repo": {
+    "name": "acme/widget"
+   },
+   "payload": {
+    "ref": "refs/heads/feat/page-two",
+    "head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "before": "0000000000000000000000000000000000000000"
+   },
+   "public": true,
+   "created_at": "2026-11-23T00:50:00Z"
+  },
+  {
+   "id": "27989000001",
+   "type": "PushEvent",
+   "actor": {
+    "login": "Carol_Example"
+   },
+   "repo": {
+    "name": "acme/widget"
+   },
+   "payload": {
+    "ref": "refs/heads/feat/page-two",
+    "head": "cccccccccccccccccccccccccccccccccccccccc",
+    "before": "0000000000000000000000000000000000000000"
+   },
+   "public": true,
+   "created_at": "2026-11-23T00:40:00Z"
+  },
+  {
+   "id": "27988675934",
+   "type": "PushEvent",
+   "actor": {
+    "login": "Alice_Example"
+   },
+   "repo": {
+    "name": "acme/widget"
+   },
+   "payload": {
+    "ref": "refs/heads/main",
+    "head": "39f501923bb183527e529264ab6b4fb5addcfb70",
+    "before": "6bdfadf03063b985ea1c679345814f126e3ca2e8"
+   },
+   "public": true,
+   "created_at": "2026-11-23T00:27:27Z"
+  }
+ ]
+}

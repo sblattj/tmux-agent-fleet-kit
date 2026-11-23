@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# fleet-watch: the WATCH desk engine. Dispatched as `fleet watch`. Spec: docs/design/four-desks.md sections 2.1, 3, 6.
+#
+#   fleet watch run [--once] [--force] [--source NAME] [--json]   poll due sources; route to DECIDE and LEARN, never ROUTE
+#   fleet watch check [--config PATH] [--resolve]                   validate watch.json; exit 1 on a literal credential
+#   fleet watch status [--once] [--interval S]                      terminal status pane (j/k p z r h q)
+#   fleet watch stats [--json]                                      counts per kind, dropped per rule
+#   fleet watch snapshot [--compact]                                snapshot() JSON for pages and status lines
+#   fleet watch poll-now|pause|resume NAME, fleet watch release-held   the pane's verbs
+#   fleet watch serve ...                                           web page (phase 7)
+#   fleet watch webhook serve [--config F] [--bind 127.0.0.1|::1] [--port N]   loopback webhook receiver (7349)
+# ---
+set -euo pipefail
+usage() { sed -n '2,/^# ---$/{/^# ---$/d;s/^# \{0,1\}//;p;}' "$0"; exit 2; }
+LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd -P)"
+case ${1:-} in
+  ''|-h|--help|help) usage ;;
+  serve)
+    shift
+    [ -f "$LIB/fleet_watch_serve.py" ] || { echo "fleet watch serve: not installed (lib/fleet_watch_serve.py is missing)" >&2; exit 2; }
+    exec python3 "$LIB/fleet_watch_serve.py" "$@" ;;
+  webhook)  # webhook.py's __main__ hands off to the canonical watch_sources.webhook (one VERIFIERS registry)
+    shift
+    exec python3 "$LIB/watch_sources/webhook.py" "$@" ;;
+esac
+exec python3 "$LIB/fleet_watch.py" "$@"

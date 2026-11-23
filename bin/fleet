@@ -15,18 +15,24 @@
 #                                                       WATCH UI pane: follow a call, route asks/actions (lib/fleet_listen.py)
 #   fleet desks up [--cli C] [--model M] [--dir D] [--no-proof] [--dry-run]
 #                                                       the standing desks: windows deskA (ROUTE|DECIDE), deskB (WATCH|LEARN) (bin/fleet-desks)
-#   fleet tick|park|reopen|cleanup|handoff ...          lifecycle, handled by bin/fleet-lifecycle
+#   fleet tick|park|reopen|cleanup|handoff|forget ...   lifecycle, handled by bin/fleet-lifecycle
+#   fleet watch run|check|status|stats|serve|webhook ...  WATCH engine: poll sources, route events to DECIDE/LEARN (bin/fleet-watch)
+#   fleet learn add|list|show|confirm|drop|sync|due|quiz|review|proof|snapshot|export|serve ...
+#                                                       LEARN engine: ledger, quizzes, proof of learning (bin/fleet-learn)
+#   fleet probe <verb>|stats|nuked|resume ...           DECIDE read-only probes (bin/fleet-probe)
 #
 # launch opts:
 #   --cli claude|codex|opencode|kiro|agy  which CLI (default claude; agy = Antigravity CLI)
 #   --model M                     model (claude default: opus; others: the CLI default)
 #   --dir D                       working dir (default $FLEET_DIR, else $PWD)
 #   --split-right-of NAME         open as a pane right of NAME's pane instead of a new window
-#   --role route|decide|watch|learn|worker
+#   --role route|decide|watch|learn|worker|probe
 #                                 role context + deny list (default worker; desk mode defaults to decide)
 #                                 the old names orchestrator, desk and listener are refused in every mode (renamed route, decide, watch)
 #                                 except in resume mode, which fleet reopen uses for live pre-desks lanes;
-#                                 probe is reserved (phase 4)
+#                                 probe = DECIDE's read-only probe lane: no shell, no writes, only the fleet-probe
+#                                 read verbs; refused (fails closed) on a CLI that can't drop its shell tool
+#                                 (`fleet probe can-host <cli>`: claude, opencode, kiro yes; codex, agy no)
 #   --keep-tools LIST             claude worker lanes only: comma list of tools to keep out of the worker
 #                                 block (Workflow,ScheduleWakeup,ReportFindings, or "all"). By default a claude
 #                                 worker lane also disallows those three (about 6k tokens of schemas a lane
@@ -175,9 +181,12 @@ cmd_launch() {
     orchestrator) die "role orchestrator is renamed route (--role route)" ;;  # every mode, resume included (Q110 c)
     desk) die "role desk is renamed decide (--role decide)" ;;
     listener) die "role listener is renamed watch (--role watch)" ;;
-    probe) die "role probe is reserved for DECIDE's read-only probe lanes (not built yet, docs/design/four-desks.md 2.5)" ;;
   esac
-  case $role in route|decide|watch|learn|worker) ;; *) die "unknown --role $role (route|decide|watch|learn|worker)" ;; esac
+  case $role in route|decide|watch|learn|worker|probe) ;; *) die "unknown --role $role (route|decide|watch|learn|worker|probe)" ;; esac
+  if [ "$role" = probe ]; then # fail closed: a probe lane must drop Bash and writes (docs/design/four-desks.md 2.5)
+    local why
+    why=$(python3 "$ROOT/lib/fleet_probe.py" can-host "$cli" 2>&1) || die "role probe refused on --cli $cli: ${why#NO }"
+  fi
 
   [ -n "$dir" ] || dir=${FLEET_DIR:-$PWD}
   [ -d "$dir" ] || die "directory does not exist: $dir"
@@ -269,19 +278,27 @@ cmd_launch() {
       [ -f "$rdir/$role.claude.json" ] || die "role file missing: $rdir/$role.claude.json"
       rflags=" --settings $(printf '%q' "$rdir/$role.claude.json") --append-system-prompt-file $(printf '%q' "$rdir/$role.md")"
       # fleet-mesh per launch: peer_inbox is every lane's mailbox; nothing is written to the user's Claude config
-      rflags="$rflags --mcp-config $(printf '%q' "$(jq -cn --arg m "$ROOT/lib/fleet_mesh.py" '{mcpServers:{fleet:{command:"python3",args:[$m,"serve"]}}}')")" ;;
+      if [ "$role" = probe ]; then # built-ins cut to read tools; MCP: only the mesh inbox and the fleet-probe verbs
+        rflags="$rflags --tools Read,Grep,Glob,WebFetch --strict-mcp-config --mcp-config $(printf '%q' "$(jq -cn --arg m "$ROOT/lib/fleet_mesh.py" --arg p "$ROOT/lib/fleet_probe.py" '{mcpServers:{fleet:{command:"python3",args:[$m,"serve"]},"fleet-probe":{command:"python3",args:[$p,"serve"]}}}')")"
+      else
+        rflags="$rflags --mcp-config $(printf '%q' "$(jq -cn --arg m "$ROOT/lib/fleet_mesh.py" '{mcpServers:{fleet:{command:"python3",args:[$m,"serve"]}}}')")"
+      fi ;;
     codex)
       if [ -f "${CODEX_HOME:-$HOME/.codex}/fleet-$role.config.toml" ]; then rflags=" -p fleet-$role"
+      elif [ "$role" = probe ]; then die "codex profile fleet-probe not installed (run install/codex.sh); a probe lane never launches without its allowlist"
       else printf 'warn: codex profile fleet-%s not installed (%s/fleet-%s.config.toml); launching without role %s (run install/codex.sh)\n' "$role" "${CODEX_HOME:-$HOME/.codex}" "$role" "$role" >&2; fi ;;
     opencode)
       if jq -e --arg a "fleet-$role" '.agent[$a] != null' "${XDG_CONFIG_HOME:-$HOME/.config}/opencode/opencode.json" >/dev/null 2>&1; then rflags=" --agent fleet-$role"
+      elif [ "$role" = probe ]; then die "opencode agent fleet-probe not installed (run install/opencode.sh); a probe lane never launches without its allowlist"
       else printf 'warn: opencode agent fleet-%s not installed (%s/opencode/opencode.json); launching without role %s (run install/opencode.sh)\n' "$role" "${XDG_CONFIG_HOME:-$HOME/.config}" "$role" >&2; fi ;;
     kiro)
       if [ -f "${KIRO_HOME:-$HOME/.kiro}/agents/fleet-$role.json" ]; then rflags=" --agent fleet-$role"
+      elif [ "$role" = probe ]; then die "kiro agent fleet-probe not installed (run install/kiro.sh); a probe lane never launches without its allowlist"
       else printf 'warn: kiro agent fleet-%s not installed (%s/agents/fleet-%s.json); launching without role %s (run install/kiro.sh)\n' "$role" "${KIRO_HOME:-$HOME/.kiro}" "$role" "$role" >&2; fi ;;
     agy)
       [ -f "$rdir/$role.agy.json" ] || die "role file missing: $rdir/$role.agy.json"
       if [ -f "$AGY_HOME/config/agents/fleet-$role.md" ]; then rflags=" --agent fleet-$role"
+      elif [ "$role" = probe ]; then die "agy agent fleet-probe not installed (run install/agy.sh); a probe lane never launches without its allowlist"
       else printf 'warn: agy agent fleet-%s not installed (%s/config/agents/fleet-%s.md); launching without role %s context (deny rules still apply; run install/agy.sh)\n' "$role" "$AGY_HOME" "$role" "$role" >&2; fi ;;
   esac
   if [ "$resume" = 0 ]; then first=" \"\$(cat $q_txt)\""; fi
@@ -771,13 +788,16 @@ proof_agy() { # name pane mode resume-sid log
 # ---------------------------------------------------------------- other commands
 cmd_ls() {
   [ -s "$ROSTER" ] || { echo "(no lanes)"; return 0; }
-  local names n pane alive
+  local names n pane alive meshes mesh
   names=$(jq -r 'keys[]' "$ROSTER")
+  # mesh=yes: the lane has the fleet MCP (peer_inbox); no: it reads $FLEET_STATE/inbox/<name>.jsonl by hand
+  meshes=$(FLEET_STATE=$STATE python3 "$ROOT/lib/fleet_mesh.py" mesh 2>/dev/null || true)
   for n in $names; do
     pane=$(roster_get "$n" pane)
     if pane_alive "$pane"; then alive=alive; else alive=dead; fi
-    printf '%s cli=%s mode=%s pane=%s %s session=%s\n' "$n" "$(roster_get "$n" cli)" "$(roster_get "$n" mode)" \
-      "${pane:--}" "$alive" "$(roster_get "$n" session_id)"
+    mesh=$(printf '%s\n' "$meshes" | awk -v n="$n" '$1 == n {print $2; exit}')
+    printf '%s cli=%s mode=%s pane=%s %s mesh=%s session=%s\n' "$n" "$(roster_get "$n" cli)" "$(roster_get "$n" mode)" \
+      "${pane:--}" "$alive" "${mesh:-?}" "$(roster_get "$n" session_id)"
   done
 }
 
@@ -814,9 +834,12 @@ case $sub in
     exec python3 "$ROOT/lib/fleet_mesh.py" send "${FLEET_NAME:-${FLEET_ROUTE:-ROUTE}}" "$1" "${*:2}" ;;
   listen) exec python3 "$ROOT/lib/fleet_listen.py" "$@" ;;
   desks) role_guard desks; exec bash "$BINDIR/fleet-desks" "$@" ;;
-  tick|park|reopen|cleanup|handoff)
+  watch|learn|probe) # four-desks engines (docs/design/four-desks.md sections 2.5, 3, 4)
+    [ -f "$BINDIR/fleet-$sub" ] || die "fleet-$sub missing"
+    exec bash "$BINDIR/fleet-$sub" "$@" ;;
+  tick|park|reopen|cleanup|handoff|forget)
     case $sub in
-      park|reopen) role_guard "$sub" ;;
+      park|reopen|forget) role_guard "$sub" ;;
       cleanup) case " $* " in *" --apply "*) role_guard cleanup ;; esac ;;
     esac
     [ -f "$BINDIR/fleet-lifecycle" ] || die "fleet-lifecycle missing"

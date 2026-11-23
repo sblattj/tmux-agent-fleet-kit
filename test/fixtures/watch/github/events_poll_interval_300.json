@@ -1,0 +1,349 @@
+{
+ "_note": "hand-written: the server asks for 300 s",
+ "status": 200,
+ "headers": {
+  "ETag": "W/\"etag-page1-recorded\"",
+  "X-Poll-Interval": "300"
+ },
+ "body": [
+  {
+   "id": "27988675934",
+   "type": "PushEvent",
+   "actor": {
+    "login": "Alice_Example"
+   },
+   "repo": {
+    "name": "acme/widget"
+   },
+   "payload": {
+    "ref": "refs/heads/main",
+    "head": "39f501923bb183527e529264ab6b4fb5addcfb70",
+    "before": "6bdfadf03063b985ea1c679345814f126e3ca2e8"
+   },
+   "public": true,
+   "created_at": "2026-11-23T00:27:27Z"
+  },
+  {
+   "id": "20955693552",
+   "type": "ReleaseEvent",
+   "actor": {
+    "login": "Alice_Example"
+   },
+   "repo": {
+    "name": "acme/widget"
+   },
+   "payload": {
+    "action": "published",
+    "release": {
+     "id": 454858557,
+     "tag_name": "v0.1.1",
+     "name": "v0.1.1",
+     "html_url": "https://github.com/acme/widget/releases/tag/v0.1.1",
+     "published_at": "2026-11-23T00:27:39Z",
+     "body": "Release notes for v0.1.1"
+    }
+   },
+   "public": true,
+   "created_at": "2026-11-23T00:27:39Z"
+  },
+  {
+   "id": "27983426489",
+   "type": "PushEvent",
+   "actor": {
+    "login": "Alice_Example"
+   },
+   "repo": {
+    "name": "acme/widget"
+   },
+   "payload": {
+    "ref": "refs/heads/main",
+    "head": "6bdfadf03063b985ea1c679345814f126e3ca2e8",
+    "before": "9ea61fc1add7be4de18160ca1d38cbae259e2b09"
+   },
+   "public": true,
+   "created_at": "2026-11-22T23:55:07Z"
+  },
+  {
+   "id": "20954014434",
+   "type": "ReleaseEvent",
+   "actor": {
+    "login": "Alice_Example"
+   },
+   "repo": {
+    "name": "acme/widget"
+   },
+   "payload": {
+    "action": "published",
+    "release": {
+     "id": 454842102,
+     "tag_name": "v0.1.0",
+     "name": "v0.1.0",
+     "html_url": "https://github.com/acme/widget/releases/tag/v0.1.0",
+     "published_at": "2026-11-22T23:55:22Z",
+     "body": "Release notes for v0.1.0"
+    }
+   },
+   "public": true,
+   "created_at": "2026-11-22T23:55:22Z"
+  },
+  {
+   "id": "20835353855",
+   "type": "IssueCommentEvent",
+   "actor": {
+    "login": "Alice_Example"
+   },
+   "repo": {
+    "name": "acme/widget"
+   },
+   "payload": {
+    "action": "created",
+    "issue": {
+     "number": 1,
+     "title": "ACME issue 1",
+     "state": "open",
+     "created_at": "2026-11-19T22:44:12Z",
+     "updated_at": "2026-11-21T05:34:19Z",
+     "closed_at": null,
+     "html_url": "https://github.com/acme/widget/issues/1",
+     "body": "Retry the upload on 503"
+    },
+    "comment": {
+     "id": 7058010746,
+     "created_at": "2026-11-21T05:34:19Z",
+     "updated_at": "2026-11-21T05:34:19Z",
+     "html_url": "https://github.com/acme/widget/issues/1#issuecomment-7058010746",
+     "body": "Add a dry-run flag"
+    }
+   },
+   "public": true,
+   "created_at": "2026-11-21T05:34:19Z"
+  },
+  {
+   "id": "20835143494",
+   "type": "IssueCommentEvent",
+   "actor": {
+    "login": "Alice_Example"
+   },
+   "repo": {
+    "name": "acme/widget"
+   },
+   "payload": {
+    "action": "created",
+    "issue": {
+     "number": 2,
+     "title": "ACME issue 2",
+     "state": "open",
+     "created_at": "2026-11-19T22:44:14Z",
+     "updated_at": "2026-11-21T05:29:34Z",
+     "closed_at": null,
+     "html_url": "https://github.com/acme/widget/issues/2",
+     "body": "Thanks, merged in v0.1.1"
+    },
+    "comment": {
+     "id": 7057954017,
+     "created_at": "2026-11-21T05:29:34Z",
+     "updated_at": "2026-11-21T05:29:34Z",
+     "html_url": "https://github.com/acme/widget/issues/2#issuecomment-7057954017",
+     "body": "Looks good"
+    }
+   },
+   "public": true,
+   "created_at": "2026-11-21T05:29:34Z"
+  },
+  {
+   "id": "27739741407",
+   "type": "PushEvent",
+   "actor": {
+    "login": "Alice_Example"
+   },
+   "repo": {
+    "name": "acme/widget"
+   },
+   "payload": {
+    "ref": "refs/heads/main",
+    "head": "6975e906514518e85e7ad516901362516b2d7634",
+    "before": "fd235039b7e849a7065714c665bfc5f0452ffc5d"
+   },
+   "public": true,
+   "created_at": "2026-11-19T01:09:14Z"
+  },
+  {
+   "id": "27737558894",
+   "type": "CreateEvent",
+   "actor": {
+    "login": "Alice_Example"
+   },
+   "repo": {
+    "name": "acme/widget"
+   },
+   "payload": {
+    "ref": "main",
+    "ref_type": "branch",
+    "master_branch": "main"
+   },
+   "public": true,
+   "created_at": "2026-11-19T01:01:35Z"
+  },
+  {
+   "id": "20700440497",
+   "type": "IssueCommentEvent",
+   "actor": {
+    "login": "Alice_Example"
+   },
+   "repo": {
+    "name": "acme/widget"
+   },
+   "payload": {
+    "action": "created",
+    "issue": {
+     "number": 2,
+     "title": "ACME issue 2",
+     "state": "open",
+     "created_at": "2026-11-19T22:44:14Z",
+     "updated_at": "2026-11-21T05:29:34Z",
+     "closed_at": null,
+     "html_url": "https://github.com/acme/widget/issues/2",
+     "body": "Docs pass"
+    },
+    "comment": {
+     "id": 7024463440,
+     "created_at": "2026-11-19T22:52:15Z",
+     "updated_at": "2026-11-19T22:52:15Z",
+     "html_url": "https://github.com/acme/widget/issues/2#issuecomment-7024463440",
+     "body": "Fixed in main"
+    }
+   },
+   "public": true,
+   "created_at": "2026-11-19T22:52:15Z"
+  },
+  {
+   "id": "20700439361",
+   "type": "IssueCommentEvent",
+   "actor": {
+    "login": "Alice_Example"
+   },
+   "repo": {
+    "name": "acme/widget"
+   },
+   "payload": {
+    "action": "created",
+    "issue": {
+     "number": 1,
+     "title": "ACME issue 1",
+     "state": "open",
+     "created_at": "2026-11-19T22:44:12Z",
+     "updated_at": "2026-11-21T05:34:19Z",
+     "closed_at": null,
+     "html_url": "https://github.com/acme/widget/issues/1",
+     "body": "Second pass"
+    },
+    "comment": {
+     "id": 7024463089,
+     "created_at": "2026-11-19T22:52:14Z",
+     "updated_at": "2026-11-19T22:52:14Z",
+     "html_url": "https://github.com/acme/widget/issues/1#issuecomment-7024463089",
+     "body": "Retry the upload on 503"
+    }
+   },
+   "public": true,
+   "created_at": "2026-11-19T22:52:14Z"
+  },
+  {
+   "id": "20699775661",
+   "type": "IssuesEvent",
+   "actor": {
+    "login": "Alice_Example"
+   },
+   "repo": {
+    "name": "acme/widget"
+   },
+   "payload": {
+    "action": "opened",
+    "issue": {
+     "number": 2,
+     "title": "ACME issue 2",
+     "state": "open",
+     "created_at": "2026-11-19T22:44:14Z",
+     "updated_at": "2026-11-21T05:29:34Z",
+     "closed_at": null,
+     "html_url": "https://github.com/acme/widget/issues/2",
+     "body": "Add a dry-run flag"
+    }
+   },
+   "public": true,
+   "created_at": "2026-11-19T22:44:15Z"
+  },
+  {
+   "id": "20699771231",
+   "type": "IssuesEvent",
+   "actor": {
+    "login": "Alice_Example"
+   },
+   "repo": {
+    "name": "acme/widget"
+   },
+   "payload": {
+    "action": "opened",
+    "issue": {
+     "number": 1,
+     "title": "ACME issue 1",
+     "state": "open",
+     "created_at": "2026-11-19T22:44:12Z",
+     "updated_at": "2026-11-21T05:34:19Z",
+     "closed_at": null,
+     "html_url": "https://github.com/acme/widget/issues/1",
+     "body": "Thanks, merged in v0.1.1"
+    }
+   },
+   "public": true,
+   "created_at": "2026-11-19T22:44:12Z"
+  },
+  {
+   "id": "27598755868",
+   "type": "PushEvent",
+   "actor": {
+    "login": "Alice_Example"
+   },
+   "repo": {
+    "name": "acme/widget"
+   },
+   "payload": {
+    "ref": "refs/heads/main",
+    "head": "75469b88a6624e6ecd04f447ef8ce721da9972b8",
+    "before": "6975e906514518e85e7ad516901362516b2d7634"
+   },
+   "public": true,
+   "created_at": "2026-11-19T02:07:13Z"
+  },
+  {
+   "id": "27588890413",
+   "type": "PushEvent",
+   "actor": {
+    "login": "Alice_Example"
+   },
+   "repo": {
+    "name": "acme/widget"
+   },
+   "payload": {
+    "ref": "refs/heads/main",
+    "head": "fd235039b7e849a7065714c665bfc5f0452ffc5d",
+    "before": "35d35e1a9a779f786d95f5d5d2c34e5dcf064703"
+   },
+   "public": true,
+   "created_at": "2026-11-19T01:04:57Z"
+  },
+  {
+   "id": "20587281817",
+   "type": "PublicEvent",
+   "actor": {
+    "login": "Alice_Example"
+   },
+   "repo": {
+    "name": "acme/widget"
+   },
+   "payload": {},
+   "public": true,
+   "created_at": "2026-11-19T01:01:28Z"
+  }
+ ]
+}

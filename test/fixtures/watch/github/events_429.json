@@ -1,0 +1,10 @@
+{
+ "_note": "hand-written secondary rate limit",
+ "status": 429,
+ "headers": {
+  "Retry-After": "120"
+ },
+ "body": {
+  "message": "You have exceeded a secondary rate limit."
+ }
+}

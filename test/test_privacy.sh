@@ -36,6 +36,22 @@ else
   echo "PASS privacy: FLEET_PRIVACY_TERMS empty, name-list scan skipped"
 fi
 
+# a literal credential in watch.json is refused by `fleet watch check` (control: a reference passes)
+wtmp=$(mktemp -d)
+printf '{"sources":[{"name":"x","kind":"command","argv":["true"],"auth":{"type":"bearer","token":"literal-value-1"}}]}' > "$wtmp/watch.json"
+if FLEET_STATE=$wtmp "$ROOT/bin/fleet" watch check >/dev/null 2>&1; then
+  printf 'FAIL privacy: fleet watch check accepted a literal token\n'; fails=$((fails + 1))
+else
+  printf 'PASS privacy: fleet watch check refuses a literal token\n'
+fi
+printf '{"sources":[{"name":"x","kind":"command","argv":["true"],"auth":{"type":"bearer","token":"env:X_TOKEN"}}]}' > "$wtmp/watch.json"
+if FLEET_STATE=$wtmp "$ROOT/bin/fleet" watch check >/dev/null 2>&1; then
+  printf 'PASS privacy: fleet watch check takes a reference (control)\n'
+else
+  printf 'FAIL privacy: fleet watch check refused a reference\n'; fails=$((fails + 1))
+fi
+rm -rf "$wtmp"
+
 echo "---"
 if [ $fails -gt 0 ]; then echo "FAIL test_privacy.sh: $fails category(ies) with hits"; exit 1; fi
 echo "PASS test_privacy.sh: no hits"

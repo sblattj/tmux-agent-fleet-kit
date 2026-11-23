@@ -1,0 +1,11 @@
+{
+ "_note": "hand-written: unauthenticated primary limit spent arrives as 403, reset 900 s after the test clock",
+ "status": 403,
+ "headers": {
+  "X-RateLimit-Remaining": "0",
+  "X-RateLimit-Reset": "1795403700"
+ },
+ "body": {
+  "message": "API rate limit exceeded."
+ }
+}

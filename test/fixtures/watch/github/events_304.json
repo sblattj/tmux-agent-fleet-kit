@@ -1,0 +1,10 @@
+{
+ "_note": "shape recorded live 2026-11-23: a 304 to If-None-Match repeats the ETag and X-Poll-Interval, no body",
+ "status": 304,
+ "headers": {
+  "ETag": "W/\"etag-page1-recorded\"",
+  "X-Poll-Interval": "60",
+  "X-RateLimit-Remaining": "58"
+ },
+ "body": null
+}

@@ -1,0 +1,18 @@
+{
+ "ask": 4,
+ "burstCount": 5,
+ "burstRef": "PROJ-9",
+ "dropped": {
+  "burst collapsed": 4,
+  "drop actor=me": 4,
+  "drop actorMatches=\\[bot\\]$": 6,
+  "drop type=issue.field:labels": 3,
+  "duplicate": 8,
+  "secret": 1
+ },
+ "fyi": 17,
+ "learn-item": 24,
+ "lines": 50,
+ "secret": "password: Tr0ub4dor&3x-ACME-fixture",
+ "task-candidate": 3
+}
