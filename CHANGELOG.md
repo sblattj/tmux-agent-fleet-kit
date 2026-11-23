@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.3.0 (2026-11-23)
 
 - Fixed: a fleet wake typed into a Claude, Kiro or agy pane spliced into whatever the human was typing there (`good morni[fleet] message from ...` submitted as one line). `wake()` typed the pointer and Enter without looking (lib/fleet_mesh.py, `wake`). Now a typed wake goes only into an empty, quiet prompt (allow-list read of the cursor row with `capture-pane -e`, plus recent client keys and copy mode); a busy pane gets a detached retry with backoff (`FLEET_WAKE_DEFER_MAX`, default 900 s) and then a tmux notice and `@fleet_unread` instead of typing. Enter is sent only once the box reads exactly the pointer. Residual race documented in INTERFACES.md, Typed wakes.
 - Claude to Claude: `peer_send` (and the decision tools) from a live fleet Claude lane to another live Claude lane types nothing; it asks the sender to `SendMessage` the same text (delivered natively in the background on 2.1.330), the mirror hook links it to the inbox line, and a typed fallback runs only after `FLEET_NATIVE_GRACE` (120 s). Parked targets keep reopen plus the guarded typed wake (native messages to a stopped session are not queued, measured). `crossSessionInbound` is left unset: `accept` would open lanes to any same-user process.
