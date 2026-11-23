@@ -241,6 +241,7 @@ python3 -m unittest test/test_listen.py # WATCH UI: parsing, routing, secrets, c
 bash test/test_listen.sh      # WATCH UI in a real tmux pane on a private socket: layout, live filter, page, quit
 python3 -m unittest test/test_mesh.py   # fleet-mesh delivery, reopen, decisions log
 python3 -m unittest test/test_decisions.py   # DECISIONS UI: cards, pick relay, badges, refresh A/B, server auth, tmux fallback
+python3 -m unittest test/test_side_guard.py   # side runs: decision calls refused, peer_send only to the parent as <parent>/<id>
 python3 -m unittest test/test_watch_serve.py   # WATCH page: loopback + token (403 without), page action = pane key, same state
 python3 -m unittest test/test_probe.py test/test_probe_roles.py   # DECIDE probes: read verbs, calls, nuke/resume, stats, host allow-list
 bash test/test_probe_stall_park.sh            # a probe silent 15 min is parked as stalled by fleet cleanup --apply

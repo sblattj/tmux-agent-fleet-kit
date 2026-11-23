@@ -288,6 +288,18 @@ their keys too. PROVEN on throwaway panes (tmux -L) of Claude Code 2.1.330, kiro
 prompt got the wake and the lane answered (190-char pointer wrapped on a 120-column pane, too); a pane holding
 `good morni` or `abc` with the cursor at the start was left exactly as it was.
 
+### Side runs: no decisions desk (issue #12)
+
+A side run is a child of one lane, started outside the fleet's panes. Its env carries `FLEET_SIDE=<id>` and
+`FLEET_PARENT=<parent lane>` (set by `fleet side run`; this guard only reads them). With `FLEET_SIDE` set:
+- `decision_open`, `decision_answer` and `fleet decisions ask` refuse (MCP `isError`; CLI `FAIL ...`, exit 1):
+  `side run S1 can't open decisions; send it to your parent lane L with peer_send` (`answer` for decision_answer).
+  Nothing is written to `decisions.jsonl` or `decisions-log.jsonl`.
+- `peer_send` delivers only to `$FLEET_PARENT`; any other `to` is refused. The message's `from` is `<parent>/<side id>`
+  (e.g. `L/S1`), whatever `from` arg was passed, so the parent can tell which side run wrote.
+- `FLEET_SIDE` set without `FLEET_PARENT`: all three refuse.
+With `FLEET_SIDE` unset nothing changes. Helpers: `side_run()` -> `(id, parent)` or None, `side_refuse(verb)`.
+
 ## bin/fleet-goal
 
 ```

@@ -924,10 +924,37 @@ def t_peer_list(args):
     return "\n".join(rows)
 
 
+def side_run():
+    """(side id, parent lane) when this process is a side run (FLEET_SIDE set), else None.
+
+    A side run never calls the decisions desk and messages only its parent lane (issue #12)."""
+    sid = os.environ.get("FLEET_SIDE")
+    if not sid:
+        return None
+    parent = os.environ.get("FLEET_PARENT")
+    if not parent:
+        raise ValueError("side run %s has no FLEET_PARENT: it can't send or ask anything" % sid)
+    return sid, parent
+
+
+def side_refuse(verb):
+    """Raise when a side run tries a decisions-desk call (verb: open, answer)."""
+    sr = side_run()
+    if sr:
+        raise ValueError("side run %s can't %s decisions; send it to your parent lane %s with peer_send"
+                         % (sr[0], verb, sr[1]))
+
+
 def t_peer_send(args):
     to, text = args.get("to"), args.get("text")
     if not to or not isinstance(text, str) or not text:
         raise ValueError("`to` and `text` are required")
+    sr = side_run()
+    if sr:
+        sid, parent = sr
+        if to != parent:
+            raise ValueError("side run %s can send only to its parent lane %s, not %s" % (sid, parent, to))
+        return deliver("%s/%s" % (parent, sid), to, text)
     return deliver(_sender(args), to, text)
 
 
@@ -966,6 +993,7 @@ def _clean_watch(w):
 
 
 def t_decision_open(args):
+    side_refuse("open")
     q = args.get("question")
     if not q:
         raise ValueError("`question` is required")
@@ -1072,6 +1100,7 @@ def reports_path():
 
 
 def t_decision_answer(args):
+    side_refuse("answer")
     did, answer = args.get("id"), args.get("answer")
     if not did or not answer:
         raise ValueError("`id` and `answer` are required")

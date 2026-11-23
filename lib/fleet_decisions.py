@@ -578,6 +578,7 @@ def parse_duration(s):
 
 
 def ask(question, options, allow, wait, timeout, force_new, out=sys.stdout):
+    mesh.side_refuse("open")  # a side run asks through its parent lane, never the desk (issue #12)
     if not force_new:
         for h in find(question):
             if h["exact"]:
