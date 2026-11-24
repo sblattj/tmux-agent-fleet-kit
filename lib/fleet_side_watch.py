@@ -237,10 +237,14 @@ def _loop(id, row):
         else:
             stable = 0
         last = sig
-        if not alive(pid):
-            status = "done"
+        ach_st = __import__("fleet_side_ach").finish_status(row)  # issue #19: an ach run record's terminal status
+        if ach_st:
+            status = ach_st
             break
-        if stable >= 2:
+        if not alive(pid):
+            status = "done" if row.get("source") != "ach" else "failed"  # ach died before writing a final status
+            break
+        if stable >= 2 and row.get("source") != "ach":  # an ach record sits unchanged while the run works
             status = "done"
             break
         if time.time() > start + bound:

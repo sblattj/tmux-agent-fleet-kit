@@ -245,6 +245,7 @@ python3 -m unittest test/test_side_guard.py   # side runs: decision calls refuse
 python3 -m unittest test/test_watch_serve.py   # WATCH page: loopback + token (403 without), page action = pane key, same state
 python3 -m unittest test/test_probe.py test/test_probe_roles.py   # DECIDE probes: read verbs, calls, nuke/resume, stats, host allow-list
 python3 -m unittest test/test_side_usage.py   # side runs: tokens from result or codex session, child count, roster line
+python3 -m unittest test/test_side_ach.py     # side runs: adopt-ach registers running ach runs by process ancestry, once
 bash test/test_probe_stall_park.sh            # a probe silent 15 min is parked as stalled by fleet cleanup --apply
 bash test/test_forget.sh                      # fleet forget archives one row; a live lane is refused without --force
 FLEET_PROBE_LIVE=1 test/test_probe_live.sh --cli claude   # launches 2 real lanes: the probe can't shell or write, a worker can

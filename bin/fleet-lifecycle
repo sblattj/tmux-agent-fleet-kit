@@ -939,7 +939,14 @@ pyh() { python3 -I -c "$PYLIB" "$@"; }
 # ---------------------------------------------------------------- commands
 cmd_tick() {
   need python3
-  pyh tick "$@"
+  local a adopt= rest=()
+  for a in "$@"; do case $a in --adopt) adopt=--apply ;; *) rest+=("$a") ;; esac; done
+  pyh tick ${rest[@]+"${rest[@]}"}
+  # side runs (issue #19): ach runs under a lane; a dry run unless --adopt. --json keeps stdout pure JSON.
+  case " ${rest[*]-} " in
+    *" --json "*) [ -z "$adopt" ] || python3 "$HERE/../lib/fleet_side_ach.py" --tick $adopt >&2 || true ;;
+    *) python3 "$HERE/../lib/fleet_side_ach.py" --tick $adopt || true ;;
+  esac
 }
 
 cmd_handoff() {

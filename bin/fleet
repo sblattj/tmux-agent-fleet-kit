@@ -20,7 +20,7 @@
 #   fleet learn add|list|show|confirm|drop|sync|due|quiz|review|proof|snapshot|export|serve ...
 #                                                       LEARN engine: ledger, quizzes, proof of learning (bin/fleet-learn)
 #   fleet probe <verb>|stats|nuked|resume ...           DECIDE read-only probes (bin/fleet-probe)
-#   fleet side start|end|ls|show ...                    side runs: a lane's child runs outside tmux (lib/fleet_side.py)
+#   fleet side start|end|ls|show|adopt-ach ...          side runs: a lane's child runs outside tmux (lib/fleet_side.py)
 #
 # launch opts:
 #   --cli claude|codex|opencode|kiro|agy  which CLI (default claude; agy = Antigravity CLI)

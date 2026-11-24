@@ -247,6 +247,7 @@ COMMANDS = {
     "ls": cmd_ls,
     "show": cmd_show,
     "watch": lambda argv: __import__("fleet_side_watch").cmd_watch(argv),  # issue #14
+    "adopt-ach": lambda a: __import__("fleet_side_ach").cmd_adopt_ach(a),  # issue #19
 }
 
 
