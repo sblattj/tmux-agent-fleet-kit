@@ -243,6 +243,7 @@ COMMANDS = {
     "end": cmd_end,
     "ls": cmd_ls,
     "show": cmd_show,
+    "run": lambda argv: __import__("fleet_side_run").cmd_run(argv),  # issue #15: lib/fleet_side_run.py
 }
 
 
