@@ -134,7 +134,8 @@ def start(parent=None, host=None, model=None, pid=None, log=None, result=None, b
     base = {"id": None, "parent": parent, "host": host, "model": model, "pid": pid, "log": _abs(log),
             "result": _abs(result), "boundSec": bound_sec, "startedAt": _now(), "status": "running",
             "endedAt": None, "exit": None, "tokensIn": None, "tokensOut": None, "children": 0,
-            "notifiedAt": None, "source": source, "sessionId": sessionId or None}
+            "notifiedAt": None, "source": source, "sessionId": sessionId or None,
+            "nonce": os.urandom(8).hex()}  # run identity: a wiped store reuses ids, the watcher checks this
     for k, v in extra.items():
         base.setdefault(k, v)
 

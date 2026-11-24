@@ -7,6 +7,7 @@ LC=$HERE/../bin/fleet-lifecycle
 FIX=$HERE/fixtures/lifecycle
 T=$(mktemp -d "${TMPDIR:-/tmp}/lctest.XXXXXX")
 export FLEET_TMUX_SOCKET=lctest-$$
+export FLEET_SIDE_WATCH_SPAWN=0  # park/cleanup checks drive sides.jsonl themselves; the watcher has its own suite
 export FLEET_TMUX_SESSION=lcs
 export FLEET_STATE=$T/state
 export FLEET_CLAUDE_HOME=$T/claude

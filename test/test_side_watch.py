@@ -197,6 +197,25 @@ class SideWatchTest(unittest.TestCase):
         self.assertEqual([W.dur(s) for s in (0, 2, 59, 60, 432, 1800, 3720)],
                          ["0s", "2s", "59s", "1m", "7m12s", "30m", "1h2m"])
 
+    def test_8_reused_id_is_not_closed_by_the_old_watcher(self):
+        """A wiped store reuses S1. The old S1 watcher must not close the new S1 when its own pid dies."""
+        a = self.child("sleep", "60")
+        sid = self.start(a.pid)
+        time.sleep(0.5)  # the watcher is polling S1 (pid a)
+        b = self.child("sleep", "60")
+        row = self.row(sid)
+        row.update(pid=b.pid, startedAt=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 5)),
+                   nonce="fresh-run")
+        with open(os.path.join(self.state, "sides.jsonl"), "w") as f:
+            f.write(json.dumps(row) + "\n")
+        a.kill()
+        a.wait()
+        time.sleep(1.5)  # several polls with pid a dead
+        r = self.row(sid)
+        self.assertEqual(r["status"], "running", "old watcher closed the reused id: %s" % r)
+        self.assertIsNone(r.get("endedAt"))
+        self.assertEqual(self.inbox(), [])
+
 
 if __name__ == "__main__":
     unittest.main()

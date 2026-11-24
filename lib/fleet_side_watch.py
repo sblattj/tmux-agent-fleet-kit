@@ -217,6 +217,7 @@ def _loop(id, row):
     bound = int(row.get("boundSec") or 0)
     self_deadline = start + bound + grace + SELF_SLACK
     pid = int(row.get("pid") or 0)
+    ident = row.get("nonce") or row.get("startedAt")
     max_kids = int(row.get("children") or 0)
     last, stable = None, 0
     status = None
@@ -227,6 +228,10 @@ def _loop(id, row):
         row = side.get(id)
         if row is None:
             return 0
+        if (row.get("nonce") or row.get("startedAt")) != ident:
+            mesh.log("side watch %s: the row is a different run now (store reset); leaving it" % id)
+            return 0
+        pid = int(row.get("pid") or 0)  # `fleet side run` repoints pid from its supervisor to the child
         if row.get("endedAt"):
             status = row.get("status")
             break
