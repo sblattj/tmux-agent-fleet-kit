@@ -234,6 +234,17 @@ state (tested: reviews, card schedules, `proof.json` and the snapshot compared, 
   answering cards would fake proof of learning.
 - **Port**: `--port`, else `servePort` in `$FLEET_STATE/learn/learn.json`, else 7341.
 
+## Side runs
+
+A lane starts codex, agy, gemini or any other CLI outside the fleet's panes with `fleet side run`, which launches it
+detached and registers it as the lane's child in one step (contract: `INTERFACES.md`, "Side runs"):
+
+```bash
+fleet side run --host codex --model gpt-x --bound 30m -- codex exec "fix the flaky test"
+# S3 pid=4821 log=$FLEET_STATE/sides/S3/log result=$FLEET_STATE/sides/S3/result.json
+fleet side ls          # S3 running ... then done/failed with exit and tokens
+```
+
 ## Tests
 
 ```bash
@@ -265,6 +276,7 @@ python3 -m unittest test/test_watch_rate.py   # WATCH per-source token bucket: w
 python3 -m unittest test/test_side.py   # side runs: fleet side start|end|ls|show, refusals, 20 parallel starts, idempotent end
 python3 -m unittest test/test_side_mcp.py   # side runs over MCP: side_start|end|list via fleet_mesh.py serve, refusals as isError
 python3 -m unittest test/test_side_watch.py   # side runs: watcher marks done/timeout/failed, kills past the bound, one parent message
+python3 -m unittest test/test_side_run.py   # fleet side run -- CMD: detached, no tty, env contract, exit + tokens recorded
 python3 -m unittest test/test_watch_ado.py test/test_watch_gitlab.py test/test_watch_confluence.py test/test_watch_github.py test/test_watch_jira.py test/test_watch_bitbucket.py   # WATCH adapters on recorded fixtures
 python3 -m unittest test/test_watch_webhook.py   # WATCH webhook receiver: signatures, loopback-only bind, spool, webhook+poll dedupe
 ```

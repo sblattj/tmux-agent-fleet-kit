@@ -792,3 +792,27 @@ Pure functions over files; nothing here reads or writes `$FLEET_STATE/sides.json
   `ps -axo pid=,ppid=,stat=`; 0 when the root is gone. The watcher stores the max over polls in `row["children"]`.
 - `fmt(row, now=None) -> str`: `codex gpt-x 7m/30m 2.1M tok` (host, model if set, elapsed/bound in minutes, in + out
   tokens); the clock stops at `endedAt`; unknown tokens print `? tok`.
+
+## Side-run wrapper (lib/fleet_side_run.py, issue #15)
+
+`fleet side run [--parent NAME] --host H [--model M] [--bound 30m] [--log P] [--result P] -- CMD [ARGS...]`
+launches CMD detached, registers it (`source="run"`) and prints `S<n> pid=<child pid> log=<abs> result=<abs>`, then
+returns without waiting (well under 1 s).
+
+- Defaults: log `$FLEET_STATE/sides/<id>/log` (stdout and stderr, appended), result
+  `$FLEET_STATE/sides/<id>/result.json` (CMD may write it; nothing is created there for it).
+- Process: CMD runs in its own session and process group (pid = pgid = sid), with no controlling tty and stdin from
+  `/dev/null`. It never reads or types into a tmux pane.
+- Env: `FLEET_SIDE=<id>`, `FLEET_PARENT=<parent>`, `FLEET_NAME=<parent>`, `FLEET_SIDE_RESULT=<result path>`
+  (#12 reads the first two).
+- Supervisor: a small process in its own session (row field `supervisorPid`) waits on CMD. It reads the exit with
+  `waitid(WNOWAIT)`, so the child pid stays a zombie (still "alive" to `pid_alive`) until the supervisor has called
+  `end` and filled `tokensIn`/`tokensOut` from `fleet_side_usage.usage(row)` where they are null; then it reaps.
+  A watcher therefore never sees the pid gone before `exit` is in the row. Status: exit 0 `done`, non-zero `failed`,
+  killed by a signal `timeout` when past `startedAt + boundSec`, else `killed`; `exit` is the code, or 128 + signal.
+  `end` is idempotent, so a watcher that ended the row first (timeout) wins. SIGTERM, SIGINT or SIGHUP to the
+  supervisor is forwarded to CMD's process group.
+- The row's `pid` briefly holds the supervisor pid (registration needs a live pid before the id exists), then is
+  pointed at CMD before `run` prints. The #14 watcher spawned by `start` sends the one completion message.
+- Refused (stderr `FAIL <reason>`, exit 1, no row written): no command after `--`, no parent, a parent not in the
+  roster, a bad bound.

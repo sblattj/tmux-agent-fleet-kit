@@ -260,6 +260,7 @@ COMMANDS = {
     "stop-parent": _lazy("fleet_side_lifecycle", "cmd_stop_parent"),  # issue #18
     "orphans": _lazy("fleet_side_lifecycle", "cmd_orphans"),  # issue #18
     "watch": lambda argv: __import__("fleet_side_watch").cmd_watch(argv),  # issue #14
+    "run": lambda argv: __import__("fleet_side_run").cmd_run(argv),  # issue #15: lib/fleet_side_run.py
 }
 
 
