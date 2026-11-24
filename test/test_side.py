@@ -16,6 +16,7 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FLEET = os.path.join(ROOT, "bin", "fleet")
 sys.path.insert(0, os.path.join(ROOT, "lib"))
+os.environ["FLEET_SIDE_WATCH_SPAWN"] = "0"  # these rows use a stub lane with a pane; never spawn a watcher (#14)
 
 
 class SideTest(unittest.TestCase):

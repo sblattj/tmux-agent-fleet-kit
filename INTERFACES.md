@@ -751,6 +751,31 @@ any CLI. The kit tracks only its pid, log path and result path, so it stays host
   `fleet_side_lifecycle.orphans(dead=(), now=None)` (rows plus `why`, `ageSec`), `kill_orphans(dead=())`,
   `kill_run(row, grace=None) -> bool`.
 
+## Side-run watcher (lib/fleet_side_watch.py, issue #14)
+
+One detached `fleet side watch ID` per run: it detects completion, enforces the bound, and sends the parent exactly
+one inbox message.
+
+- Spawn: `fleet_side.start()` (so `fleet side start` too) calls `fleet_side_watch.spawn(id)`: `setsid`, stdin
+  `/dev/null`, stdout/stderr to `$FLEET_STATE/log/side-watch.log` (the `fleet_mesh.spawn_waker` pattern).
+  `FLEET_SIDE_WATCH_SPAWN=0` turns spawning off. One watcher per id: each holds an flock on
+  `$FLEET_STATE/side/<id>.watch.lock` for its life; a second one exits 0 at once. Unknown id: `FAIL no side run ID`, exit 1.
+- Each poll (`FLEET_SIDE_POLL`, default 5 s): the run is finished when the pid is gone (a zombie counts as gone) or
+  the result file has stayed unchanged (mtime, size) for 2 polls; `status=done`, or `failed` when `exit` is non-zero
+  or the result is an ach RunResult (`runId`) with `exitStatus != "success"`. Past `startedAt + boundSec`: SIGTERM to
+  the pid and its descendants, SIGKILL to what is left after `FLEET_SIDE_GRACE` (default 10 s), `status=timeout`.
+  `sample_children` (#13) runs every poll and the max lands in `children`. `endedAt` set by `fleet side end` ends
+  the loop with that status. The watcher's own bound is `boundSec + grace + 60 s` (then `status=orphan`).
+- On finishing: `tokensIn`/`tokensOut` from `usage()` (#13), then one message to the parent via
+  `fleet_mesh.deliver`, sender `side:<id>`:
+  `side S3 codex gpt-x done in 7m12s (bound 30m), 2.1M tok in / 40k out, 2 helper procs; result /abs/result.json; log /abs/log`.
+  Helper procs = `children - 1` (the tree minus the root); unknown tokens print `?`; a missing path prints `-`.
+- Exactly once: `notifiedAt` is claimed under the store lock (only when null) before `deliver` runs, not after, so a
+  slow wake never holds the store lock and a second watcher, a restart or `fleet side end` never sends a second
+  message. (Deviation from the issue text, which sets `notifiedAt` after delivering.)
+- Logs: `side watch <id>: ...` lines in `$FLEET_STATE/log/fleet.log`.
+- API: `spawn(id)`, `watch(id)`, `finish(id, status, max_children) -> row`, `notify(id)`, `message(row)`, `dur(sec)`.
+
 ## Side-run usage (lib/fleet_side_usage.py, issue #13)
 
 Pure functions over files; nothing here reads or writes `$FLEET_STATE/sides.jsonl`.
