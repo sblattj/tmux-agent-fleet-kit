@@ -141,7 +141,10 @@ def start(parent=None, host=None, model=None, pid=None, log=None, result=None, b
     def fn(rows):
         row = dict(base, id=_next_id(rows))
         return rows + [row], row
-    return _flock_rw(fn)
+    row = _flock_rw(fn)
+    import fleet_side_watch  # noqa: E402  (issue #14: one detached watcher per run; FLEET_SIDE_WATCH_SPAWN=0 skips)
+    fleet_side_watch.spawn(row["id"])
+    return row
 
 
 def update(id, fn):
@@ -243,6 +246,7 @@ COMMANDS = {
     "end": cmd_end,
     "ls": cmd_ls,
     "show": cmd_show,
+    "watch": lambda argv: __import__("fleet_side_watch").cmd_watch(argv),  # issue #14
 }
 
 
