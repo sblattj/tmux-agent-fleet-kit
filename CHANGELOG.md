@@ -1,6 +1,20 @@
 # Changelog
 
-## Unreleased
+## v0.4.0 (2026-11-23)
+
+Side runs: work a lane starts outside the fleet's panes (codex, agy, gemini, an ach run) is tracked as a child of that lane.
+
+- `fleet side start|end|ls|show`: a side-run store at `$FLEET_STATE/sides.jsonl`, written under an exclusive lock (ids `S<n>`, pid, log, result, bound, status, tokens, helper count). Fixes #11.
+- A side run cannot open or answer decisions, and its `peer_send` goes only to its parent, signed `<parent>/<id>`. Fixes #12.
+- Usage accounting: tokens come from the result file or the codex session (its helper threads included), plus a child-process count and a one-line summary. Fixes #13.
+- A detached watcher per run marks it done, failed or timeout, kills the process tree once the bound passes (TERM, then KILL), and sends the parent exactly one inbox message with wall time, tokens and helper count. A watcher whose id was reused after a store reset leaves the new run alone. Fixes #14.
+- `fleet side run --host H [--bound 30m] -- CMD`: starts CMD detached with no tty, sets `FLEET_SIDE`/`FLEET_PARENT`/`FLEET_SIDE_RESULT`, and records its log, result, exit code and tokens. Fixes #15.
+- MCP tools `side_start`, `side_end`, `side_list` on the fleet serve. Fixes #16.
+- Running side runs show as `  -> S1 codex gpt-x 7m/30m 2.1M tok` lines under their parent in `peer_list`, `fleet tick` and `fleet ls`, ending in ORPHAN when the parent is parked or gone. Fixes #17.
+- `fleet park` and `fleet stop` kill the parent's side runs (`--keep-sides` keeps them and marks them orphan instead); `fleet cleanup` lists `ORPHAN-SIDE` lines, and `--apply --kill-orphans` kills them. Fixes #18.
+- ach runs register themselves: `fleet side adopt-ach` (and `fleet tick --adopt`) read ach's run registry and attach each run to the lane that started it, matched by process ancestry, with no change to ach. Fixes #19.
+
+Also in this release:
 
 - `fleet desks up` always leaves window `deskA` at tmux index 0 and `deskB` at 1, live desks included: a desk window elsewhere is moved, or swapped with whatever window holds its index, with no pane or window id change and the current window kept. Before, a fresh `desks up` left them at 1 and 2 (the `home` window took 0), and lanes took any free index. Refs #9.
 - `fleet launch` opens a lane window at the first free index from 2, so 0 and 1 stay for the desks even before `desks up` has run.
