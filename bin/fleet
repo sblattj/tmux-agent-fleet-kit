@@ -532,6 +532,14 @@ env_check() { # pid -> sets $miss (empty = all checks passed)
   [ -z "$miss" ]
 }
 
+claude_dialog() { # pane -> 2 workspace-trust dialog, 3 Bypass Permissions accept dialog, 1 neither
+  local txt
+  txt=$(tm capture-pane -p -t "$1" 2>/dev/null || true)
+  if printf '%s' "$txt" | grep -q "trust this folder\|one you trust"; then return 2; fi
+  if printf '%s' "$txt" | grep -q "Yes, I accept"; then return 3; fi
+  return 1
+}
+
 proof_claude() { # name sid pane mode
   local name=$1 sid=$2 pane=$3 mode=$4 pid= miss= rc=0
   poll 'pid=$(pgrep -f -- "-n $name .*$sid" 2>/dev/null | head -1 || true); [ -n "$pid" ]' "$PROOF_T" \
@@ -543,7 +551,7 @@ proof_claude() { # name sid pane mode
   roster_merge "$name" "$(jq -n --argjson p "$pid" '{pid:$p}')"
   # The first prompt is only submitted past the workspace-trust dialog, and the transcript appears then.
   if [ "$mode" != resume ]; then
-    poll 'f=$(ls "$HOME"/.claude/projects/*/"$sid".jsonl 2>/dev/null | head -1 || true); [ -n "$f" ] || { tm capture-pane -p -t "$pane" 2>/dev/null | grep -q "trust this folder\|one you trust" && return 2; tm capture-pane -p -t "$pane" 2>/dev/null | grep -q "Yes, I accept" && return 3; false; }' "$PROOF_T" || rc=$?
+    poll 'f=$(ls "$HOME"/.claude/projects/*/"$sid".jsonl 2>/dev/null | head -1 || true); [ -n "$f" ] || { claude_dialog "$pane"; case $? in 2) return 2 ;; 3) return 3 ;; esac; false; }' "$PROOF_T" || rc=$?
     case ${rc:-0} in
       0) ;;
       2) die "pid $pid is waiting at Claude's workspace-trust dialog in pane $pane; run: install/claude.sh --trust $(roster_get "$name" dir) --trust-only, then fleet stop $name and relaunch" ;;
@@ -551,11 +559,17 @@ proof_claude() { # name sid pane mode
       *) die "pid $pid started but its transcript never appeared after ${PROOF_T}s (first prompt not submitted); look at pane $pane" ;;
     esac
   else
-    # resume writes no new transcript at start, so look once for the bypass accept dialog after a short settle
-    sleep "${FLEET_RESUME_SETTLE:-6}"
-    if tm capture-pane -p -t "$pane" 2>/dev/null | grep -q "Yes, I accept"; then
-      die "pid $pid is waiting at Claude's Bypass Permissions accept dialog in pane $pane; accept it in the pane (fleet attach) or fleet stop $name and relaunch"
-    fi
+    # resume (issue #8): its transcript exists before the resume, so it proves nothing. Watch the pane for the
+    # workspace-trust and Bypass Permissions dialogs, and wait for Claude's own registration of this process,
+    # <claude home>/sessions/<pid>.json with this pid, which is only written once the session is past both dialogs.
+    local reg=${FLEET_CLAUDE_HOME:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}}/sessions/$pid.json
+    poll 'claude_dialog "$pane"; case $? in 2) return 2 ;; 3) return 3 ;; esac; jq -e --argjson p "$pid" ".pid == \$p" "$reg" >/dev/null 2>&1' "$PROOF_T" || rc=$?
+    case ${rc:-0} in
+      0) ;;
+      2) die "pid $pid is waiting at Claude's workspace-trust dialog in pane $pane (resume); run: install/claude.sh --trust $(roster_get "$name" dir) --trust-only, then fleet stop $name and relaunch" ;;
+      3) die "pid $pid is waiting at Claude's Bypass Permissions accept dialog in pane $pane (resume); accept it in the pane (fleet attach) or fleet stop $name and relaunch" ;;
+      *) die "pid $pid resumed but never registered $reg after ${PROOF_T}s; look at pane $pane" ;;
+    esac
   fi
   if [ "$mode" = goal ]; then
     poll 'f=$(ls "$HOME"/.claude/projects/*/"$sid".jsonl 2>/dev/null | head -1 || true); [ -n "$f" ] && grep -q "Goal set:" "$f"' "$PROOF_T" \

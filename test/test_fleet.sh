@@ -205,7 +205,7 @@ t "a stopped name can launch again" "$FLEET" launch --no-proof --dir "$T" A prom
 
 # ---- (7) startup dialogs fail loud (proof path, dialog stub, no transcript ever appears)
 chmod +x "$HERE/stubs/claude-dialog"
-dlg() { FLEET_CLAUDE_BIN=$HERE/stubs/claude-dialog FLEET_PROOF_TIMEOUT=10 FLEET_RESUME_SETTLE=3 "$FLEET" launch --dir "$T" "$@" 2>&1; }
+dlg() { FLEET_CLAUDE_BIN=$HERE/stubs/claude-dialog FLEET_CLAUDE_HOME=$FLEET_STATE/claude-home FLEET_PROOF_TIMEOUT=10 "$FLEET" launch --dir "$T" "$@" 2>&1; }
 out=$(dlg DTRUST prompt "$T/prompt.txt"); rc=$?
 t "trust dialog: launch exits 1" test $rc -eq 1
 t "trust dialog: FAIL names the workspace-trust dialog" bash -c 'printf "%s" "$1" | grep -q "^FAIL .*workspace-trust dialog"' _ "$out" \
@@ -221,8 +221,15 @@ t "env check: a process really missing the skip var still fails after the retrie
   || printf '    launcher said: %s\n' "$out"
 out=$(dlg DPLAIN prompt "$T/prompt.txt"); rc=$?
 t "control: no dialog still fails (no transcript) but names neither dialog" bash -c 'test "$2" -eq 1 && printf "%s" "$1" | grep -q "transcript never appeared" && ! printf "%s" "$1" | grep -q "dialog"' _ "$out" "$rc"
+# resume (issue #8): the trust dialog fails loud like a fresh launch, and OK waits for Claude's sessions/<pid>.json
+out=$(dlg DRTRUST resume 00000000-0000-4000-8000-000000000003); rc=$?
+t "trust dialog on resume: launch exits 1" test $rc -eq 1
+t "trust dialog on resume: FAIL names the workspace-trust dialog, no OK" bash -c 'printf "%s" "$1" | grep -q "^FAIL .*workspace-trust dialog .*(resume)" && ! printf "%s" "$1" | grep -q "^OK "' _ "$out"
 out=$(dlg DRPLAIN resume 00000000-0000-4000-8000-000000000002); rc=$?
-t "control: resume with no dialog launches OK" bash -c 'test "$2" -eq 0 && printf "%s" "$1" | grep -q "^OK DRPLAIN"' _ "$out" "$rc"
+t "resume that never registers sessions/<pid>.json FAILs, no OK" bash -c 'test "$2" -eq 1 && printf "%s" "$1" | grep -q "^FAIL .*never registered .*/sessions/[0-9]*\.json" && ! printf "%s" "$1" | grep -q "^OK "' _ "$out" "$rc"
+out=$(dlg DRREG resume 00000000-0000-4000-8000-000000000004); rc=$?
+t "control: resume with no dialog that registers launches OK" bash -c 'test "$2" -eq 0 && printf "%s" "$1" | grep -q "^OK DRREG"' _ "$out" "$rc"
+t "control: the registration it waited for names the lane's pid" bash -c 'jq -e --argjson p "$(jq .DRREG.pid "$1/roster.json")" ".pid == \$p" "$1/claude-home/sessions/$(jq .DRREG.pid "$1/roster.json").json"' _ "$FLEET_STATE"
 
 # ---- (8) kiro: scratch KIRO_HOME, python stub that writes leases/sessions like kiro-cli 3.5 (test/stubs/kiro)
 export KIRO_HOME=$T/kh FLEET_KIRO_BIN=$HERE/stubs/kiro
