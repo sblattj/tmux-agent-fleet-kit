@@ -580,7 +580,7 @@ proof_claude() { # name sid pane mode
     # resume (issue #8): its transcript exists before the resume, so it proves nothing. Watch the pane for the
     # workspace-trust and Bypass Permissions dialogs, and wait for Claude's own registration of this process,
     # <claude home>/sessions/<pid>.json with this pid, which is only written once the session is past both dialogs.
-    local reg=${FLEET_CLAUDE_HOME:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}}/sessions/$pid.json
+    local reg; reg=$(claude_home)/sessions/$pid.json
     poll 'claude_dialog "$pane"; case $? in 2) return 2 ;; 3) return 3 ;; esac; jq -e --argjson p "$pid" ".pid == \$p" "$reg" >/dev/null 2>&1' "$PROOF_T" || rc=$?
     case ${rc:-0} in
       0) ;;
