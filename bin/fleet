@@ -167,6 +167,18 @@ worker_block() { # mode condition-text keep-flag
 }
 
 # ---------------------------------------------------------------- desks guard
+claude_home() { printf '%s' "${FLEET_CLAUDE_HOME:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}}"; }
+
+session_name_pid() { # name -> pid of a live process whose <claude home>/sessions/<pid>.json has name == NAME
+  local f p
+  for f in $(grep -lF "\"$1\"" "$(claude_home)"/sessions/*.json 2>/dev/null); do
+    p=$(jq -r --arg n "$1" 'select(.name == $n) | .pid // empty' "$f" 2>/dev/null) || continue
+    case $p in ''|*[!0-9]*) continue ;; esac
+    if kill -0 "$p" 2>/dev/null; then printf '%s' "$p"; return 0; fi
+  done
+  return 0
+}
+
 desks_guard() { # dir noproof dry : bring the desks up when ROUTE or DECIDE has no live pane, or FAIL with the hint
   local d=$1 np=$2 dr=$3 a
   if pane_alive "$(roster_get ROUTE pane)" && pane_alive "$(roster_get DECIDE pane)"; then return 0; fi
@@ -299,6 +311,10 @@ cmd_launch() {
       local lp
       lp=$(pgrep -f -- "claude .*-n $name( |\$)" 2>/dev/null | head -1 || true)
       [ -z "$lp" ] || die "a claude named $name is already live (pid $lp); stop it or pick another name"
+      # issue #5: a background or hand-resumed session has no -n in argv but registers its name in Claude's
+      # sessions/<pid>.json; a live pid there under this name holds it too
+      lp=$(session_name_pid "$name")
+      [ -z "$lp" ] || die "a claude named $name is already live (pid $lp, $(claude_home)/sessions/$lp.json); stop it or pick another name"
     fi
   fi
 
@@ -367,6 +383,8 @@ cmd_launch() {
   case $cli in
     claude)
       exports="export $SKIPVAR=1 FLEET_MESH=$(printf '%q' "$ROOT/lib/fleet_mesh.py")"  # role hook mirrors SendMessage
+      # issue #5: a standing desk never hands its session to a background job on exit (that job would keep the name)
+      case $mode:$role in desk:*|*:route|*:decide|*:watch|*:learn) exports="$exports CLAUDE_CODE_DISABLE_BG_EXIT_HANDOFF=1" ;; esac
       if [ "$resume" = 1 ]; then
         cmd="$q_bin --dangerously-skip-permissions -n $name --model $model --disallowed-tools=$deny$rflags --resume $sid"
       else

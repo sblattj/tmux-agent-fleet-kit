@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Standing desks (roles route, decide, watch, learn and `desk` mode) launch Claude with `CLAUDE_CODE_DISABLE_BG_EXIT_HANDOFF=1`, shown in `--dry-run`. The launch name check also reads the `name` field of `~/.claude/sessions/<pid>.json` for a live pid and FAILs `already live (pid N, ...)`, and `fleet cleanup` (4) lists such a holder of a pane-less lane as an orphan process. Fixes #5.
 - deskA and deskB are the default. Every installer ends by running `fleet desks up --cli <its CLI>` (idempotent; `--no-desks` or `FLEET_NO_DESKS=1` skips it, `--dry-run` prints it). Fixes #9.
 - `fleet launch` of a worker or probe lane (goal, prompt and resume, so `fleet reopen` too) first runs `fleet desks up` when the roster has no live ROUTE or DECIDE, and FAILs with `FAIL no desks: ...` (no lane launched) if that does not leave them live. `--no-desks` (or `FLEET_NO_DESKS=1`) skips the guard; `--dry-run` prints the step. Desk launches are exempt. Fixes #9.
 - `fleet tick` prints `WARN desks down: deskA (ROUTE dead, DECIDE missing); run fleet desks up` when a desk of deskA or deskB has a dead or missing pane, also on a fleet with no lanes; `--json` is unchanged. Fixes #9.

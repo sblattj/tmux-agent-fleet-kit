@@ -686,6 +686,27 @@ def cmd_scan(args):
             if hit:
                 procs.append({"pid": pid, "lane": f["name"], "args": args_[:120]})
                 break
+    # issue #5: a background or hand-resumed claude holds a name through <claude home>/sessions/<pid>.json, not argv
+    chome = os.environ.get("FLEET_CLAUDE_HOME") or os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+    gone_names = set(f["name"] for f in gone)
+    seen = set(x["pid"] for x in procs)
+    for sf in sorted(glob.glob(os.path.join(chome, "sessions", "*.json"))):
+        try:
+            with open(sf) as fh:
+                d = json.load(fh)
+            pid, nm = int(d.get("pid")), d.get("name")
+        except (OSError, ValueError, TypeError):
+            continue
+        if nm not in gone_names or pid in seen or pid in me:
+            continue
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            continue
+        except PermissionError:
+            pass
+        seen.add(pid)
+        procs.append({"pid": pid, "lane": nm, "args": "(session file %s, name %s)" % (sf, nm)})
     print(json.dumps({"quiet": [{"name": f["name"], "age": age(f["lastActive"])} for f in quiet],
                       "orphanWindows": orphans, "deadLanes": dead, "orphanProcs": procs,
                       "stalledProbes": [{"name": f["name"], "age": age(f["lastActive"])} for f in stalled]}))
@@ -1170,7 +1191,7 @@ cmd_cleanup() {
   printf '%s' "$scan" | jq -r '.orphanWindows[] | "  ORPHAN-WINDOW \(.name) window=\(.window)"'
   echo "(3) live roster entries whose pane is gone:"
   printf '%s' "$scan" | jq -r '.deadLanes[] | "  DEAD-LANE \(.name) pane=\(.pane)"'
-  echo "(4) cli processes naming a roster lane that has no pane:"
+  echo "(4) cli processes naming a roster lane that has no pane (argv, or a live Claude sessions/<pid>.json name):"
   printf '%s' "$scan" | jq -r '.orphanProcs[] | "  ORPHAN-PROC pid=\(.pid) lane=\(.lane) \(.args)"'
   echo "(5) probe lanes with no output for 15 min (Q105):"
   printf '%s' "$scan" | jq -r '.stalledProbes[] | "  STALLED-PROBE \(.name) idle=\(.age)"'
