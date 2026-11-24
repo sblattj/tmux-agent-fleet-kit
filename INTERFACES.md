@@ -747,3 +747,23 @@ Pure functions over files; nothing here reads or writes `$FLEET_STATE/sides.json
   `ps -axo pid=,ppid=,stat=`; 0 when the root is gone. The watcher stores the max over polls in `row["children"]`.
 - `fmt(row, now=None) -> str`: `codex gpt-x 7m/30m 2.1M tok` (host, model if set, elapsed/bound in minutes, in + out
   tokens); the clock stops at `endedAt`; unknown tokens print `? tok`.
+
+## Side runs in the roster views (lib/fleet_side_roster.py, issue #17)
+
+Read-only over `sides.jsonl` and the roster. A run is shown while it has no `endedAt` (status `running`, or
+`orphan` set by the watcher); ended runs are hidden here and listed by `fleet side ls` (`--all` is accepted and is
+the default: every row).
+
+- Child line, one per shown run, right under its parent's line: `  -> S3 codex gpt-x 7m/30m 2.1M tok`
+  (`fleet_side_usage.fmt`; stored tokens, else the result file's tokens, else `? tok`), in id order. ` ORPHAN` is
+  appended when the parent is `parked`, `done` or `archived`, is not in the roster, or the row's status is `orphan`.
+- `peer_list`: child lines after each lane line; runs whose parent is not in the roster follow at the end under a
+  `<parent> (gone)` header.
+- `fleet tick`: the same lines under each lane's row of the text table and after it for gone parents (also when
+  the table is `(no lanes)`). `--json`: each fact gains `"sides": [row + {"line", "orphan"}]` (empty list when
+  none). The lifecycle's python finds the module through `FLEET_KIT_LIB` (set by `pyh`).
+- `fleet ls`: the same child lines under each lane, then the gone block.
+- `fleet side roster [--gone]`: `<parent>\t<line>` per shown run whose parent is in the roster (what `fleet ls`
+  reads); `--gone` prints the gone block.
+- API: `visible(row)`, `is_orphan(row, roster)`, `line(row, roster, now)`, `side_rows(roster, now) ->
+  {parent: [rows]}`, `child_lines(name, roster, now)`, `gone(roster, now)`, `gone_lines(roster, now)`.

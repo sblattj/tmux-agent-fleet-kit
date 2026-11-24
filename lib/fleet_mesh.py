@@ -915,12 +915,18 @@ def t_peer_list(args):
     roster = load_roster()
     if not roster:
         return "roster empty"
+    here = os.path.dirname(os.path.abspath(__file__))
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    import fleet_side_roster as sides  # issue #17: running side runs under their parent; lazy (it imports us)
     rows = []
     for name in sorted(roster):
         e = roster[name]
         rows.append("%s cli=%s mode=%s pane=%s session=%s port=%s unread=%d" % (
             name, e.get("cli"), e.get("mode"), e.get("pane"), e.get("session_id"),
             e.get("port"), unread_count(name)))
+        rows.extend(sides.child_lines(name, roster))
+    rows.extend(sides.gone_lines(roster))
     return "\n".join(rows)
 
 

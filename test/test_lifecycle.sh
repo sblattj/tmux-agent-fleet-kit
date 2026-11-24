@@ -560,5 +560,34 @@ t "cleanup with a missing session does not report a prefix-matching session's wi
 t "cleanup with a missing session does not kill a prefix-matching session's window" bash -c 'tmux -L "$1" list-windows -t "=nosuch-$2decoy" -F "#W" | grep -qx prefixwin' _ "$FLEET_TMUX_SOCKET" "$$"
 tm kill-session -t "=nosuch-$$decoy" 2>/dev/null
 
+# ================================================================ 7. side runs under the parent (issue #17)
+reset_state
+sp=$(mkwin L)
+addlane L codex worker "" "$sp"
+side_rows() { # one running S1 (7 min in, 2.1M tok) and one done S2
+  cat > "$FLEET_STATE/sides.jsonl" <<JSON
+{"id":"S1","parent":"L","host":"codex","model":"gpt-x","pid":1,"boundSec":1800,"startedAt":"$(iso_ago 420)","status":"running","endedAt":null,"tokensIn":2000000,"tokensOut":100000,"children":1}
+{"id":"S2","parent":"L","host":"agy","model":null,"pid":1,"boundSec":600,"startedAt":"$(iso_ago 900)","status":"done","endedAt":"$(iso_ago 60)","tokensIn":null,"tokensOut":null,"children":0}
+JSON
+}
+side_rows
+sj=$("$LC" tick --json)
+eq "side: tick --json lane L has one running side row" 1 "$(printf '%s' "$sj" | jq '.[0].sides | length')"
+eq "side: tick --json side row is S1" S1 "$(printf '%s' "$sj" | jq -r '.[0].sides[0].id')"
+eq "side: tick --json side row is not orphan" false "$(printf '%s' "$sj" | jq -r '.[0].sides[0].orphan')"
+st=$("$LC" tick)
+t "side: tick text has the child line under L" bash -c 'printf "%s\n" "$1" | grep -A1 "^L " | tail -1 | grep -q "^  -> S1 codex gpt-x 7m/30m 2.1M tok$"' _ "$st"
+t "side: tick text hides the done S2" hasnt "$st" "S2"
+fl=$(FLEET_TMUX_SOCKET=$FLEET_TMUX_SOCKET bash "$HERE/../bin/fleet" ls)
+t "side: fleet ls has the child line under L" bash -c 'printf "%s\n" "$1" | grep -A1 "^L " | tail -1 | grep -q "^  -> S1 codex gpt-x 7m/30m 2.1M tok$"' _ "$fl"
+t "side: fleet ls hides the done S2" hasnt "$fl" "S2"
+t2=$(mktemp "$T/r.XXXXXX"); jq '.L.status = "parked"' "$FLEET_STATE/roster.json" > "$t2" && mv "$t2" "$FLEET_STATE/roster.json"
+t "side: parent parked -> tick line ends in ORPHAN" bash -c '"$1" tick | grep "^  -> S1 " | grep -q " ORPHAN$"' _ "$LC"
+eq "side: parent parked -> tick --json orphan true" true "$("$LC" tick --json | jq -r '.[0].sides[0].orphan')"
+t2=$(mktemp "$T/r.XXXXXX"); jq 'del(.L)' "$FLEET_STATE/roster.json" > "$t2" && mv "$t2" "$FLEET_STATE/roster.json"
+t "side: parent gone -> tick still shows S1 as ORPHAN" bash -c '"$1" tick | grep "^  -> S1 " | grep -q " ORPHAN$"' _ "$LC"
+rm -f "$FLEET_STATE/sides.jsonl"
+t "side: control: no sides.jsonl -> no child line" bash -c '! "$1" tick | grep -q -- "->"' _ "$LC"
+
 echo "---"
 if [ "$FAILS" -eq 0 ]; then echo "ALL PASS"; else echo "$FAILS FAILED"; exit 1; fi

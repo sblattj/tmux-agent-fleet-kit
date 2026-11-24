@@ -329,6 +329,30 @@ class TestDelivery(MeshBase):
         out = mesh.call_tool("peer_list", {})["content"][0]["text"]
         self.assertIn("unread=0", [ln for ln in out.split("\n") if ln.startswith("cx ")][0])
 
+    def test_peer_list_side_runs_under_parent(self):
+        # issue #17: one running side run S1 and one done S2 under lane cx; only S1 shows, indented under cx
+        rows = [{"id": "S1", "parent": "cx", "host": "codex", "model": "gpt-x", "pid": 1, "boundSec": 1800,
+                 "startedAt": "2026-01-01T00:00:00Z", "status": "running", "endedAt": None,
+                 "tokensIn": 2000000, "tokensOut": 100000},
+                {"id": "S2", "parent": "cx", "host": "agy", "pid": 1, "boundSec": 600,
+                 "startedAt": "2026-01-01T00:00:00Z", "status": "done", "endedAt": "2026-01-01T00:05:00Z"}]
+        with open(os.path.join(self.state, "sides.jsonl"), "w") as f:
+            f.write("".join(json.dumps(r) + "\n" for r in rows))
+        lines = mesh.call_tool("peer_list", {})["content"][0]["text"].split("\n")
+        i = [n for n, ln in enumerate(lines) if ln.startswith("cx ")][0]
+        self.assertRegex(lines[i + 1], r"^  -> S1 codex gpt-x \d+m/30m 2\.1M tok$")
+        self.assertFalse(any("S2" in ln for ln in lines), lines)
+        # parked parent: the child line is flagged ORPHAN
+        self.roster["cx"]["status"] = "parked"
+        with open(os.path.join(self.state, "roster.json"), "w") as f:
+            json.dump(self.roster, f)
+        lines = mesh.call_tool("peer_list", {})["content"][0]["text"].split("\n")
+        i = [n for n, ln in enumerate(lines) if ln.startswith("cx ")][0]
+        self.assertTrue(lines[i + 1].startswith("  -> S1 ") and lines[i + 1].endswith(" ORPHAN"), lines[i + 1])
+        # control: no sides.jsonl, no child lines
+        os.remove(os.path.join(self.state, "sides.jsonl"))
+        self.assertNotIn("->", mesh.call_tool("peer_list", {})["content"][0]["text"])
+
     def test_send_requires_sender(self):
         del os.environ["FLEET_NAME"]
         r = mesh.call_tool("peer_send", {"to": "cx", "text": "x"})

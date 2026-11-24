@@ -218,6 +218,7 @@ def cmd_ls(argv):
     ap = argparse.ArgumentParser(prog="fleet side ls")
     ap.add_argument("--parent")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--all", action="store_true")  # every row, ended too (the default); roster views hide ended
     a = ap.parse_args(argv)
     rs = rows(parent=a.parent)
     if a.json:
@@ -243,6 +244,7 @@ COMMANDS = {
     "end": cmd_end,
     "ls": cmd_ls,
     "show": cmd_show,
+    "roster": lambda argv: __import__("fleet_side_roster").cmd_roster(argv),  # issue #17: roster child lines
 }
 
 
