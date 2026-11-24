@@ -618,10 +618,11 @@ class TestStdio(MeshBase):
             self.assertEqual(r["result"], {})
             r = rpc({"jsonrpc": "2.0", "id": 4, "method": "tools/list"})
             tools = r["result"]["tools"]
-            self.assertEqual(len(tools), 8)
+            self.assertEqual(len(tools), 11)
             self.assertEqual(sorted(t["name"] for t in tools),
                              ["decision_answer", "decision_find", "decision_list", "decision_open",
-                              "decision_report", "peer_inbox", "peer_list", "peer_send"])
+                              "decision_report", "peer_inbox", "peer_list", "peer_send", "side_end", "side_list",
+                              "side_start"])
             for t in tools:
                 self.assertEqual(t["inputSchema"]["type"], "object")
                 self.assertTrue(t["description"])
