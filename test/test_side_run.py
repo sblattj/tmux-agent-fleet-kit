@@ -30,7 +30,7 @@ class SideRunTest(unittest.TestCase):
             f.write("#!/bin/sh\nexit 0\n")
         os.chmod(tmux, 0o755)
         with open(os.path.join(self.state, "roster.json"), "w") as f:
-            json.dump({"L": {"name": "L", "cli": "claude", "mode": "prompt", "pane": "%1", "session_id": "u-1",
+            json.dump({"L": {"name": "L", "cli": "claude", "mode": "prompt", "session_id": "u-1",
                              "port": None}}, f)
         self.env = {k: v for k, v in os.environ.items() if not k.startswith("FLEET_")}
         self.env.update(FLEET_STATE=self.state, FLEET_NAME="L", FLEET_SIDE_POLL="0.2", FLEET_WAKE_SPAWN="0",
