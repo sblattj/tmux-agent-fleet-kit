@@ -84,6 +84,8 @@ Try anything first with `fleet launch --dry-run ...` (prints the window script, 
 | learn | keeps the ledger of decisions and shipped work, quizzes the human | same as decide |
 | worker | runs one goal, reports to ROUTE, asks DECIDE | `fleet launch`, `park`, `stop`, `reopen` |
 
+**Per-lane env (issue #4).** `fleet launch --env KEY=VALUE` (repeatable) writes `export KEY=VALUE` into the lane's window script, with VALUE shell-quoted and KEY checked as an env name (fleet's own `FLEET_NAME`, `FLEET_ROLE`, `FLEET_STATE`, `FLEET_TMUX_SESSION`, `FLEET_MESH` and the skip var are refused). The set is stored in `launch/<name>.launch.json`; `fleet reopen` (resume and `--fresh`) passes it again, and a `fleet launch ... resume` with no `--env` reapplies it. `FLEET_PRELAUNCH_HOOK=<cmd>` runs before every launch, dry runs included, with the lane's name, mode and argument (the condition file for a goal), and prints `KEY=VALUE` lines to export, so a goal-file field can drive them; `--env` wins on a clash and a nonzero exit refuses the launch. `FLEET_STRIP_EXTRA="VAR1 VAR2"` adds parent-shell-only vars to the script's `unset` line. `--dry-run` shows the export and unset lines, and for Claude the env proof FAILs `env check failed: env:KEY` when a key never reached the CLI process.
+
 Every role denies AskUserQuestion. Claude worker lanes also deny Workflow, ScheduleWakeup and ReportFindings unless the goal file lists them in `keepTools` (or `fleet launch --keep-tools`). Role files live in `roles/` (`<role>.md`, `<role>.claude.json`, `<role>.codex.toml`, `<role>.opencode.json`, `<role>.kiro.json`, `<role>.agy.json` + `<role>.agy.md`). Separately, `fleet launch|park|stop|reopen|cleanup --apply` refuse with `FAIL role <r> can't <verb>` when `FLEET_ROLE` is set to anything but `route`; a human shell with `FLEET_ROLE` unset is allowed.
 
 ### How each CLI enforces a role
@@ -273,6 +275,7 @@ bash test/test_installs.sh    # installers against a throwaway HOME with stubbed
 bash test/test_lifecycle.sh   # tick, park, reopen, handoff, cleanup (incl. side runs killed on park/stop, ORPHAN-SIDE) against stub CLIs and fixture transcripts
 bash test/test_fleet.sh       # fleet launch (dry run + stub CLIs on a private tmux socket); run with FLEET_* unset
 bash test/test_roles.sh       # role files and launch wiring; run with FLEET_* unset
+bash test/test_launch_env.sh  # fleet launch --env, FLEET_STRIP_EXTRA, FLEET_PRELAUNCH_HOOK, env proof (issue #4)
 bash test/test_privacy.sh     # no personal data in the repo (FLEET_PRIVACY_TERMS=a|b adds names)
 python3 -m unittest test/test_contracts.py   # four-desks contracts (WATCH, probe) and the watch|learn|probe dispatch
 bash test/test_learn.sh       # fleet learn: ledger, sync, quiz, 24 h proof with an injected clock, export

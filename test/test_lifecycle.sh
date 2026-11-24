@@ -471,6 +471,16 @@ addlane ro opencode worker ses_oa %901 '{"status":"done","model":null}'
 addlane rl claude worker "$(uid 51)" %901 '{"status":"live"}'
 "$LC" reopen rc >/dev/null 2>&1
 eq "reopen claude runs fleet launch ... resume <id>" "launch --cli claude --model opus --role worker --dir $W --keep-tools all rc resume $(uid 51)" "$(tail -1 "$T/fake.log")"
+# issue #4: the --env set of the lane's last launch record is passed again on reopen, resume and --fresh
+addlane re claude worker "$(uid 52)" %901 '{"status":"parked"}'
+mkdir -p "$FLEET_STATE/launch" "$FLEET_STATE/handoff"
+printf '%s\n' '{"name":"re","env":{"A":"1","B":"x y"}}' > "$FLEET_STATE/launch/re.launch.json"
+"$LC" reopen re >/dev/null 2>&1
+eq "reopen passes the stored --env set (resume)" "launch --cli claude --model opus --role worker --dir $W --keep-tools all --env A=1 --env B=x y re resume $(uid 52)" "$(tail -1 "$T/fake.log")"
+printf 'Was: re\n' > "$FLEET_STATE/handoff/re.md"
+addlane re claude worker "$(uid 52)" %901 '{"status":"parked"}'   # the reopen above flipped it to live
+"$LC" reopen re --fresh >/dev/null 2>&1
+eq "reopen --fresh passes the stored --env set" "launch --cli claude --model opus --role worker --dir $W --keep-tools all --env A=1 --env B=x y re prompt $FLEET_STATE/handoff/re.md" "$(tail -1 "$T/fake.log")"
 "$LC" reopen rx >/dev/null 2>&1
 eq "reopen codex keeps the role and resumes the thread" "launch --cli codex --model opus --role route --dir $W --keep-tools all rx resume cx-r" "$(tail -1 "$T/fake.log")"
 addlane rk kiro worker sess_rk %901 '{"status":"parked"}'

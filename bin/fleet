@@ -44,6 +44,15 @@
 #                                 rarely uses). A goal-mode launch also reads keepTools from the goal JSON the
 #                                 condition names (for example "keepTools": ["Workflow"] for a goal that
 #                                 permits a workflow). Recorded in the roster so fleet reopen keeps it.
+#   --env KEY=VALUE               repeatable: an export line in the window script (VALUE shell-quoted, KEY an env
+#                                 name, not one fleet sets itself). Stored in launch/<name>.launch.json; a resume
+#                                 with no --env reapplies the stored set, and fleet reopen passes it again. The
+#                                 claude env proof checks each KEY reached the CLI process.
+#                                 FLEET_PRELAUNCH_HOOK=<cmd>: run before launch (dry runs too) with NAME MODE ARG
+#                                 (an executable path gets them as args; other text runs in bash -c with $1 $2 $3);
+#                                 it prints KEY=VALUE lines to export ('#' and blank lines skipped), --env wins on a
+#                                 clash, and a nonzero exit refuses the launch.
+#                                 FLEET_STRIP_EXTRA="VAR1 VAR2": appended to the window script's unset line.
 #   --dry-run                     print the window script, prompt and tmux command; touch nothing
 #   --no-proof                    skip the pid / goal / session waits (tests with stub CLIs); roster is still written
 #   --no-desks                    launch even when the roster has no live ROUTE or DECIDE (env twin FLEET_NO_DESKS=1).
@@ -179,6 +188,22 @@ session_name_pid() { # name -> pid of a live process whose <claude home>/session
   return 0
 }
 
+valid_env_name() { printf '%s' "$1" | grep -Eq '^[A-Za-z_][A-Za-z0-9_]*$'; }
+
+env_add() { # KEY=VALUE source : append to ENVK/ENVV (a later KEY replaces an earlier one)
+  local kv=$1 src=$2 k v i
+  case $kv in *=*) ;; *) die "$src: want KEY=VALUE: $kv" ;; esac
+  k=${kv%%=*} v=${kv#*=}
+  valid_env_name "$k" || die "$src: not an env var name: $k"
+  case " FLEET_NAME FLEET_ROLE FLEET_STATE FLEET_TMUX_SESSION FLEET_MESH $SKIPVAR " in
+    *" $k "*) die "$src: $k is set by fleet launch itself" ;;
+  esac
+  for i in ${ENVK[@]+"${!ENVK[@]}"}; do
+    if [ "${ENVK[$i]}" = "$k" ]; then ENVV[$i]=$v; return 0; fi
+  done
+  ENVK+=("$k"); ENVV+=("$v")
+}
+
 desks_guard() { # dir noproof dry : bring the desks up when ROUTE or DECIDE has no live pane, or FAIL with the hint
   local d=$1 np=$2 dr=$3 a
   if pane_alive "$(roster_get ROUTE pane)" && pane_alive "$(roster_get DECIDE pane)"; then return 0; fi
@@ -192,7 +217,7 @@ desks_guard() { # dir noproof dry : bring the desks up when ROUTE or DECIDE has 
 
 # ---------------------------------------------------------------- launch
 cmd_launch() {
-  local cli=claude model= dir= split= splitdir= size= dry=0 noproof=0 role= keep= nodesks=${FLEET_NO_DESKS:-0}
+  local cli=claude model= dir= split= splitdir= size= dry=0 noproof=0 role= keep= nodesks=${FLEET_NO_DESKS:-0} envs=()
   while [ $# -gt 0 ]; do
     case $1 in
       --cli) [ $# -ge 2 ] || usage; cli=$2; shift 2 ;;
@@ -204,6 +229,7 @@ cmd_launch() {
       --size) [ $# -ge 2 ] || usage; size=$2; shift 2 ;;
       --role) [ $# -ge 2 ] || usage; role=$2; shift 2 ;;
       --keep-tools) [ $# -ge 2 ] || usage; keep=$2; shift 2 ;;
+      --env) [ $# -ge 2 ] || usage; envs+=("$2"); shift 2 ;;
       --dry-run) dry=1; shift ;;
       --no-proof) noproof=1; shift ;;
       --no-desks) nodesks=1; shift ;;
@@ -301,6 +327,32 @@ cmd_launch() {
     [ "$dry" = 1 ] || die "$cli binary not found: $binvar (set FLEET_$(printf '%s' "$cli" | tr a-z A-Z)_BIN)"
     bin=$binvar
   fi
+
+  # issue #4: per-lane env. Stored in launch/<name>.launch.json; a resume with no --env reapplies the stored set
+  # (fleet reopen passes it as --env). FLEET_PRELAUNCH_HOOK prints more KEY=VALUE lines; --env wins on a clash.
+  local ENVK=() ENVV=() e k
+  if [ "$resume" = 1 ] && [ "${#envs[@]}" = 0 ] && [ -s "$STATE/launch/$name.launch.json" ]; then
+    while IFS= read -r -d '' e; do envs+=("$e"); done < <(jq -j '(.env // {}) | to_entries[] | "\(.key)=\(.value)\u0000"' "$STATE/launch/$name.launch.json" 2>/dev/null)
+  fi
+  if [ -n "${FLEET_PRELAUNCH_HOOK:-}" ]; then
+    local hout hrc=0  # an executable path gets NAME MODE ARG; other text runs in bash -c with $1 $2 $3 set to them
+    if [ -f "$FLEET_PRELAUNCH_HOOK" ] && [ -x "$FLEET_PRELAUNCH_HOOK" ]; then
+      hout=$("$FLEET_PRELAUNCH_HOOK" "$name" "$mode" "$arg") || hrc=$?
+    else
+      hout=$(bash -c "$FLEET_PRELAUNCH_HOOK" fleet-prelaunch "$name" "$mode" "$arg") || hrc=$?
+    fi
+    [ "$hrc" = 0 ] || die "FLEET_PRELAUNCH_HOOK refused the launch of $name (exit $hrc)"
+    while IFS= read -r e; do
+      case $e in ''|'#'*) continue ;; esac
+      env_add "$e" "FLEET_PRELAUNCH_HOOK"
+    done <<< "$hout"
+  fi
+  for e in ${envs[@]+"${envs[@]}"}; do env_add "$e" "--env"; done
+  local strip=$STRIP
+  for k in ${FLEET_STRIP_EXTRA:-}; do
+    valid_env_name "$k" || die "FLEET_STRIP_EXTRA: not an env var name: $k"
+    strip="$strip $k"
+  done
 
   # liveness: refuse a second live lane under the same name
   if [ "$dry" = 0 ]; then
@@ -439,14 +491,17 @@ agy_type &"
     fi
   fi
 
+  local userexp= i
+  for i in ${ENVK[@]+"${!ENVK[@]}"}; do userexp="$userexp
+export ${ENVK[$i]}=$(printf '%q' "${ENVV[$i]}")"; done
   local body
   body=$(cat <<EOF
 #!/usr/bin/env bash
 # written by fleet launch $(now): $name ($mode, $cli)
 cd $q_dir || exit 1
-unset $STRIP
+unset $strip
 export FLEET_NAME=$name FLEET_ROLE=$role FLEET_STATE=$q_state FLEET_TMUX_SESSION=$q_session$extra
-$exports
+$exports$userexp
 mkdir -p $q_logdir
 fl() { printf '%s %s\n' "\$(date -u +%Y-%m-%dT%H:%M:%SZ)" "\$*" >> $q_log; }
 fl "$name started cli=$cli mode=$mode role=$role session=${sid:-unknown}"
@@ -513,8 +568,11 @@ EOF
     --argjson pid "${panepid:-null}" --arg at "$at" --arg kept "$kept" --arg blocked "$blocked" \
     '{name:$name,cli:$cli,mode:$mode,role:$role,pane:$pane,session_id:(if $sid=="" then null else $sid end),port:$port,dir:$dir,model:(if $model=="" then null else $model end),pid:$pid,at:$at,keepTools:$kept,blockedTools:$blocked}')"
   flog "$name launched cli=$cli mode=$mode pane=$pane"
+  local envj='{}'
+  for i in ${ENVK[@]+"${!ENVK[@]}"}; do envj=$(jq -c --arg k "${ENVK[$i]}" --arg v "${ENVV[$i]}" '. + {($k): $v}' <<< "$envj"); done
   jq -n --arg name "$name" --arg mode "$mode" --arg cli "$cli" --arg sid "$sid" --arg script "$sh" --arg pane "$pane" --arg at "$at" \
-    '{name:$name,cli:$cli,mode:$mode,pane:$pane,sessionId:$sid,script:$script,at:$at}' > "$ldir/$name.launch.json"
+    --argjson env "$envj" \
+    '{name:$name,cli:$cli,mode:$mode,pane:$pane,sessionId:$sid,script:$script,at:$at,env:$env}' > "$ldir/$name.launch.json"
 
   local goal=n/a
   if [ "$mode" = goal ]; then goal=unverified; fi
@@ -547,6 +605,8 @@ env_check() { # pid -> sets $miss (empty = all checks passed)
   case $env in *--disallowed-tools=AskUserQuestion*) ;; *) miss="$miss AskUserQuestion-off" ;; esac
   case $env in *" $SKIPVAR=1"*) ;; *) miss="$miss $SKIPVAR" ;; esac
   case $env in *CLAUDE_CODE_CHILD_SESSION=*) miss="$miss nested:CLAUDE_CODE_CHILD_SESSION" ;; esac
+  local k  # issue #4: every --env / prelaunch-hook key reached the CLI process
+  for k in ${ENVK[@]+"${ENVK[@]}"}; do case $env in *" $k="*) ;; *) miss="$miss env:$k" ;; esac; done
   [ -z "$miss" ]
 }
 

@@ -1126,6 +1126,11 @@ cmd_reopen() {
   else
     set -- "$@" --keep-tools all
   fi
+  # issue #4: the lane's --env set from its last launch record, reapplied on both resume and --fresh
+  local kv
+  if [ -s "$STATE/launch/$name.launch.json" ]; then
+    while IFS= read -r -d '' kv; do set -- "$@" --env "$kv"; done < <(jq -j '(.env // {}) | to_entries[] | "\(.key)=\(.value)\u0000"' "$STATE/launch/$name.launch.json" 2>/dev/null || true)
+  fi
   fb=${FLEET_BIN:-$HERE/fleet}
   [ -n "$dir" ] || die "lane $name has no dir in the roster"
   if [ "$fresh" = 1 ]; then

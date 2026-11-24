@@ -12,6 +12,10 @@ if "NOENV" in name and var in os.environ:
     # *NOENV*: re-exec without the skip var, so the launcher's env check must fail for real
     env = {k: v for k, v in os.environ.items() if k != var}
     os.execve(sys.executable, [sys.executable] + sys.argv, env)
+if "ENVDROP" in name and any(k.startswith("DROPME_") for k in os.environ):
+    # *ENVDROP*: re-exec without DROPME_* vars, so the launcher's --env proof must fail for real (issue #4)
+    env = {k: v for k, v in os.environ.items() if not k.startswith("DROPME_")}
+    os.execve(sys.executable, [sys.executable] + sys.argv, env)
 if "TRUST" in name:
     print("Is this a project you created or one you trust?")
 elif "BYPASS" in name:
