@@ -821,17 +821,21 @@ proof_agy() { # name pane mode resume-sid log
 # ---------------------------------------------------------------- other commands
 cmd_ls() {
   [ -s "$ROSTER" ] || { echo "(no lanes)"; return 0; }
-  local names n pane alive meshes mesh
+  local names n pane alive meshes mesh sides
   names=$(jq -r 'keys[]' "$ROSTER")
   # mesh=yes: the lane has the fleet MCP (peer_inbox); no: it reads $FLEET_STATE/inbox/<name>.jsonl by hand
   meshes=$(FLEET_STATE=$STATE python3 "$ROOT/lib/fleet_mesh.py" mesh 2>/dev/null || true)
+  # side runs (issue #17): "<parent>\t  -> S1 ..." per running run, printed under the parent's line
+  sides=$(FLEET_STATE=$STATE python3 "$ROOT/lib/fleet_side.py" roster 2>/dev/null || true)
   for n in $names; do
     pane=$(roster_get "$n" pane)
     if pane_alive "$pane"; then alive=alive; else alive=dead; fi
     mesh=$(printf '%s\n' "$meshes" | awk -v n="$n" '$1 == n {print $2; exit}')
     printf '%s cli=%s mode=%s pane=%s %s mesh=%s session=%s\n' "$n" "$(roster_get "$n" cli)" "$(roster_get "$n" mode)" \
       "${pane:--}" "$alive" "${mesh:-?}" "$(roster_get "$n" session_id)"
+    printf '%s\n' "$sides" | awk -F '\t' -v n="$n" '$1 == n {print $2}'
   done
+  FLEET_STATE=$STATE python3 "$ROOT/lib/fleet_side.py" roster --gone 2>/dev/null || true
 }
 
 cmd_attach() { tm attach -t "=$SESSION"; }

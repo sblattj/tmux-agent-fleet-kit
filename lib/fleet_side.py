@@ -233,6 +233,7 @@ def cmd_ls(argv):
     ap = argparse.ArgumentParser(prog="fleet side ls")
     ap.add_argument("--parent")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--all", action="store_true")  # every row, ended too (the default); roster views hide ended
     a = ap.parse_args(argv)
     rs = rows(parent=a.parent)
     if a.json:
@@ -262,6 +263,7 @@ COMMANDS = {
     "orphans": _lazy("fleet_side_lifecycle", "cmd_orphans"),  # issue #18
     "watch": lambda argv: __import__("fleet_side_watch").cmd_watch(argv),  # issue #14
     "run": lambda argv: __import__("fleet_side_run").cmd_run(argv),  # issue #15: lib/fleet_side_run.py
+    "roster": lambda argv: __import__("fleet_side_roster").cmd_roster(argv),  # issue #17: roster child lines
 }
 
 

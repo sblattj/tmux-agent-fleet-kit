@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # fleet-lifecycle: tick / park / reopen / cleanup / handoff for fleet lanes. `fleet` dispatches here.
 #
-#   fleet tick [--json]               read-only table: NAME CLI ROLE TIER LAST-ACTIVE GOAL UNREAD ACTION
+#   fleet tick [--json]               read-only table: NAME CLI ROLE TIER LAST-ACTIVE GOAL UNREAD ACTION; running
+#                                     side runs as "  -> S1 ..." lines under their lane (ORPHAN when it is parked/gone)
 #   fleet park NAME [--no-compact] [--keep-sides]   type /compact and wait for the CLI's own compact record in the transcript,
 #                                     then stop the CLI, kill its pane, roster status=parked + resume command;
 #                                     an unconfirmed compact refuses to park (--no-compact skips the compact);
@@ -461,6 +462,28 @@ def inbox(name):
     return len(unread), young
 
 
+def side_roster():
+    """lib/fleet_side_roster (issue #17), or None when FLEET_KIT_LIB is unset (facts then carry sides: [])."""
+    lib = os.environ.get("FLEET_KIT_LIB")
+    if not lib:
+        return None
+    if lib not in sys.path:
+        sys.path.insert(0, lib)
+    import fleet_side_roster
+    return fleet_side_roster
+
+
+_SIDES = None
+
+
+def sides_by_parent():
+    global _SIDES
+    if _SIDES is None:
+        sr = side_roster()
+        _SIDES = sr.side_rows(load_roster(), NOW) if sr else {}
+    return _SIDES
+
+
 def facts(name, e, act):
     pane = e.get("pane") or ""
     alive = pane in act
@@ -490,7 +513,7 @@ def facts(name, e, act):
     return {"name": name, "cli": e.get("cli"), "role": role, "tier": e.get("model") or "-", "status": status,
             "pane": pane, "paneAlive": alive, "goalState": gs, "goalStoppedAt": int(since) if gs == "stopped" else 0,
             "lastActive": int(last), "unread": un, "unreadYoung": young, "action": action,
-            "session_id": e.get("session_id")}
+            "session_id": e.get("session_id"), "sides": sides_by_parent().get(name, [])}
 
 
 def age(last):
@@ -553,8 +576,12 @@ def cmd_tick(args):
     if "--json" in args:
         print(json.dumps(fs, indent=1))
         return
+    sr = side_roster()
+    gone = sr.gone_lines(load_roster(), NOW) if sr else []
     if not fs:
         print("(no lanes)")
+        for ln in gone:
+            print(ln)
         print_chrome_tabs()
         return
     rows = [("NAME", "CLI", "ROLE", "TIER", "LAST-ACTIVE", "GOAL", "UNREAD", "ACTION")]
@@ -562,8 +589,12 @@ def cmd_tick(args):
         rows.append((f["name"], f["cli"] or "-", f["role"], f["tier"], age(f["lastActive"]), f["goalState"],
                      "%d/%d" % (f["unread"], f["unreadYoung"]), f["action"]))
     w = [max(len(r[i]) for r in rows) for i in range(8)]
-    for r in rows:
+    for r, f in zip(rows, [None] + fs):
         print("  ".join(r[i].ljust(w[i]) for i in range(8)).rstrip())
+        for s in (f or {}).get("sides", []):
+            print(s["line"])
+    for ln in gone:
+        print(ln)
     print_chrome_tabs()
 
 
@@ -936,7 +967,7 @@ if __name__ == "__main__":
      "compactcount": cmd_compactcount}[sys.argv[1]](sys.argv[2:])
 PY
 
-pyh() { python3 -I -c "$PYLIB" "$@"; }
+pyh() { FLEET_KIT_LIB=$HERE/../lib python3 -I -c "$PYLIB" "$@"; }
 
 # ---------------------------------------------------------------- commands
 cmd_tick() {
