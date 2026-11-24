@@ -4,7 +4,7 @@
 set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/fleet-test-inst.XXXXXX" | sed 's#//#/#g')
-trap 'rm -rf "$tmp"' EXIT
+trap 'tmux -L insttest-$$ kill-server >/dev/null 2>&1; rm -rf "$tmp"' EXIT
 fails=0
 pass() { printf 'PASS %s\n' "$1"; }
 fail() { printf 'FAIL %s\n' "$1"; fails=$((fails + 1)); }
@@ -58,6 +58,9 @@ inst() {
     if [ -n "${INST_KIRO_HOME:-}" ]; then export KIRO_HOME=$INST_KIRO_HOME; fi
     if [ -n "${INST_AGY_HOME:-}" ]; then export FLEET_AGY_HOME=$INST_AGY_HOME; fi
     export HOME="$h" PATH="$stubs:$PATH" FLEET_CLAUDE_BIN=claude FLEET_CODEX_BIN=codex
+    # issue #9: installers end with `fleet desks up`; never against the live fleet: scratch socket and state, and
+    # skipped unless a test opts in (test_desks_default.sh covers the step)
+    export FLEET_TMUX_SOCKET=insttest-$$ FLEET_TMUX_SESSION=instsess FLEET_NO_DESKS=1
     bash "$ROOT/install/$script" "$@" )
 }
 newhome() { local h=$tmp/home.$1; mkdir -p "$h"; printf '%s' "$h"; }

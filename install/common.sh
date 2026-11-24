@@ -6,6 +6,8 @@ FC_REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 FC_DRY=0
 FC_PREFIX=${FLEET_PREFIX:-$HOME/.local}
 FC_TRUST=""
+FC_DESKS=1  # --no-desks (or FLEET_NO_DESKS=1) skips the closing `fleet desks up` step
+[ "${FLEET_NO_DESKS:-0}" != 1 ] || FC_DESKS=0
 FC_HUMAN=${FLEET_HUMAN:-the human}
 FC_DESK=${FLEET_DECIDE:-DECIDE}
 FC_ORCH=${FLEET_ROUTE:-ROUTE}
@@ -154,6 +156,7 @@ fc_common_flag() {
     --dry-run) FC_DRY=1; FC_SHIFT=1 ;;
     --prefix) [ $# -ge 2 ] || fc_die "--prefix needs a directory"; FC_PREFIX=$2; FC_SHIFT=2 ;;
     --trust) [ $# -ge 2 ] || fc_die "--trust needs a directory"; FC_TRUST=$2; FC_SHIFT=2 ;;
+    --no-desks) FC_DESKS=0; FC_SHIFT=1 ;;
     *) return 1 ;;
   esac
   return 0
@@ -278,4 +281,15 @@ fc_install_agy_roles() {
     fc_commit "$FC_TMP" "$dir/fleet-$role.md" "agy agent fleet-$role"
   done
   if [ "$found" = 0 ]; then fc_say "no role agents found in $FC_ROLES_DIR (roles/*.agy.md); skipping"; fi
+}
+
+# Last step of every installer (issue #9): bring the four desks up, windows deskA (ROUTE | DECIDE) and deskB
+# (WATCH | LEARN), with this CLI. Idempotent (live desks are left alone). --no-desks or FLEET_NO_DESKS=1 skips it;
+# --dry-run prints the command. Uses this repo's bin/fleet (FLEET_BIN overrides), not whatever `fleet` is on PATH.
+fc_desks_up() { # cli
+  local cli=$1 fb=${FLEET_BIN:-$FC_REPO/bin/fleet}
+  if [ "$FC_DESKS" = 0 ]; then fc_say "skipped: fleet desks up (--no-desks)"; return 0; fi
+  if [ "$FC_DRY" = 1 ]; then fc_say "would run: $fb desks up --cli $cli"; return 0; fi
+  fc_say "running: $fb desks up --cli $cli"
+  "$fb" desks up --cli "$cli" || fc_die "fleet desks up failed (install itself is done); rerun it by hand: fleet desks up --cli $cli, or install with --no-desks"
 }

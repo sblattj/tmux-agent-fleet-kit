@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- deskA and deskB are the default. Every installer ends by running `fleet desks up --cli <its CLI>` (idempotent; `--no-desks` or `FLEET_NO_DESKS=1` skips it, `--dry-run` prints it). Fixes #9.
+- `fleet launch` of a worker or probe lane (goal, prompt and resume, so `fleet reopen` too) first runs `fleet desks up` when the roster has no live ROUTE or DECIDE, and FAILs with `FAIL no desks: ...` (no lane launched) if that does not leave them live. `--no-desks` (or `FLEET_NO_DESKS=1`) skips the guard; `--dry-run` prints the step. Desk launches are exempt. Fixes #9.
+- `fleet tick` prints `WARN desks down: deskA (ROUTE dead, DECIDE missing); run fleet desks up` when a desk of deskA or deskB has a dead or missing pane, also on a fleet with no lanes; `--json` is unchanged. Fixes #9.
+- `fleet desks up --handoff DIR` hands each desk it launches its predecessor's handoff (`DIR/<DESK>.md`, else `ORCHESTRATOR.md` for ROUTE, `DECISIONS.md` for DECIDE, `LISTENER.md` for WATCH), and refuses while a pre-kit ORCHESTRATOR, DECISIONS or LISTENER is still live, so two decision desks never answer at once. Fixes #9.
+
 - LEARN teaches meeting material, not fleet plumbing. Sync and `fleet learn add` skip lane lifecycle, desk and kit setup, routing, launch or park, tooling installs, route-done lines of kit and desk work, and goal steps that are process evidence; `add` prints `SKIP <source> (<reason>)` and adds nothing. A question-shaped `--title` marks a curated card and is never skipped. `--teach`, `learn: teach` in a line or `"learn": "teach"` in a goal file keeps one, `learn: skip` drops one. Fixes #24.
 - Only answer-bearing cards: bare option letters (`a`, `13-a`, `recs on all = a`) and one-word step names are skipped, and a bare answer folds into the row that holds its full option text (linked, not a second card). A repeat of an earlier answer folds too. Fixes #24.
 - Cards ask a plain question. A `--title` is the prompt, verbatim; with none, the prompt asks about the row's work subject (`What was decided about PROJ-7?`), never "What did <lane> say about". The source and lane show only after grading, in the quiz and the page. Existing cards keep their id and schedule and get the new prompt on the next sync; cards of skipped rows retire. Fixes #23.

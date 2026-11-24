@@ -18,7 +18,8 @@
 # the claude sessions/<pid>.json statusUpdatedAt, roster lastActive; UNREAD = unread/young (young = under 3600 s old).
 # After the table, text tick prints `chrome tabs: N (agent A, other B)` (read-only GET FLEET_CDP_URL/json/list,
 # type page; agent = a cdp-toolkit origin record exists; just N when CDP_ARTIFACT_DIR is absent), a WARN line when
-# N > FLEET_TAB_WARN, and `chrome tabs: unavailable` when Chrome can't be read. --json output is unchanged.
+# N > FLEET_TAB_WARN, and `chrome tabs: unavailable` when Chrome can't be read. Before it, `WARN desks down: deskA (ROUTE
+# dead, DECIDE missing); run fleet desks up` when a desk of deskA or deskB has a dead or missing pane. --json output is unchanged.
 # ACTION: park = worker AND (goal achieved OR goal stopped > 600 s) AND no unread inbox line under 3600 s old;
 # orchestrator-decides = worker with goal none; forget = a row with a retired role (orchestrator, desk, listener,
 # replaced by the four desks): `fleet forget` it; - = nothing. Only workers are parked: route/decide/watch/learn never are.
@@ -571,6 +572,26 @@ def print_chrome_tabs():
         print("WARN chrome tabs %d > %d (FLEET_TAB_WARN): close tabs you opened" % (n, warn))
 
 
+def desks_line(r):
+    """'WARN desks down: ...' when window deskA (ROUTE|DECIDE) or deskB (WATCH|LEARN) has a dead or missing desk pane
+    (issue #9: lanes report to ROUTE and ask DECIDE, so a fleet without them runs unanswered), else ''."""
+    rc, out = tm("list-panes", "-a", "-F", "#{pane_id} #{pane_dead}")
+    live = set(ln.split()[0] for ln in (out.splitlines() if rc == 0 else []) if ln.endswith(" 0"))
+    bad = []
+    for win, desks in (("deskA", ("ROUTE", "DECIDE")), ("deskB", ("WATCH", "LEARN"))):
+        why = []
+        for d in desks:
+            e = r.get(d) if isinstance(r.get(d), dict) else None
+            pane = (e or {}).get("pane") or ""
+            if not pane or (e or {}).get("status") in ("parked", "done"):
+                why.append("%s missing" % d)
+            elif pane not in live:
+                why.append("%s dead" % d)
+        if why:
+            bad.append("%s (%s)" % (win, ", ".join(why)))
+    return ("WARN desks down: %s; run fleet desks up" % "; ".join(bad)) if bad else ""
+
+
 def cmd_tick(args):
     fs = all_facts()
     if "--json" in args:
@@ -582,6 +603,9 @@ def cmd_tick(args):
         print("(no lanes)")
         for ln in gone:
             print(ln)
+        dl = desks_line(load_roster())
+        if dl:
+            print(dl)
         print_chrome_tabs()
         return
     rows = [("NAME", "CLI", "ROLE", "TIER", "LAST-ACTIVE", "GOAL", "UNREAD", "ACTION")]
@@ -595,6 +619,9 @@ def cmd_tick(args):
             print(s["line"])
     for ln in gone:
         print(ln)
+    dl = desks_line(load_roster())
+    if dl:
+        print(dl)
     print_chrome_tabs()
 
 

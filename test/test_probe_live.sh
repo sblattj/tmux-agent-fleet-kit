@@ -20,6 +20,7 @@
 #             key under $T on exit. FLEET_PROBE_LIVE_TMP=<a trusted dir> puts $T there and writes nothing.
 # On any failure every pane is saved to $T/panes/<lane>.txt (panes stay readable after exit: remain-on-exit).
 set -u
+export FLEET_NO_DESKS=1  # issue #9: lanes here launch into a scratch fleet with no desks on purpose; desks tests opt back in
 ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
 FLEET=$ROOT/bin/fleet
 CLI=claude WAIT=600 PREFLIGHT=60

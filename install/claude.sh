@@ -5,7 +5,7 @@
 #   - installs no role files: roles are passed per launch (--settings and --append-system-prompt-file
 #     point at roles/<role>.claude.json and roles/<role>.md in this repo)
 #   - symlinks bin/fleet and bin/fleet-goal into <prefix>/bin
-# Flags: --dry-run  --prefix DIR (default $HOME/.local)  --mesh  --trust DIR  --trust-only
+# Flags: --dry-run  --no-desks (skip the closing `fleet desks up --cli claude`)  --prefix DIR (default $HOME/.local)  --mesh  --trust DIR  --trust-only
 #   --mesh   also register the fleet-mesh MCP server (needed for mixed fleets: Claude lanes reaching Codex/OpenCode)
 #   --trust  mark DIR as trusted in ~/.claude.json (/goal needs a trusted workspace)
 #   --trust-only  with --trust: only mark the dir trusted, install nothing else
@@ -63,4 +63,5 @@ if [ -n "$FC_TRUST" ]; then
   fc_jq_edit "$HOME/.claude.json" "trust $dir" --arg d "$dir" '.projects[$d].hasTrustDialogAccepted = true'
 fi
 
+fc_desks_up claude
 fc_say "done: Claude Code install (rules in ~/.claude/CLAUDE.md, skills in ~/.claude/skills)"

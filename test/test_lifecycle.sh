@@ -250,11 +250,11 @@ CDPPID=$!
 for _ in $(seq 50); do curl -s -m 1 "http://127.0.0.1:$CDPPORT/json/list" >/dev/null 2>&1 && break; sleep 0.1; done
 tabs_txt=$(FLEET_CDP_URL=http://127.0.0.1:$CDPPORT "$LC" tick)
 t "tick counts page targets only, agent by origin record" has "$tabs_txt" "chrome tabs: 3 (agent 1, other 2)"
-t "tick: no WARN at or under the default 50" hasnt "$tabs_txt" "WARN"
+t "tick: no WARN at or under the default 50" hasnt "$tabs_txt" "WARN chrome tabs"
 tabs_txt=$(FLEET_CDP_URL=http://127.0.0.1:$CDPPORT FLEET_TAB_WARN=2 "$LC" tick)
 t "tick: WARN when tabs > FLEET_TAB_WARN" has "$tabs_txt" "WARN chrome tabs 3 > 2"
 tabs_txt=$(FLEET_CDP_URL=http://127.0.0.1:$CDPPORT FLEET_TAB_WARN=3 "$LC" tick)
-t "tick: no WARN when tabs == FLEET_TAB_WARN" hasnt "$tabs_txt" "WARN"
+t "tick: no WARN when tabs == FLEET_TAB_WARN" hasnt "$tabs_txt" "WARN chrome tabs"
 tabs_txt=$(FLEET_CDP_URL=http://127.0.0.1:$CDPPORT CDP_ARTIFACT_DIR=$T/nosuch "$LC" tick)
 t "tick: no origin dir -> just the count" bash -c 'printf "%s\n" "$1" | grep -qx "chrome tabs: 3"' _ "$tabs_txt"
 j=$(FLEET_CDP_URL=http://127.0.0.1:$CDPPORT "$LC" tick --json)

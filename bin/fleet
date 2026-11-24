@@ -14,7 +14,7 @@
 #   fleet send <to> <text>                              message a lane (reopens it if parked), sender is $FLEET_NAME
 #   fleet listen [--source NAME [ARG]] [--speakers "A,B"] [--page] [--pane-right-of NAME | --here]
 #                                                       WATCH UI pane: follow a call, route asks/actions (lib/fleet_listen.py)
-#   fleet desks up [--cli C] [--model M] [--dir D] [--no-proof] [--dry-run]
+#   fleet desks up [--cli C] [--model M] [--dir D] [--handoff DIR] [--no-proof] [--dry-run]
 #                                                       the standing desks: windows deskA (ROUTE|DECIDE), deskB (WATCH|LEARN) (bin/fleet-desks)
 #   fleet tick|park|reopen|cleanup|handoff|forget ...   lifecycle, handled by bin/fleet-lifecycle
 #   fleet watch run|check|status|stats|serve|webhook ...  WATCH engine: poll sources, route events to DECIDE/LEARN (bin/fleet-watch)
@@ -46,6 +46,10 @@
 #                                 permits a workflow). Recorded in the roster so fleet reopen keeps it.
 #   --dry-run                     print the window script, prompt and tmux command; touch nothing
 #   --no-proof                    skip the pid / goal / session waits (tests with stub CLIs); roster is still written
+#   --no-desks                    launch even when the roster has no live ROUTE or DECIDE (env twin FLEET_NO_DESKS=1).
+#                                 Without it a worker or probe lane (goal, prompt, resume; so fleet reopen too) first runs
+#                                 `fleet desks up` (idempotent; --dir and --no-proof passed on), and FAILs with
+#                                 "FAIL no desks: ..." if that does not leave ROUTE and DECIDE live. --dry-run prints the step.
 #
 # goal condition lint: starts with "/goal ", <= 4000 chars, names a *.json goal file, contains "file wins"
 # and "stop after". desk text may not start with "/goal".
@@ -162,9 +166,21 @@ worker_block() { # mode condition-text keep-flag
   done
 }
 
+# ---------------------------------------------------------------- desks guard
+desks_guard() { # dir noproof dry : bring the desks up when ROUTE or DECIDE has no live pane, or FAIL with the hint
+  local d=$1 np=$2 dr=$3 a
+  if pane_alive "$(roster_get ROUTE pane)" && pane_alive "$(roster_get DECIDE pane)"; then return 0; fi
+  a=(desks up --dir "$d"); [ "$np" = 0 ] || a+=(--no-proof)
+  if [ "$dr" = 1 ]; then printf 'would run: fleet'; printf ' %q' "${a[@]}"; printf '  (no live ROUTE or DECIDE)\n'; return 0; fi
+  echo "no live ROUTE or DECIDE: bringing the desks up first (fleet desks up)"
+  "$BINDIR/fleet" "${a[@]}" >&2 || die "no desks: fleet desks up failed, so no lane launched; run fleet desks up (--cli C), or pass --no-desks"
+  pane_alive "$(roster_get ROUTE pane)" && pane_alive "$(roster_get DECIDE pane)" \
+    || die "no desks: ROUTE or DECIDE still has no live pane after fleet desks up; run fleet desks up, or pass --no-desks"
+}
+
 # ---------------------------------------------------------------- launch
 cmd_launch() {
-  local cli=claude model= dir= split= splitdir= size= dry=0 noproof=0 role= keep=
+  local cli=claude model= dir= split= splitdir= size= dry=0 noproof=0 role= keep= nodesks=${FLEET_NO_DESKS:-0}
   while [ $# -gt 0 ]; do
     case $1 in
       --cli) [ $# -ge 2 ] || usage; cli=$2; shift 2 ;;
@@ -178,6 +194,7 @@ cmd_launch() {
       --keep-tools) [ $# -ge 2 ] || usage; keep=$2; shift 2 ;;
       --dry-run) dry=1; shift ;;
       --no-proof) noproof=1; shift ;;
+      --no-desks) nodesks=1; shift ;;
       -h|--help) usage ;;
       -*) die "unknown flag $1" ;;
       *) break ;;
@@ -283,6 +300,12 @@ cmd_launch() {
       lp=$(pgrep -f -- "claude .*-n $name( |\$)" 2>/dev/null | head -1 || true)
       [ -z "$lp" ] || die "a claude named $name is already live (pid $lp); stop it or pick another name"
     fi
+  fi
+
+  # desks guard (issue #9): a lane reports to ROUTE and asks DECIDE, so it never starts in a fleet with neither.
+  # Desk launches (mode desk, desk roles) are exempt: fleet desks up launches them through here.
+  if [ "$nodesks" != 1 ] && [ "$mode" != desk ]; then
+    case $role in worker|probe) desks_guard "$dir" "$noproof" "$dry" ;; esac
   fi
 
   [ "$resume" = 1 ] || { [ "$cli" != claude ] || sid=$(new_uuid); }

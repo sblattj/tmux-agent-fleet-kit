@@ -13,6 +13,7 @@ export FLEET_CLAUDE_BIN=$HERE/stubs/claude
 export FLEET_CODEX_BIN=$HERE/stubs/codex
 export FLEET_OPENCODE_BIN=$HERE/stubs/opencode
 export FLEET_DIR=$T
+export FLEET_NO_DESKS=1  # issue #9: lanes here launch into a scratch fleet with no desks on purpose; desks tests opt back in
 unset FLEET_ROLE
 mkdir -p "$FLEET_STATE"
 cleanup() { tmux -L "$FLEET_TMUX_SOCKET" kill-server >/dev/null 2>&1; rm -rf "$T"; }

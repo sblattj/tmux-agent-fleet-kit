@@ -9,7 +9,7 @@
 #   - symlinks bin/fleet and bin/fleet-goal into <prefix>/bin
 # Permissions: nothing global. fleet launch runs each lane with --dangerously-skip-permissions and a per-lane
 # --settings (toolPermission always-proceed, the lane dir trusted, roles/<role>.agy.json deny rules).
-# Flags: --dry-run  --prefix DIR (default $HOME/.local)  --trust DIR
+# Flags: --dry-run  --no-desks (skip the closing `fleet desks up --cli agy`)  --prefix DIR (default $HOME/.local)  --trust DIR
 # Env: FLEET_AGY_HOME (default $HOME/.gemini); FLEET_AGY_BIN (agy); FLEET_ROLES_DIR overrides the roles dir.
 # Placeholders come from FLEET_HUMAN / FLEET_DECIDE / FLEET_ROUTE.
 set -eu
@@ -64,4 +64,5 @@ if [ -n "$FC_TRUST" ]; then
     '.trustedWorkspaces = ((.trustedWorkspaces // []) + [$d] | unique)'
 fi
 
+fc_desks_up agy
 fc_say "done: agy install (config in $CFG)"

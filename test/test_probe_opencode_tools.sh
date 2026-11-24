@@ -8,6 +8,7 @@
 #                                                     (control) to list their fleet-probe_* tools: 3 model calls
 set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
+export FLEET_NO_DESKS=1  # issue #9: lanes here launch into a scratch fleet with no desks on purpose; desks tests opt back in
 command -v opencode >/dev/null 2>&1 || { echo "SKIP opencode not on PATH"; exit 0; }
 command -v jq >/dev/null 2>&1 || { echo "FAIL jq is required"; exit 1; }
 T=$(mktemp -d "${TMPDIR:-/tmp}/fleet-test-octools.XXXXXX")

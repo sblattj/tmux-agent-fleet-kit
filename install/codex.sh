@@ -6,7 +6,7 @@
 #   - writes ${CODEX_HOME:-~/.codex}/fleet-<role>.config.toml from roles/<role>.codex.toml (prints
 #     `no role profiles found` when none exist); FLEET_ROLES_DIR overrides the roles directory
 #   - symlinks bin/fleet and bin/fleet-goal into <prefix>/bin
-# Flags: --dry-run  --prefix DIR (default $HOME/.local)  --trust DIR
+# Flags: --dry-run  --no-desks (skip the closing `fleet desks up --cli codex`)  --prefix DIR (default $HOME/.local)  --trust DIR
 #   --trust  append [projects."DIR"] trust_level = "trusted" to $CODEX_HOME/config.toml (Codex asks otherwise)
 # Placeholders come from FLEET_HUMAN / FLEET_DECIDE / FLEET_ROUTE.
 set -eu
@@ -81,4 +81,5 @@ if [ -n "$FC_TRUST" ]; then
   fi
 fi
 
+fc_desks_up codex
 fc_say "done: Codex install (rules in $CXH/AGENTS.md)"

@@ -15,7 +15,11 @@ tmux session "fleet"   (attach from any terminal: fleet attach)
   more lanes, each claude | codex | opencode | kiro | agy
 ```
 
-`fleet desks up [--cli C] [--model M] [--dir D] [--no-proof] [--dry-run]` builds the two desk windows, `deskA` (ROUTE left, DECIDE right) and `deskB` (WATCH left, LEARN right), with no separate WATCH or LEARN window; each desk is an LLM lane in desk mode, and WATCH and LEARN start on a read-only "look for work" brief (docs/design/four-desks.md). When it launches WATCH it also opens a small non-LLM pane under it running `fleet watch status` (tagged `@fleet-watch-status`, one per session). It is idempotent: a desk whose pane is live is left alone, so a rerun on a live fleet prints `<D> already live` for each desk and launches nothing; every run also puts window `deskA` at tmux index 0 and `deskB` at 1 (moving or swapping windows, never changing a pane id), and `fleet launch` opens lane windows at index 2 and up; a dead desk is relaunched into its half of its window. It never touches other lanes: a fleet still running the older ORCHESTRATOR and DECISIONS sessions keeps them, with their windows, roster entries and inboxes, and the new desks start beside them under their own names. Names are fixed: there is no alias from the old names to the new ones.
+`fleet desks up [--cli C] [--model M] [--dir D] [--handoff DIR] [--no-proof] [--dry-run]` builds the two desk windows, `deskA` (ROUTE left, DECIDE right) and `deskB` (WATCH left, LEARN right), with no separate WATCH or LEARN window; each desk is an LLM lane in desk mode, and WATCH and LEARN start on a read-only "look for work" brief (docs/design/four-desks.md). When it launches WATCH it also opens a small non-LLM pane under it running `fleet watch status` (tagged `@fleet-watch-status`, one per session). It is idempotent: a desk whose pane is live is left alone, so a rerun on a live fleet prints `<D> already live` for each desk and launches nothing; every run also puts window `deskA` at tmux index 0 and `deskB` at 1 (moving or swapping windows, never changing a pane id), and `fleet launch` opens lane windows at index 2 and up; a dead desk is relaunched into its half of its window. It never touches other lanes: a fleet still running the older ORCHESTRATOR and DECISIONS sessions keeps them, with their windows, roster entries and inboxes, and the new desks start beside them under their own names. Names are fixed: there is no alias from the old names to the new ones.
+
+The desks are the default (issue #9): every installer ends with `fleet desks up --cli <its CLI>` (`--no-desks` skips it), and `fleet launch` of a worker or probe lane brings the desks up first when the roster has no live ROUTE or DECIDE, or fails with `FAIL no desks: ...` and launches nothing (`--no-desks` or `FLEET_NO_DESKS=1` to launch anyway). `fleet tick` flags `WARN desks down: ...` when a desk pane of deskA or deskB is dead or missing.
+
+**Migrating from pre-kit desks.** A fleet whose routing and decision desks are older sessions (ORCHESTRATOR, DECISIONS, LISTENER) moves over without two desks answering at once: each old desk writes a handoff (`fleet handoff ORCHESTRATOR`, or its own handoff file), then is stopped (`fleet stop NAME`); then `fleet desks up --handoff DIR` starts each new desk on its predecessor's file, `DIR/<DESK>.md` or the old name's (`ORCHESTRATOR.md` for ROUTE, `DECISIONS.md` for DECIDE, `LISTENER.md` for WATCH). `fleet handoff` writes to `$FLEET_STATE/handoff`, so `--handoff "$FLEET_STATE/handoff"` picks those up. It refuses while an old desk is still live in the roster.
 
 - `bin/fleet` launches and lists lanes (`fleet launch`, `fleet ls`, `fleet attach`, `fleet layout`, `fleet stop`).
 - `bin/fleet-goal` creates, validates and turns a living goal file into a `/goal` condition.
@@ -29,9 +33,9 @@ Common first steps: clone the repo, then run the installer for your CLI. Every i
 
 ### Claude Code
 ```bash
-install/claude.sh --trust ~/work/project          # skills, rules in ~/.claude/CLAUDE.md, bin symlinks
+install/claude.sh --trust ~/work/project          # skills, rules in ~/.claude/CLAUDE.md, bin symlinks, then fleet desks up
 install/claude.sh --mesh                          # optional: registers fleet-mesh user-wide; fleet launch already passes it per lane (--mcp-config)
-fleet desks up --dir ~/work/project              # the four desks: window deskA (ROUTE | DECIDE), window deskB (WATCH | LEARN)
+fleet desks up --dir ~/work/project              # the four desks (the installer already ran it; rerun for another --dir): deskA (ROUTE | DECIDE), deskB (WATCH | LEARN)
 fleet-goal new /tmp/lane-a.goal.json --goal "..." --report-to ROUTE
 fleet-goal condition /tmp/lane-a.goal.json --report-to ROUTE > /tmp/lane-a.cond.txt
 fleet launch --cli claude lane-a goal /tmp/lane-a.cond.txt
@@ -260,6 +264,7 @@ python3 -m unittest test/test_side_roster.py  # side runs under the parent in pe
 python3 -m unittest test/test_side_ach.py     # side runs: adopt-ach registers running ach runs by process ancestry, once
 bash test/test_probe_stall_park.sh            # a probe silent 15 min is parked as stalled by fleet cleanup --apply
 bash test/test_forget.sh                      # fleet forget archives one row; a live lane is refused without --force
+bash test/test_desks_default.sh               # desks by default: installer step, launch guard, tick desks down, desks up --handoff
 FLEET_PROBE_LIVE=1 test/test_probe_live.sh --cli claude   # launches 2 real lanes: the probe can't shell or write, a worker can
 FLEET_PROBE_ACH=1 test/test_probe_ach.sh                  # the same bar through ach on claude, opencode and kiro (model calls)
 bash test/test_probe_opencode_tools.sh                     # OpenCode offers the fleet-probe verbs to fleet-probe only (FLEET_PROBE_OC_LIVE=1: live)

@@ -61,6 +61,7 @@ tally() { # judge output on stdin -> echoed, counted
 T=$(mktemp -d "${FLEET_PROBE_ACH_TMP:-${TMPDIR:-/tmp}}/probeach.XXXXXX") || { echo "FAIL mktemp"; exit 1; }
 T=$(cd "$T" && pwd -P)
 export FLEET_STATE=$T/state AGENTIC_CODING_HARNESS_STATE_DIR=$T/ach FLEET_DIR=$T
+export FLEET_NO_DESKS=1  # issue #9: lanes here launch into a scratch fleet with no desks on purpose; desks tests opt back in
 unset FLEET_ROLE FLEET_NAME
 mkdir -p "$FLEET_STATE" "$AGENTIC_CODING_HARNESS_STATE_DIR" "$T/runs" "$T/shim"
 printf '# widgets\nTODO(PROJ-1): handle empty orders\n' > "$T/README.md"   # the harmless read step's target (copied into each run's cwd)

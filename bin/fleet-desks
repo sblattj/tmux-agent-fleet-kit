@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # fleet-desks: bring up the four standing desks in two split windows (docs/design/four-desks.md section 5.1). Dispatched as `fleet desks`.
 #
-#   fleet desks up [--cli C] [--model M] [--dir D] [--no-proof] [--dry-run]
+#   fleet desks up [--cli C] [--model M] [--dir D] [--handoff DIR] [--no-proof] [--dry-run]
 #
 # Builds two split windows in the fleet session, each desk an LLM lane (mode desk, never parked):
 #   deskA   ROUTE (left, role route) | DECIDE (right, role decide)
@@ -17,6 +17,11 @@
 # one and is swapped to the left.
 # Never touches other lanes: a live ORCHESTRATOR or DECISIONS (pre-desks names) keeps its window, pane, roster
 # entry and inbox; the new desks start beside it under their own names.
+# --handoff DIR (migration from pre-kit desks, issue #9): each desk this run launches starts on its predecessor's
+# handoff, DIR/<DESK>.md, else the retired name's file (ROUTE <- ORCHESTRATOR.md, DECIDE <- DECISIONS.md,
+# WATCH <- LISTENER.md); its brief names the file and tells it to read it first. A desk already live is left alone.
+# Refused while a pre-kit ORCHESTRATOR, DECISIONS or LISTENER still has a live pane in the roster: retire it into a
+# handoff first, so two decision desks never answer at once. A desk with no file in DIR starts on its plain brief.
 # ---
 set -euo pipefail
 
@@ -37,12 +42,13 @@ live() { pane_alive "$(roster_get "$1" pane)"; } # name -> 0 when its roster pan
 
 [ "${1:-}" = up ] || usage
 shift
-cli=claude model= dir= noproof=0 dry=0
+cli=claude model= dir= noproof=0 dry=0 hdir=
 while [ $# -gt 0 ]; do
   case $1 in
     --cli) [ $# -ge 2 ] || usage; cli=$2; shift 2 ;;
     --model) [ $# -ge 2 ] || usage; model=$2; shift 2 ;;
     --dir) [ $# -ge 2 ] || usage; dir=$2; shift 2 ;;
+    --handoff) [ $# -ge 2 ] || usage; hdir=$2; shift 2 ;;
     --no-proof) noproof=1; shift ;;
     --dry-run) dry=1; shift ;;
     -h|--help) usage ;;
@@ -53,6 +59,13 @@ command -v jq >/dev/null 2>&1 || die "missing dependency: jq"
 command -v tmux >/dev/null 2>&1 || die "missing dependency: tmux"
 [ -n "$dir" ] || dir=${FLEET_DIR:-$PWD}
 [ -d "$dir" ] || die "directory does not exist: $dir"
+if [ -n "$hdir" ]; then
+  [ -d "$hdir" ] || die "--handoff: not a directory: $hdir"
+  hdir=$(cd "$hdir" && pwd -P)
+  for old in ORCHESTRATOR DECISIONS LISTENER; do
+    ! live "$old" || die "--handoff: pre-kit desk $old is still live (pane $(roster_get "$old" pane)); retire it into a handoff first (fleet handoff $old, then fleet stop $old) so two desks never answer at once"
+  done
+fi
 
 lopts=(--cli "$cli" --dir "$dir")
 [ -z "$model" ] || lopts+=(--model "$model")
@@ -68,10 +81,24 @@ brief_DECIDE="You are DECIDE, the standing decisions desk for $HUMAN. Load the r
 brief_WATCH="You are WATCH, a standing desk for $HUMAN. Follow your role file. Look for work, read-only: peer_list for lanes that look stuck or quiet, peer_inbox for events nobody picked up. Report each finding to DECIDE in one short message (peer_send, or decision_open for an ask). Never edit files, never message ROUTE. Never set a /goal."
 brief_LEARN="You are LEARN, a standing desk for $HUMAN. Follow your role file. Look for work, read-only: read $STATE/decisions-log.jsonl and finished lanes' goal files and list what you would card, each with its source and a verbatim quote, in your pane of window deskB. Never edit files. Never set a /goal."
 
+handoff_for() { # desk -> its predecessor's handoff file in --handoff DIR, or nothing
+  local d=$1 f old
+  [ -n "$hdir" ] || return 0
+  case $d in ROUTE) old=ORCHESTRATOR ;; DECIDE) old=DECISIONS ;; WATCH) old=LISTENER ;; *) old= ;; esac
+  for f in "$hdir/$d.md" ${old:+"$hdir/$old.md"}; do
+    if [ -s "$f" ]; then printf '%s' "$f"; return 0; fi
+  done
+}
+
 launch_desk() { # desk [extra fleet launch args...]
-  local d=$1 r b; shift
-  r=$(printf '%s' "$d" | tr A-Z a-z); b=brief_$d
-  run "$FLEET" launch "${lopts[@]}" --role "$r" "$@" "$d" desk "${!b}"
+  local d=$1 r b text hf; shift
+  r=$(printf '%s' "$d" | tr A-Z a-z); b=brief_$d; text=${!b}
+  hf=$(handoff_for "$d")
+  if [ -n "$hf" ]; then
+    text="$text Your predecessor's handoff is $hf: read it first and carry on from it (open items, routes, pending answers)."
+    echo "$d picks up handoff $hf"
+  fi
+  run "$FLEET" launch "${lopts[@]}" --role "$r" "$@" "$d" desk "$text"
   [ "$d" != WATCH ] || watch_launched=1
   [ "$dry" = 1 ] || tm set-option -p -t "$(roster_get "$d" pane)" @fleet-desk "$r"
 }
