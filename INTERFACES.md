@@ -16,7 +16,7 @@ and `$FLEET_ROUTE` (default `ROUTE`). There is no alias layer: a message goes to
 | FLEET_STATE | `${XDG_STATE_HOME:-$HOME/.local/state}/fleet` | roster, inboxes, launch scripts |
 | FLEET_DIR | `$PWD` | working dir for a launched lane (`--dir` overrides) |
 | FLEET_HUMAN | `the human` | who answers DECIDE calls |
-| FLEET_DECIDE / FLEET_ROUTE | `DECIDE` / `ROUTE` | desk lane names |
+| FLEET_DECIDE / FLEET_ROUTE | `DECIDE` / `ROUTE` | desk lane names; a send to the retired `DECISIONS` / `ORCHESTRATOR` goes to `DECIDE` / `ROUTE` when the roster has the new desk and no lane under the old name |
 | FLEET_NAME | set by the launcher inside each window | the lane's own name (fleet_mesh.py reads it as the sender) |
 | FLEET_CLAUDE_BIN / FLEET_CODEX_BIN / FLEET_OPENCODE_BIN | `claude` / `codex` / `opencode` on PATH | binaries (tests point them at stubs) |
 | FLEET_KIRO_BIN | `kiro-cli` | Kiro binary (tests point it at a stub) |

@@ -614,6 +614,64 @@ class TestDecisions(MeshBase):
         self.assertTrue(r["isError"])
 
 
+class TestRetiredDeskNames(MeshBase):
+    """A lane launched before the desk rename still has FLEET_DECIDE=DECISIONS / FLEET_ROUTE=ORCHESTRATOR."""
+
+    def setUp(self):
+        super().setUp()
+        del self.roster["DECISIONS"], self.roster["ORCHESTRATOR"]
+        self.roster["DECIDE"] = {"name": "DECIDE", "cli": "claude", "mode": "desk", "pane": "%9",
+                                 "session_id": None, "port": None}
+        self.roster["ROUTE"] = {"name": "ROUTE", "cli": "claude", "mode": "desk", "pane": "%8",
+                                "session_id": None, "port": None}
+        with open(os.path.join(self.state, "roster.json"), "w") as f:
+            json.dump(self.roster, f)
+
+    def path(self, name):
+        return os.path.join(self.state, "inbox", "%s.jsonl" % name)
+
+    def test_decision_open_with_old_env_lands_in_decide(self):
+        r = mesh.call_tool("decision_open", {"question": "ship it?", "from": "cx"})
+        self.assertFalse(r.get("isError"), r)
+        lines = self.inbox_lines("DECIDE")
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0]["to"], "DECIDE")
+        self.assertIn("-DECIDE-1", lines[0]["id"])
+        self.assertIn("ship it?", lines[0]["text"])
+        self.assertFalse(os.path.exists(self.path("DECISIONS")), "nothing is stranded under the old name")
+
+    def test_peer_send_to_orchestrator_lands_in_route(self):
+        mesh.call_tool("peer_send", {"to": "ORCHESTRATOR", "text": "status: done", "from": "cx"})
+        self.assertEqual([m["text"] for m in self.inbox_lines("ROUTE")], ["status: done"])
+        self.assertFalse(os.path.exists(self.path("ORCHESTRATOR")))
+
+    def test_answer_to_old_orchestrator_asker_reaches_route(self):
+        mesh.call_tool("decision_open", {"question": "q?", "from": "ORCHESTRATOR"})
+        mesh.call_tool("decision_answer", {"id": "Q1", "answer": "ok"})
+        self.assertEqual(len(self.inbox_lines("ROUTE")), 1)
+        self.assertFalse(os.path.exists(self.path("ORCHESTRATOR")))
+
+    def test_other_names_are_untouched(self):
+        self.assertEqual(mesh.live_name("cx"), "cx")
+        self.assertEqual(mesh.live_name("DECIDE"), "DECIDE")
+        self.assertEqual(mesh.live_name("unknown-lane"), "unknown-lane")
+
+
+class TestRetiredNameStillInRoster(MeshBase):
+    """Control: a live roster lane that still has the old name keeps its own inbox (MeshBase's roster has both)."""
+
+    def test_roster_lane_named_decisions_keeps_its_inbox(self):
+        mesh.call_tool("decision_open", {"question": "q?", "from": "cx"})
+        self.assertEqual(len(self.inbox_lines("DECISIONS")), 1)
+        self.assertFalse(os.path.exists(os.path.join(self.state, "inbox", "DECIDE.jsonl")))
+        self.assertEqual(mesh.live_name("ORCHESTRATOR"), "ORCHESTRATOR")
+
+    def test_no_successor_desk_keeps_the_old_name(self):
+        self.assertEqual(mesh.live_name("DECISIONS", {"cx": {}}), "DECISIONS", "no DECIDE lane: queue under the given name")
+        self.assertEqual(mesh.live_name("ORCHESTRATOR", {}), "ORCHESTRATOR")
+        self.assertEqual(mesh.live_name("ORCHESTRATOR", {"ROUTE": {}}), "ROUTE")
+
+
 class TestStdio(MeshBase):
     def test_full_session(self):
         env = dict(os.environ)

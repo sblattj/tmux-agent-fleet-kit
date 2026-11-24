@@ -40,6 +40,25 @@ def orch_name():
     return os.environ.get("FLEET_ROUTE") or "ROUTE"
 
 
+# Desk names from before the four-desk rename. A lane launched before it still has FLEET_DECIDE=DECISIONS and
+# FLEET_ROUTE=ORCHESTRATOR in its env, so its decision_open and peer_send name a desk nobody reads. deliver() maps
+# them to the live desk: only when the roster has the successor and no lane under the old name (a fleet that still
+# runs its desks as DECISIONS / ORCHESTRATOR, or has no desks yet, keeps the names it was given).
+RETIRED_DESKS = {"DECISIONS": "DECIDE", "ORCHESTRATOR": "ROUTE"}
+
+
+def live_name(to, roster=None):
+    """The lane a message to `to` should reach: a retired desk name maps to its successor when the roster has the
+    successor and not the old name; any other name is returned as is."""
+    new = RETIRED_DESKS.get(to)
+    if not new:
+        return to
+    roster = load_roster() if roster is None else roster
+    if to in roster or new not in roster:
+        return to
+    return new
+
+
 def now():
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -759,8 +778,13 @@ def deliver(frm, to, text, native_ok=False):
     the calling agent, so a Claude -> Claude send may ask it to follow up with SendMessage instead of typing into the
     target (native_route). CLI sends and the WATCH, probe and DECISIONS engines never do.
 
-    A parked or done target is reopened first (`fleet reopen <to>`), then woken as usual."""
+    A parked or done target is reopened first (`fleet reopen <to>`), then woken as usual. A retired desk name
+    (RETIRED_DESKS) is delivered to its successor unless a roster lane still has that name."""
     _check_name(to)
+    mapped = live_name(to)
+    if mapped != to:
+        log("deliver %s -> %s mapped to %s (retired desk name)" % (frm, to, mapped))
+        to = mapped
     ts = now()
     msg_id = "%s-%s-%d" % (ts, to, len(_read_lines(_inbox_path(to))) + 1)
     rec = {"id": msg_id, "at": ts, "from": frm, "to": to, "text": text}

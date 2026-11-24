@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- The mesh delivers a message for the retired desk names `DECISIONS` and `ORCHESTRATOR` to `DECIDE` and `ROUTE`, so `decision_open` and `peer_send` from a lane launched before the rename (its env still says `FLEET_DECIDE=DECISIONS FLEET_ROUTE=ORCHESTRATOR`) reach the live desks instead of an inbox nobody reads. It maps only when the roster has the new desk and no lane under the old name, so a fleet that still runs its desks under the old names, or has no desks yet, is unchanged.
+
 ## v0.4.0 (2026-11-23)
 
 Side runs: work a lane starts outside the fleet's panes (codex, agy, gemini, an ach run) is tracked as a child of that lane.
