@@ -717,6 +717,20 @@ any CLI. The kit tracks only its pid, log path and result path, so it stays host
 - Extending: add the subcommand to `COMMANDS` in `lib/fleet_side.py` (one line) and keep its logic in its own
   module (`fleet_side_watch.py`, `fleet_side_run.py`, `fleet_side_ach.py`).
 
+## Side runs over MCP (lib/fleet_side_mcp.py, issue #16)
+
+`fleet_mesh.py serve` lists three more tools (`TOOLS` in `lib/fleet_mesh.py`; the `t_side_*` wrappers import
+`lib/fleet_side_mcp.py` lazily, which calls the `fleet_side` API):
+- `side_start {host, pid, model?, log?, result?, bound?, parent?, sessionId?}` -> the id (`S1`). `parent` defaults
+  to `$FLEET_NAME` (same rule as `_sender`); `source` is `mcp`. Goes through `fleet_side.start`, so the run gets
+  whatever `fleet side start` gets (the #14 watcher spawn lives there).
+- `side_end {id, status?: done|failed, exit?}` -> `S1 done endedAt=...`, the CLI line. Idempotent like the CLI.
+- `side_list {parent?, all?}` -> one `<id> <status> <fleet_side_usage.fmt(row)>` line per run, e.g.
+  `S1 running codex gpt-x 0m/30m ? tok`; `no side runs` when empty. `parent` defaults to `$FLEET_NAME` (every lane when unset), `*`
+  lists every lane; ended runs are left out unless `all=true`.
+- Refusals (`no lane NAME in the roster`, dead pid, bound over 12h, `no side run S9`, bad status) come back as
+  `isError: true` with `error: <reason>` through `call_tool`; the server keeps running.
+
 ## Side-run usage (lib/fleet_side_usage.py, issue #13)
 
 Pure functions over files; nothing here reads or writes `$FLEET_STATE/sides.jsonl`.

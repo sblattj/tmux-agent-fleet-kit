@@ -1166,6 +1166,26 @@ def t_decision_find(args):
                                               h.get("question"), h.get("verbatim")) for h in hits)
 
 
+def _side_mcp():
+    here = os.path.dirname(os.path.abspath(__file__))
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    import fleet_side_mcp  # lazy: fleet_side imports this module
+    return fleet_side_mcp
+
+
+def t_side_start(args):
+    return _side_mcp().side_start(args)
+
+
+def t_side_end(args):
+    return _side_mcp().side_end(args)
+
+
+def t_side_list(args):
+    return _side_mcp().side_list(args)
+
+
 def _schema(props, required=()):
     return {"type": "object", "properties": props, "required": list(required)}
 
@@ -1192,6 +1212,17 @@ TOOLS = [
      _schema({"id": _S, "ok": {"type": "boolean"}, "note": _S, "from": _S}, ["id", "ok"]), t_decision_report),
     ("decision_find", "Search past answered decisions before opening a call; an exact repeat returns its quote.",
      _schema({"text": _S}, ["text"]), t_decision_find),
+    ("side_start", "Register a side run (a process you started outside the fleet panes) as your child; returns its id.",
+     _schema({"host": _S, "pid": {"type": "integer"}, "model": _S, "log": _S, "result": _S,
+              "bound": {"type": "string", "description": "90s, 30m, 2h or seconds; default 30m, max 12h"},
+              "parent": {"type": "string", "description": "lane that owns the run; default $FLEET_NAME"},
+              "sessionId": _S}, ["host", "pid"]), t_side_start),
+    ("side_end", "Mark a side run ended (status done|failed, optional exit code). Idempotent.",
+     _schema({"id": _S, "status": {"type": "string", "enum": ["done", "failed"]}, "exit": {"type": "integer"}},
+             ["id"]), t_side_end),
+    ("side_list", "List side runs, one line each: id, status, host, model, elapsed/bound, tokens. all=true adds "
+     "ended runs.", _schema({"parent": {"type": "string", "description": "default $FLEET_NAME; * for every lane"},
+                             "all": {"type": "boolean"}}), t_side_list),
 ]
 TOOL_MAP = {t[0]: t for t in TOOLS}
 

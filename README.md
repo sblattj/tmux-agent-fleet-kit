@@ -263,6 +263,7 @@ python3 -m unittest test/test_learn_serve.py   # LEARN page: token/loopback, pag
 python3 -m unittest test/test_watch.py   # WATCH engine: replay counts, scrub, dedupe, filters, quiet hours, literal-credential refusal
 python3 -m unittest test/test_watch_rate.py   # WATCH per-source token bucket: wait, defer, X-RateLimit-Remaining drain (injected clock)
 python3 -m unittest test/test_side.py   # side runs: fleet side start|end|ls|show, refusals, 20 parallel starts, idempotent end
+python3 -m unittest test/test_side_mcp.py   # side runs over MCP: side_start|end|list via fleet_mesh.py serve, refusals as isError
 python3 -m unittest test/test_watch_ado.py test/test_watch_gitlab.py test/test_watch_confluence.py test/test_watch_github.py test/test_watch_jira.py test/test_watch_bitbucket.py   # WATCH adapters on recorded fixtures
 python3 -m unittest test/test_watch_webhook.py   # WATCH webhook receiver: signatures, loopback-only bind, spool, webhook+poll dedupe
 ```
