@@ -9,7 +9,8 @@
 #   fleet attach                                        tmux attach to the fleet session
 #   fleet decisions serve|tui|pick|ask|find|report|refresh   DECISIONS UI (lib/fleet_decisions.py; `fleet decisions -h`)
 #   fleet layout                                        print the tmux window/pane map
-#   fleet stop <name>                                   kill that lane's pane
+#   fleet stop <name> [--keep-sides]                    kill that lane's pane; its running side runs are killed first
+#                                                       (or kept as status=orphan with --keep-sides)
 #   fleet send <to> <text>                              message a lane (reopens it if parked), sender is $FLEET_NAME
 #   fleet listen [--source NAME [ARG]] [--speakers "A,B"] [--page] [--pane-right-of NAME | --here]
 #                                                       WATCH UI pane: follow a call, route asks/actions (lib/fleet_listen.py)
@@ -841,15 +842,24 @@ cmd_layout() {
 }
 
 cmd_stop() {
-  [ $# -ge 1 ] || usage
+  local name= keep= pane
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --keep-sides) keep=--keep-sides; shift ;;
+      -*) die "unknown flag $1" ;;
+      *) [ -z "$name" ] || usage; name=$1; shift ;;
+    esac
+  done
+  [ -n "$name" ] || usage
   role_guard stop
-  local pane
-  pane=$(roster_get "$1" pane)
-  [ -n "$pane" ] || die "no lane named $1 in the roster"
-  pane_alive "$pane" || die "lane $1 has no live pane ($pane)"
+  pane=$(roster_get "$name" pane)
+  [ -n "$pane" ] || die "no lane named $name in the roster"
+  pane_alive "$pane" || die "lane $name has no live pane ($pane)"
+  # side runs follow the parent (issue #18): killed, or orphan with --keep-sides; never blocks the stop
+  python3 "$ROOT/lib/fleet_side.py" stop-parent "$name" $keep || echo "WARN could not stop side runs of $name" >&2
   tm kill-pane -t "$pane" || die "could not kill pane $pane"
-  flog "$1 stopped pane=$pane"
-  echo "OK stopped $1 pane=$pane"
+  flog "$name stopped pane=$pane"
+  echo "OK stopped $name pane=$pane"
 }
 
 [ $# -ge 1 ] || usage

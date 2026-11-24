@@ -2,9 +2,11 @@
 # fleet-lifecycle: tick / park / reopen / cleanup / handoff for fleet lanes. `fleet` dispatches here.
 #
 #   fleet tick [--json]               read-only table: NAME CLI ROLE TIER LAST-ACTIVE GOAL UNREAD ACTION
-#   fleet park NAME [--no-compact]    type /compact and wait for the CLI's own compact record in the transcript,
+#   fleet park NAME [--no-compact] [--keep-sides]   type /compact and wait for the CLI's own compact record in the transcript,
 #                                     then stop the CLI, kill its pane, roster status=parked + resume command;
-#                                     an unconfirmed compact refuses to park (--no-compact skips the compact)
+#                                     an unconfirmed compact refuses to park (--no-compact skips the compact);
+#                                     before the pane goes, NAME's running side runs are killed (status=killed), or
+#                                     with --keep-sides left alive as status=orphan
 #   fleet reopen NAME [--fresh]       parked/done lane back: resume the same id, or --fresh from handoff/NAME.md
 #   fleet cleanup [--apply] [--kill-orphans]   dry run by default; --apply archives the roster, parks, marks
 #   fleet handoff NAME                write $FLEET_STATE/handoff/NAME.md (first line "Was: NAME") from the transcript
@@ -955,10 +957,11 @@ cmd_handoff() {
 }
 
 cmd_park() {
-  local name= compact=1 pane cli pid panepid clipid= facts gs last res args before after= cjson=null
+  local name= compact=1 keep= pane cli pid panepid clipid= facts gs last res args before after= cjson=null
   while [ $# -gt 0 ]; do
     case $1 in
       --no-compact) compact=0; shift ;;
+      --keep-sides) keep=--keep-sides; shift ;;
       -*) die "unknown flag $1" ;;
       *) name=$1; shift ;;
     esac
@@ -986,6 +989,8 @@ cmd_park() {
     flog "$name compacted (finished compactions: $after)"
     echo "OK compacted $name"
   fi
+  # side runs follow the parent (issue #18); a failure here warns and never blocks the park
+  python3 "$HERE/../lib/fleet_side.py" stop-parent "$name" $keep || echo "WARN could not stop side runs of $name" >&2
   if pane_alive "$pane"; then
     panepid=$(tm display-message -p -t "$pane" '#{pane_pid}' 2>/dev/null || true)
     if [ -n "$pid" ] && [ "$pid" != "$panepid" ]; then clipid=$pid; fi
@@ -1082,7 +1087,7 @@ cmd_forget() {
 }
 
 cmd_cleanup() {
-  local apply=0 kill=0 scan n i ts
+  local apply=0 kill=0 scan n i ts dead
   while [ $# -gt 0 ]; do
     case $1 in
       --apply) apply=1; shift ;;
@@ -1104,8 +1109,11 @@ cmd_cleanup() {
   printf '%s' "$scan" | jq -r '.orphanProcs[] | "  ORPHAN-PROC pid=\(.pid) lane=\(.lane) \(.args)"'
   echo "(5) probe lanes with no output for 15 min (Q105):"
   printf '%s' "$scan" | jq -r '.stalledProbes[] | "  STALLED-PROBE \(.name) idle=\(.age)"'
+  echo "(6) side runs whose parent is parked, done or gone, or whose pid outlived its bound:"
+  dead=$(printf '%s' "$scan" | jq -r '[.deadLanes[].name] | join(",")')
+  python3 "$HERE/../lib/fleet_side.py" orphans --dead "$dead" || echo "WARN could not list side runs" >&2
   if [ "$apply" = 0 ]; then
-    echo "dry run: nothing changed (pass --apply; add --kill-orphans to kill (2) and (4))"
+    echo "dry run: nothing changed (pass --apply; add --kill-orphans to kill (2), (4) and (6))"
     return 0
   fi
   ts=$(date -u +%Y%m%dT%H%M%SZ)
@@ -1133,6 +1141,7 @@ cmd_cleanup() {
     for i in $(printf '%s' "$scan" | jq -r '.orphanProcs[].pid'); do
       kill "$i" 2>/dev/null && echo "OK killed pid $i" || echo "WARN could not kill pid $i" >&2
     done
+    python3 "$HERE/../lib/fleet_side.py" orphans --dead "$dead" --kill || echo "WARN could not kill orphan side runs" >&2
   fi
 }
 
