@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- LEARN teaches meeting material, not fleet plumbing. Sync and `fleet learn add` skip lane lifecycle, desk and kit setup, routing, launch or park, tooling installs, route-done lines of kit and desk work, and goal steps that are process evidence; `add` prints `SKIP <source> (<reason>)` and adds nothing. A question-shaped `--title` marks a curated card and is never skipped. `--teach`, `learn: teach` in a line or `"learn": "teach"` in a goal file keeps one, `learn: skip` drops one. Fixes #24.
+- Only answer-bearing cards: bare option letters (`a`, `13-a`, `recs on all = a`) and one-word step names are skipped, and a bare answer folds into the row that holds its full option text (linked, not a second card). A repeat of an earlier answer folds too. Fixes #24.
+- Cards ask a plain question. A `--title` is the prompt, verbatim; with none, the prompt asks about the row's work subject (`What was decided about PROJ-7?`), never "What did <lane> say about". The source and lane show only after grading, in the quiz and the page. Existing cards keep their id and schedule and get the new prompt on the next sync; cards of skipped rows retire. Fixes #23.
+- Multiple-choice distractors come from the same topic; a row with fewer than 3 same-topic neighbours gets no choice card. Rows are grouped by work subject (ticket, PR, release) rather than lane, and `fleet learn quiz --topic <subject>` / `fleet learn due --topic <subject>` quiz one subject. Fixes #23.
+
 - The mesh delivers a message for the retired desk names `DECISIONS` and `ORCHESTRATOR` to `DECIDE` and `ROUTE`, so `decision_open` and `peer_send` from a lane launched before the rename (its env still says `FLEET_DECIDE=DECISIONS FLEET_ROUTE=ORCHESTRATOR`) reach the live desks instead of an inbox nobody reads. It maps only when the roster has the new desk and no lane under the old name, so a fleet that still runs its desks under the old names, or has no desks yet, is unchanged.
 
 ## v0.4.0 (2026-11-23)

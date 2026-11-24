@@ -197,7 +197,7 @@ function renderQuiz() {
     clear(out);
     out.appendChild(el("div", { class: res.review.grade === "pass" ? "pass" : "fail",
       text: res.review.grade === "pass" ? "PASS" : "FAIL" }));
-    out.appendChild(el("div", { class: "quote", text: "source: " + res.answer }));
+    out.appendChild(el("div", { class: "quote", text: "source: " + res.answer + (res.source ? "  [from " + res.source + "]" : "") }));
     out.appendChild(el("div", { class: "row" }, el("button", { text: "Next", onclick: () => { current = null; load(); } })));
   };
   const fail = (e) => { out.appendChild(el("div", { class: "err", text: e.message })); };
@@ -225,7 +225,7 @@ function renderQuiz() {
       }).catch(e => { rev.disabled = false; inp.disabled = false; fail(e); });
     });
   } else {
-    const inp = el("input", { placeholder: "paste the line from the source" });
+    const inp = el("input", { placeholder: "your answer, in the words of the source" });
     const go = el("button", { text: "Check" });
     go.addEventListener("click", () => send({ answer: inp.value }, [go]));
     card.appendChild(el("div", { class: "row" }, inp, go));

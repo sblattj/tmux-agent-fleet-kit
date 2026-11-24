@@ -86,8 +86,7 @@ def _public(c):
     v = {k: c.get(k) for k in ("cid", "lid", "format", "origin", "prompt")}
     if c.get("format") == "choice":
         v["options"] = list(c.get("options") or [])
-    v["source"] = (c.get("grounding") or {}).get("source")
-    return v
+    return v  # the source (a lane or ref) shows only after grading, in answer() / reveal()
 
 
 def state(now=None):
@@ -119,7 +118,7 @@ def answer(cid, text, rating=None, latency_ms=None):
         raise fl.Refused("recall needs a rating: again, hard, good or easy")
     lm = latency_ms if isinstance(latency_ms, int) and latency_ms >= 0 else None
     row = fl.review(cid, text or "", rating=rating if c.get("format") == "recall" else None, latencyMs=lm)
-    return {"review": row, "answer": c.get("answer")}
+    return {"review": row, "answer": c.get("answer"), "source": (c.get("grounding") or {}).get("source")}
 
 
 # ---------------------------------------------------------------- web server

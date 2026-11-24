@@ -4,15 +4,18 @@
 Python 3.8+ stdlib only. Writes only under $FLEET_STATE/learn/ (export --to DIR by the human aside).
 
   fleet learn add --kind K --origin fleet|outside --source TYPE:REF --quote TEXT [--status confirmed|heard]
-                  [--title T] [--what W] [--why Y] [--topic T] [--tag T ...]   add a ledger row; prints "OK added L<n>"
+                  [--title T] [--what W] [--why Y] [--topic T] [--tag T ...] [--teach]
+                                                   add a ledger row; prints "OK added L<n>". A route-done, goal or
+                                                   decisions-log row with no question --title that is fleet plumbing or holds
+                                                   no answer prints "SKIP ..." and adds nothing (--teach keeps it)
   fleet learn list [--origin O] [--status S] [--all] [--json]   latest row per lid, counts per origin
   fleet learn show <lid> [--json]                  one row, its history and its cards
   fleet learn confirm <lid> --source TYPE:REF --quote TEXT   heard -> confirmed (needs another source and its quote)
   fleet learn drop <lid> --reason TEXT             retire a row and its cards (e.g. answer not in its quote)
   fleet learn sync [--goal FILE --lane NAME] [--json]   decisions-log.jsonl, WATCH LEARN-ITEMs, achieved goal files,
                                                    then make cards; a missing log or events file is not an error
-  fleet learn due [--json]                         cards due now
-  fleet learn quiz [--max N]                       terminal quiz over due cards (reads answers on stdin; q quits)
+  fleet learn due [--topic T] [--json]             cards due now (--topic: a ticket, PR, release or topic name)
+  fleet learn quiz [--topic T] [--max N]           terminal quiz over due cards (reads answers on stdin; q quits)
   fleet learn review <cid> --answer TEXT [--rating again|hard|good|easy]   grade one answer (the quiz's verb)
   fleet learn proof [--rebuild] [--check]          per-row proof; --check exits 1 if proof.json != a rebuild
   fleet learn snapshot                             snapshot() as JSON
@@ -333,6 +336,107 @@ def _norm(text):
     return " ".join((text or "").split()).lower()
 
 
+# ---------------------------------------------------------------- relevance: teach work, skip fleet plumbing (#23 #24)
+# LEARN teaches what the human needs in meetings: which PR changes what, what was decided and why, which ticket
+# tracks it. Rows about the fleet's own operation (lane lifecycle, desk or kit setup, routing, launch or park,
+# tooling installs) and rows whose quote answers nothing on its own are skipped by default. Override per line with
+# "learn: teach" / "learn: skip" in the quote or done line, or per lane with {"learn": "teach"|"skip"} in its goal.
+
+DESKS = ("ROUTE", "DECIDE", "WATCH", "LEARN", "DECISIONS", "ORCHESTRATOR")
+FILTERED_SOURCES = ("decisions-log", "goal", "route-done")  # manual, decide-learn-this and watch rows are not filtered
+_NOT_TICKETS = {"UTF", "ISO", "SHA", "RFC", "HTTP", "TLS", "AES", "IPV", "GPT", "PEP", "CVE"}
+_TICKET_RE = re.compile(r"\bAB#\d+\b|\b[A-Z][A-Z0-9]{1,9}-\d+\b")
+_PR_RE = re.compile(r"\b[\w.-]+/[\w.-]+#\d+\b|(?<![\w&#/])#\d{1,6}\b|(?<![\w!])![0-9]{3,}\b")
+_RELEASE_RE = re.compile(r"(?<![\w.])v?\d+\.\d+\.\d+(?:-[a-z]+\.?\d*)?(?![.\d])")
+PLUMBING_LANE_TOKENS = ("kit", "fleet", "desk", "desks", "tmux", "mesh", "mcp", "launchd", "dotfiles", "zerotier")
+_STRONG_RE = re.compile(r"tmux-agent-fleet-kit|\bfleet[ -]kit\b|\bfleet_mesh\b|\blane-env\b|\bdesk[AB]\b"
+                        r"|\bdesks? (?:rename|slots?|layout)\b|\bMCP server|\blaunchd\b|\bzerotier\b|\bmosh\b", re.I)
+_WEAK_RE = re.compile(r"\b(?:launch|launched|park|parked|reopen|relaunch|retire|cleanup|clean up|refresh|relay|relayed"
+                      r"|routing|lanes?|desk|inbox|mesh|install|installed|upgrade|update to latest|ssh|tmux|handoff)\b"
+                      r"|/refresh", re.I)
+_PROCESS_RE = re.compile(r"^\s*(?:wrote|git|gh|fleet|fleet-goal|bun|npm|pnpm|python3?|bash|ls|jq|cat|pass|fail|ok)\b",
+                         re.I)
+_BOILER_RE = re.compile(r"^route-done(?: addendum)?[:,]?\s*\S+?[:,]?\s*(?:parked\s*\([^)]*\))?[.:,]?\s*", re.I)
+_OVERRIDE_RE = re.compile(r"\blearn:\s*(skip|teach)\b", re.I)
+_QID_RE = re.compile(r"^Q\d+$", re.I)
+_OPTION_RE = re.compile(r"^\d*-?[a-d]$|^\(?[a-d]\)?$", re.I)
+_META_WORDS = {"yours", "your", "recs", "rec", "recommended", "on", "all", "ok", "okay", "yes", "no", "go", "option",
+               "answer", "it", "the", "typed", "desk"}
+ANSWER_MIN_WORDS = 3
+
+
+def subjects(text):
+    """Work subjects named in text, tickets first, then PRs, then releases: ["PROJ-12", "acme/widget#7", "v1.2.0"].
+    Azure Boards AB#<n> ids count as tickets."""
+    out = []
+    for rx in (_TICKET_RE, _PR_RE, _RELEASE_RE):
+        for m in rx.findall(text or ""):
+            if rx is _TICKET_RE and m.split("-")[0] in _NOT_TICKETS:
+                continue
+            if m not in out:
+                out.append(m)
+    return out
+
+
+def answer_bearing(quote):
+    """False for a quote that answers nothing on its own: bare option letters ("a", "9a", "13-a", "12c"),
+    "yours recs on all = a", one- or two-word step names ("issues filed", "stage it")."""
+    words = re.findall(r"[A-Za-z0-9][A-Za-z0-9'._/#-]*", quote or "")
+    kept = [w for w in words if not _QID_RE.match(w) and not _OPTION_RE.match(w) and w.lower() not in _META_WORDS]
+    return len(kept) >= ANSWER_MIN_WORDS
+
+
+def _plumbing_lane(name):
+    if not name:
+        return False
+    if name in DESKS:
+        return True
+    toks = re.split(r"[^a-z0-9]+", name.lower())
+    return any(t in PLUMBING_LANE_TOKENS for t in toks)
+
+
+def relevance(text, lane=None, asker=None, field=None, title="", lane_override=None):
+    """("teach"|"skip", reason) for one candidate row. A line's own "learn: teach|skip" wins, then the lane's goal
+    file {"learn": ...}, then the default rules: plumbing lane, desk instruction with no work subject, kit or
+    tooling text, lifecycle words with no work subject, a done[] step that is process evidence."""
+    m = _OVERRIDE_RE.search(text or "")
+    if m:
+        return m.group(1).lower(), "learn: %s in the line" % m.group(1).lower()
+    if lane_override in ("skip", "teach"):
+        return lane_override, "learn: %s in the lane's goal file" % lane_override
+    body = _BOILER_RE.sub("", text or "", count=1)
+    subj = subjects(body + " " + (title or ""))
+    if lane not in DESKS and _plumbing_lane(lane):
+        return "skip", "plumbing lane"
+    if (asker in DESKS or lane in DESKS) and not subj:
+        return "skip", "desk instruction with no work subject"
+    if _STRONG_RE.search(body):
+        return "skip", "fleet kit or tooling setup"
+    if _WEAK_RE.search(body) and not subj:
+        return "skip", "fleet lifecycle or routing with no work subject"
+    if field == "done" and (not subj or _PROCESS_RE.match(body)):
+        return "skip", "process step, not a work fact"
+    return "teach", "work"
+
+
+def question_title(question, lane=None):
+    """A desk question as a card prompt, only when it is question-shaped: the question itself if short, else its
+    first sentence that ends in "?" with leading "label:" segments stripped. "" when none fits."""
+    q = " ".join((question or "").split())
+    cands = [q] if len(q) <= 160 else []
+    cands += [s for s in re.split(r"(?<=[.?!])\s+", q) if s.endswith("?")][:1]
+    for s in cands:
+        if not s.endswith("?"):
+            continue
+        prev = None
+        while prev != s:
+            prev, s = s, re.sub(r"^[^:?]{1,60}:\s+", "", s)
+        s = s[:1].upper() + s[1:]
+        if 12 <= len(s) <= 160 and not (lane and lane in s):
+            return s
+    return ""
+
+
 def _by_source():
     out = {}
     for r in items(include_retired=True):
@@ -350,6 +454,45 @@ def _questions():
         if d.get("id") and d.get("question"):
             out[d["id"]] = d["question"]
     return out
+
+
+def _lane_goal_file(name):
+    """The goal file a lane was launched with ($FLEET_STATE/launch/<name>.txt names it), or None."""
+    if not name or "/" in name or name.startswith("."):
+        return None
+    try:
+        with open(os.path.join(mesh.state_dir(), "launch", "%s.txt" % name)) as f:
+            m = re.search(r"(~|/)[^ \"']*\.json", f.read())
+    except OSError:
+        return None
+    p = os.path.expanduser(m.group(0)) if m else None
+    return p if p and os.path.exists(p) else None
+
+
+def _goal_override(g):
+    """{"learn": "skip"|"teach"} in a goal file, or "learn: skip|teach" in its goal text."""
+    if not isinstance(g, dict):
+        return None
+    v = g.get("learn")
+    if isinstance(v, str) and v.strip().lower() in ("skip", "teach"):
+        return v.strip().lower()
+    m = _OVERRIDE_RE.search(g.get("goal") or "") if isinstance(g.get("goal"), str) else None
+    return m.group(1).lower() if m else None
+
+
+def _lane_override(name):
+    p = _lane_goal_file(name)
+    if not p:
+        return None
+    try:
+        with open(p) as f:
+            return _goal_override(json.load(f))
+    except (OSError, ValueError):
+        return None
+
+
+def _skip(res, why, ref, reason):
+    res.setdefault("skipped", {}).setdefault(why, []).append({"ref": ref, "reason": reason})
 
 
 def _sync_decisions(res, now):
@@ -376,26 +519,73 @@ def _sync_decisions(res, now):
         else:
             st["skipped"] += 1
     qs, have = _questions(), _by_source()
-    for did, (n, r) in sorted(answers.items(), key=lambda kv: kv[1][0]):
+    ordered = sorted(answers.items(), key=lambda kv: kv[1][0])
+    # fold: a bare answer ("a", "13-a") goes into the row that holds its full option text (a row that names its
+    # id, e.g. 'the human typed "13-a" (desk Q12): (a) ...'); a row that repeats an earlier answer folds into it.
+    folded, overrides = {}, {}
+    for did, (n, r) in ordered:
+        v = r["verbatim"]
+        if not answer_bearing(v):
+            rx = re.compile(r"(?<![A-Za-z0-9])%s(?![0-9])" % re.escape(did))
+            into = next((d2 for d2, (n2, r2) in ordered if d2 != did and rx.search(r2["verbatim"])
+                         and answer_bearing(r2["verbatim"])), None)
+            if into:
+                folded[did] = into
+            continue
+        nv = _norm(v)
+        for d2, (n2, r2) in ordered:
+            if d2 == did or n2 >= n:
+                continue
+            n2v = _norm(r2["verbatim"])
+            if len(n2v) >= 20 and nv.startswith(n2v) and answer_bearing(r2["verbatim"]):
+                folded[did] = d2
+                break
+    for did, into in folded.items():
+        res.setdefault("folded", []).append([did, into])
+    for did, (n, r) in ordered:
         src = {"type": "decisions-log", "ref": did, "path": "$FLEET_STATE/decisions-log.jsonl", "line": n}
+        asker = r.get("asker")
+        if asker:
+            src["asker"] = asker
+        v, q = r["verbatim"], qs.get(did, "")
+        if did in folded:
+            continue
+        if not answer_bearing(v):
+            _skip(res, "answerless", did, "bare answer with no row holding its option text")
+            continue
+        if asker not in overrides:
+            overrides[asker] = _lane_override(asker)
+        verdict, why = relevance(v, lane=asker, asker=asker, title=q, lane_override=overrides[asker])
+        if verdict == "skip":
+            _skip(res, "plumbing", did, why)
+            continue
+        links = [{"type": "decisions-log", "ref": d} for d, into in sorted(folded.items()) if into == did]
+        subj = subjects(q + " " + v)
         old = have.get(("decisions-log", did))
         if old is None:
-            row = add_item("decision", "fleet", r["verbatim"], src, title=qs.get(did, ""), topic=r.get("asker") or did,
-                           by="sync", now=now)
+            row = add_item("decision", "fleet", v, src, title=question_title(q, lane=asker), links=links,
+                           topic=subj[0] if subj else (asker or did), by="sync", now=now)
             res["added"].append(row["lid"])
-        elif old.get("status") in LIVE and old.get("quote") != r["verbatim"]:
-            row = supersede(old["lid"], r["verbatim"], src, now=now)
+        elif old.get("status") in LIVE and old.get("quote") != v:
+            row = supersede(old["lid"], v, src, now=now)
             res["superseded"].append([old["lid"], row["lid"]])
     for n, r in heard:
         ref = "line:%d" % n
         if ("decisions-log", ref) in have:
             continue
+        if not answer_bearing(r["verbatim"]):
+            _skip(res, "answerless", ref, "bare heard line")
+            continue
+        if relevance(r["verbatim"])[0] == "skip":
+            _skip(res, "plumbing", ref, relevance(r["verbatim"])[1])
+            continue
         src = {"type": "decisions-log", "ref": ref, "path": "$FLEET_STATE/decisions-log.jsonl", "line": n,
                "kind": "decided-on-call", "speaker": r.get("asker"), "clock": r.get("clock")}
-        row = add_item("decision", "fleet", r["verbatim"], src, status="heard", topic=r.get("from") or "call",
-                       by="sync", now=now)
+        subj = subjects(r["verbatim"])
+        row = add_item("decision", "fleet", r["verbatim"], src, status="heard",
+                       topic=subj[0] if subj else (r.get("from") or "call"), by="sync", now=now)
         res["added"].append(row["lid"])
-    return [(did, n, r) for did, (n, r) in sorted(answers.items(), key=lambda kv: kv[1][0])]
+    return [(did, n, r) for did, (n, r) in ordered]
 
 
 def _min_score():
@@ -467,23 +657,35 @@ def _goal_text(d):
     return ""
 
 
-def sync_goal(path, lane, now=None):
-    """done[] and decisions[] of one finished lane's goal file -> fleet rows (lesson / decision). Returns new lids."""
+def sync_goal(path, lane, now=None, res=None):
+    """done[] and decisions[] of one finished lane's goal file -> fleet rows (lesson / decision). Returns new lids.
+    Plumbing lanes, process-evidence steps and answerless lines are skipped (into res["skipped"] when given);
+    {"learn": "teach"|"skip"} in the goal file, or "learn: teach|skip" in a line, overrides."""
     try:
         with open(path) as f:
             g = json.load(f)
     except (OSError, ValueError) as e:
         raise Refused("cannot read goal file %s: %s" % (path, e))
+    res = res if res is not None else {}
     have, out = _by_source(), []
+    lane_ov = _goal_override(g)
+    gsubj = subjects(g.get("goal") if isinstance(g.get("goal"), str) else "")
     for field, kind in (("done", "lesson"), ("decisions", "decision")):
         for i, d in enumerate(g.get(field) or []):
             text = _goal_text(d)
             ref = "%s:%s[%d]" % (lane, field, i)
             if not text.strip() or ("goal", ref) in have:
                 continue
-            title = d.get("decision") if isinstance(d, dict) and field == "decisions" else ""
+            verdict, why = relevance(text, lane=lane, field=field, lane_override=lane_ov)
+            if verdict == "skip":
+                _skip(res, "plumbing", "goal:" + ref, why)
+                continue
+            if not answer_bearing(text) and not _OVERRIDE_RE.search(text):
+                _skip(res, "answerless", "goal:" + ref, "step name with no answer in it")
+                continue
+            subj = subjects(text) or gsubj
             row = add_item(kind, "fleet", text, {"type": "goal", "ref": ref, "path": path, "lane": lane},
-                           title=(g.get("goal") or "")[:120] if not title else title, topic=lane, by="sync", now=now)
+                           title="", topic=subj[0] if subj else lane, by="sync", now=now)
             out.append(row["lid"])
     return out
 
@@ -495,17 +697,9 @@ def _sync_goals(res, now):
     for name, e in sorted(roster.items()):
         if not isinstance(e, dict) or e.get("goalState") != "achieved" or done.get(name) == "achieved":
             continue
-        txt = os.path.join(mesh.state_dir(), "launch", "%s.txt" % name)
-        gfile = None
-        try:
-            with open(txt) as f:
-                m = re.search(r"(~|/)[^ \"']*\.json", f.read())
-            if m:
-                gfile = os.path.expanduser(m.group(0))
-        except OSError:
-            pass
-        if gfile and os.path.exists(gfile):
-            res["added"] += sync_goal(gfile, name, now=now)
+        gfile = _lane_goal_file(name)
+        if gfile:
+            res["added"] += sync_goal(gfile, name, now=now, res=res)
             done[name] = "achieved"
     cur = _read_json("cursors.json", {})
     cur["goals"] = done
@@ -547,6 +741,81 @@ def _label(r):
                                                          (r.get("source") or {}).get("ref"))
 
 
+_ASK = {"decision": "What was decided about %s?", "change": "What changed in %s?", "closed": "Why was %s closed?",
+        "doc": "What changed in the %s doc?", "lesson": "What did we learn from %s?"}
+_ASK_PLAIN = {"decision": "What was decided here, and why?", "change": "What changed here?",
+              "closed": "What was closed here, and why?", "doc": "What changed in this doc?",
+              "lesson": "What did we learn here?"}
+
+
+def card_prompt(r):
+    """The question a card asks. A row's title is the prompt, verbatim. With no title: a plain question about the
+    row's work subject (ticket, PR, release). Never names the source or the lane; those show after grading."""
+    t = (r.get("title") or "").strip()
+    if t and (r.get("by") != "sync" or t.endswith("?")):
+        return t  # a human's --title, verbatim (an old sync-made title that is not a question is not used)
+    subj = subjects(r.get("quote") or "") or subjects(r.get("topic") or "")
+    kind = r.get("kind") if r.get("kind") in _ASK else "decision"
+    return _ASK[kind] % subj[0] if subj else _ASK_PLAIN[kind]
+
+
+def row_lane(r):
+    s = r.get("source") or {}
+    if s.get("type") == "route-done":
+        return str(s.get("ref") or "")
+    if s.get("type") == "goal":
+        return s.get("lane") or str(s.get("ref") or "").split(":")[0]
+    if s.get("type") == "decisions-log":
+        return s.get("asker") or (r.get("topic") if r.get("by") == "sync" and not s.get("kind") else None)
+    return None
+
+
+def _curated(r):
+    """A curated card: a question-shaped --title (the human wrote the question to be asked)."""
+    return (r.get("title") or "").strip().endswith("?")
+
+
+def teachable(r):
+    """("teach"|"skip", reason) for a ledger row, the same rules sync uses. A row whose title is a question is a
+    curated card and is always taught; manual, decide-learn-this and watch rows are not filtered."""
+    s = r.get("source") or {}
+    if _curated(r):
+        return "teach", "curated"
+    if s.get("type") not in FILTERED_SOURCES:
+        return "teach", "unfiltered source"
+    if s.get("kind") == "decided-on-call":
+        return ("teach", "heard") if answer_bearing(r.get("quote")) else ("skip", "answerless")
+    lane = row_lane(r)
+    field = "done" if s.get("type") == "goal" and ":done[" in str(s.get("ref")) else None
+    v = relevance(r.get("quote") or "", lane=lane, asker=lane if s.get("type") == "decisions-log" else None,
+                  field=field)
+    if v[0] == "skip":
+        return v
+    if not answer_bearing(r.get("quote")) and not _OVERRIDE_RE.search(r.get("quote") or ""):
+        return "skip", "answerless"
+    return v
+
+
+def topic_of(r):
+    return (r.get("topic") or "").strip()
+
+
+def _row_subjects(r):
+    return {x.lower() for x in subjects(" ".join([r.get("title") or "", r.get("quote") or "", topic_of(r)]))}
+
+
+def same_topic(a, b):
+    """Two rows share a topic: the same topic (case-insensitive) or a shared work subject."""
+    ta, tb = topic_of(a).lower(), topic_of(b).lower()
+    return bool(ta and ta == tb) or bool(_row_subjects(a) & _row_subjects(b))
+
+
+def on_topic(r, topic):
+    """`fleet learn quiz --topic T`: the row's topic is or contains T, or the row names T as a work subject."""
+    t = (topic or "").strip().lower()
+    return bool(t) and (t in topic_of(r).lower() or t in _row_subjects(r))
+
+
 PHASE3_FORMATS = ("recall", "source", "choice")
 ALL_FORMATS = PHASE3_FORMATS + ("explain", "apply")
 
@@ -562,51 +831,92 @@ def _formats(formats):
     return formats
 
 
+def _choice_opts(r, pool):
+    rnd = random.Random(r["lid"])
+    opts = rnd.sample(pool, 3) + [r["quote"]]
+    rnd.shuffle(opts)
+    return opts
+
+
 def make_cards(now=None, formats=None):
     """Cards for confirmed rows that lack them, in `formats` (default learn.json cardFormats, else recall,
-    source, choice). choice needs 3 or more other rows; explain needs the row's `what`, apply its `why`.
-    Heard rows get no cards: they are never taught as decided. Distractors are other ledger rows' quotes."""
+    source, choice). choice needs 3 or more other rows on the same topic; explain needs the row's `what`, apply
+    its `why`. Heard rows get no cards: they are never taught as decided. Distractors are other live rows' quotes
+    on the same topic. Live cards are refreshed in place (cid and schedule kept): the prompt follows card_prompt(),
+    a choice card whose distractors left the topic is redrawn or retired, and a row that is not teachable
+    (plumbing, answerless) has its cards retired."""
     now = _now(now)
     formats = _formats(formats)
     with _Lock():
         cs = _cards()
-        have = {(c.get("lid"), c.get("format")) for c in cs}
         rows = items()
-        quotes = {}
-        for r in items(include_retired=True):
-            quotes.setdefault(r.get("quote"), r["lid"])
-        new = []
+        by_lid = {r["lid"]: r for r in rows}
+        teach = {r["lid"]: teachable(r)[0] == "teach" for r in rows}
+        pools = {}
         for r in rows:
             if r.get("status") != "confirmed":
+                continue
+            pools[r["lid"]] = sorted({o["quote"] for o in rows if o["lid"] != r["lid"] and o.get("quote")
+                                      and _norm(o["quote"]) != _norm(r["quote"]) and same_topic(r, o)})
+        changed = False
+        for c in cs:
+            r = by_lid.get(c.get("lid"))
+            if c.get("retired") or r is None or r.get("status") != "confirmed":
+                continue
+            if not teach.get(r["lid"]):
+                c["retired"] = True
+                changed = True
+                continue
+            want = _card_prompt_for(c.get("format"), r)
+            if want and c.get("prompt") != want:
+                c["prompt"] = want
+                changed = True
+            if c.get("format") == "choice":
+                pool = set(pools.get(r["lid"]) or [])
+                ds = [o for o in c.get("options") or [] if o != c.get("answer")]
+                if not all(o in pool for o in ds):
+                    if len(pool) >= 3:
+                        c["options"] = _choice_opts(r, sorted(pool))
+                    else:
+                        c["retired"] = True
+                    changed = True
+        have = {(c.get("lid"), c.get("format")) for c in cs}
+        new = []
+        for r in rows:
+            if r.get("status") != "confirmed" or not teach.get(r["lid"]):
                 continue
             src = (r.get("source") or {}).get("ref")
             grounding = {"quote": r["quote"], "source": src}
             sched = {"due": _iso(now), "fixedStep": 0, "reps": 0, "lapses": 0, "lastReview": None}
-            others = sorted({q for q, lid in quotes.items() if q and lid != r["lid"] and _norm(q) != _norm(r["quote"])})
-            specs = [("recall", "What did %s say about: %s?" % (src, _label(r)), None, r["quote"]),
-                     ("source", "Paste the line from %s that proves: %s" % (src, _label(r)), None, r["quote"])]
+            others = pools.get(r["lid"]) or []
+            specs = [("recall", None, r["quote"]), ("source", None, r["quote"])]
             if r.get("what"):
-                specs.append(("explain", "Explain in your own words: %s" % _label(r), None, r["what"]))
+                specs.append(("explain", None, r["what"]))
             if r.get("why"):
-                specs.append(("apply", "A lane wants to go against this: %s. What do you say, and why?" % _label(r),
-                              None, r["why"]))
+                specs.append(("apply", None, r["why"]))
             if len(others) >= 3:
-                rnd = random.Random(r["lid"])
-                opts = rnd.sample(others, 3) + [r["quote"]]
-                rnd.shuffle(opts)
-                specs.append(("choice", "Which line is the source (%s) for: %s?" % (src, _label(r)), opts,
-                              r["quote"]))
-            for fmt, prompt, opts, answer in specs:
+                specs.append(("choice", _choice_opts(r, others), r["quote"]))
+            for fmt, opts, answer in specs:
                 if fmt not in formats or (r["lid"], fmt) in have:
                     continue
                 c = {"cid": _next_id("C", cs + new, "cid"), "lid": r["lid"], "format": fmt, "origin": r["origin"],
-                     "prompt": prompt, "answer": answer, "grounding": grounding, "sched": dict(sched)}
+                     "prompt": _card_prompt_for(fmt, r), "answer": answer, "grounding": grounding,
+                     "sched": dict(sched)}
                 if opts:
                     c["options"] = opts
                 new.append(c)
-        if new:
+        if new or changed:
             _save_cards(cs + new)
         return new
+
+
+def _card_prompt_for(fmt, r):
+    q = card_prompt(r)
+    if fmt == "explain":
+        return "In your own words: %s" % q
+    if fmt == "apply":
+        return "Someone wants to go against this (%s). What do you say, and why?" % q.rstrip("?")
+    return q
 
 
 def card(cid):
@@ -623,9 +933,10 @@ def _idnum(i):
     return int(i[1:]) if isinstance(i, str) and i[1:].isdigit() else -1
 
 
-def due(now=None):
+def due(now=None, topic=None):
+    """Cards due now, oldest due first; topic narrows to rows on_topic() (a ticket, PR, release or topic name)."""
     now = _now(now)
-    live = {r["lid"] for r in items(status="confirmed")}
+    live = {r["lid"] for r in items(status="confirmed") if topic is None or on_topic(r, topic)}
     out = [c for c in _cards() if not c.get("retired") and c.get("lid") in live
            and (_parse_ts((c.get("sched") or {}).get("due")) or now) <= now]
     out.sort(key=lambda c: ((c.get("sched") or {}).get("due") or "", _idnum(c["cid"])))
@@ -829,8 +1140,18 @@ def export(to=None):
 
 # ---------------------------------------------------------------- quiz TUI
 
-def quiz(inp=None, out=None, max_cards=30, now=None):
-    """Deterministic terminal quiz over due cards; reads one line per answer. Returns the review rows."""
+def _where(c):
+    """Where a card's quote came from, shown only after grading: source type:ref (the lane for route-done/goal)."""
+    try:
+        s = item(c["lid"]).get("source") or {}
+    except Refused:
+        return ""
+    return "%s:%s" % (s.get("type"), s.get("ref"))
+
+
+def quiz(inp=None, out=None, max_cards=30, now=None, topic=None):
+    """Deterministic terminal quiz over due cards; reads one line per answer. Returns the review rows.
+    The prompt never names the source; the source quote and where it came from show after grading."""
     inp, out = inp or sys.stdin, out or sys.stdout
     done = []
 
@@ -842,9 +1163,9 @@ def quiz(inp=None, out=None, max_cards=30, now=None):
             raise EOFError
         return ln.rstrip("\n")
 
-    cards_due = due(now)[:max_cards]
+    cards_due = due(now, topic=topic)[:max_cards]
     if not cards_due:
-        out.write("nothing due. %s\n" % _status_line(now))
+        out.write("nothing due%s. %s\n" % (" on topic %s" % topic if topic else "", _status_line(now)))
         return done
     out.write("%d card(s) due. Answer, or q to stop.\n" % len(cards_due))
     try:
@@ -855,7 +1176,7 @@ def quiz(inp=None, out=None, max_cards=30, now=None):
                 a = ask("answer from memory (Enter to reveal): ")
                 if a.strip() == "q":
                     break
-                out.write("source quote: %s\n" % c["answer"])
+                out.write("source quote: %s  [from %s]\n" % (c["answer"], _where(c)))
                 rt = ask("rate: a=again h=hard g=good e=easy: ").strip().lower()
                 if rt == "q":
                     break
@@ -881,8 +1202,9 @@ def quiz(inp=None, out=None, max_cards=30, now=None):
                 if a.strip() == "q":
                     break
                 rv = review(c["cid"], a, now=now, latencyMs=int((time.time() - t0) * 1000))
-            out.write("%s. source: \"%s\"\n" % ("PASS" if rv["grade"] == "pass" else "FAIL",
-                                                 (c.get("grounding") or {}).get("quote") or c["answer"]))
+            out.write("%s. source: \"%s\"  [from %s]\n" % ("PASS" if rv["grade"] == "pass" else "FAIL",
+                                                           (c.get("grounding") or {}).get("quote") or c["answer"],
+                                                           _where(c)))
             done.append(rv)
     except EOFError:
         pass
@@ -940,6 +1262,7 @@ def main(argv=None):
     for f in ("title", "what", "why", "topic"):
         a.add_argument("--" + f, default="")
     a.add_argument("--tag", action="append", default=[])
+    a.add_argument("--teach", action="store_true")
     ls = sp.add_parser("list")
     ls.add_argument("--origin")
     ls.add_argument("--status")
@@ -961,8 +1284,10 @@ def main(argv=None):
     sy.add_argument("--json", action="store_true")
     du = sp.add_parser("due")
     du.add_argument("--json", action="store_true")
+    du.add_argument("--topic")
     qz = sp.add_parser("quiz")
     qz.add_argument("--max", type=int, default=30)
+    qz.add_argument("--topic")
     rv = sp.add_parser("review")
     rv.add_argument("cid")
     rv.add_argument("--answer", default="")
@@ -978,8 +1303,18 @@ def main(argv=None):
         if args.cmd == "add":
             if args.status not in LIVE:
                 raise Refused("status must be confirmed or heard, got %r" % args.status)
-            r = add_item(args.kind, args.origin, args.quote, parse_source(args.source), title=args.title,
-                         what=args.what, why=args.why, status=args.status, tags=args.tag, topic=args.topic or None)
+            src = parse_source(args.source)
+            cand = {"kind": args.kind, "quote": args.quote, "title": args.title, "source": src,
+                    "topic": args.topic, "by": "manual"}
+            verdict, why = teachable(cand) if args.quote.strip() else ("teach", "")
+            if verdict == "skip" and not args.teach:
+                print("SKIP %s (%s): not added; pass --teach, a question --title, or 'learn: teach' in the quote"
+                      % (args.source, why))
+                return 0
+            subj = subjects(args.quote)
+            r = add_item(args.kind, args.origin, args.quote, src, title=args.title, what=args.what, why=args.why,
+                         status=args.status, tags=args.tag,
+                         topic=args.topic or (subj[0] if subj and src.get("type") in FILTERED_SOURCES else None))
             make_cards()
             print("OK added %s (%s, %s)" % (r["lid"], r["origin"], r["status"]))
         elif args.cmd == "list":
@@ -1013,7 +1348,8 @@ def main(argv=None):
             if args.goal or args.lane:
                 if not (args.goal and args.lane):
                     raise Refused("--goal and --lane go together")
-                res = {"added": sync_goal(args.goal, args.lane)}
+                res = {"added": []}
+                res["added"] = sync_goal(args.goal, args.lane, res=res)
                 res["cards"] = [c["cid"] for c in make_cards()]
             else:
                 res = sync()
@@ -1025,11 +1361,15 @@ def main(argv=None):
                     print("decisions log: none yet at %s (it appears with the first answered call)" % dl["path"])
                 elif dl:
                     print("decisions log: read %d rows, skipped %d" % (dl["read"], dl["skipped"]))
+                sk = res.get("skipped") or {}
                 print("OK sync: added %d, superseded %d, confirmed %d, new cards %d" % (
                     len(res["added"]), len(res.get("superseded", [])), len(res.get("confirmed", [])),
                     len(res.get("cards", []))))
+                if sk or res.get("folded"):
+                    print("skipped: plumbing %d, answerless %d; folded %d bare answer(s) into their full rows" % (
+                        len(sk.get("plumbing") or []), len(sk.get("answerless") or []), len(res.get("folded") or [])))
         elif args.cmd == "due":
-            ds = due()
+            ds = due(topic=args.topic)
             if args.json:
                 print(json.dumps(ds, indent=1, sort_keys=True))
             else:
@@ -1037,7 +1377,7 @@ def main(argv=None):
                     print("%-5s %-5s %-7s %-7s %s" % (c["cid"], c["lid"], c["format"], c.get("origin"), c["prompt"]))
                 print("%d due" % len(ds))
         elif args.cmd == "quiz":
-            quiz(max_cards=args.max)
+            quiz(max_cards=args.max, topic=args.topic)
         elif args.cmd == "review":
             r = review(args.cid, args.answer, rating=args.rating)
             print("OK %s %s (%s)" % (args.cid, r["grade"], r["gradedBy"]))

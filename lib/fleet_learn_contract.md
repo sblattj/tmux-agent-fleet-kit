@@ -45,7 +45,7 @@ refused with `Refused`. `export(to=DIR)` is the one exception: the human may exp
 | `kind` | `decision`, `change`, `closed`, `doc`, `lesson` |
 | `origin` | `fleet` or `outside`; required, never inferred |
 | `status` | `confirmed`, `heard`, `superseded`, `dropped`. `heard` = unconfirmed (a `decided-on-call` row); it becomes `confirmed` only through `confirm()` with a source other than its own, or a sync where a desk answer quotes it |
-| `source` | object, `type` and `ref` required. Types in use: `decisions-log`, `watch`, `goal`, `route-done`, `decide-learn-this`, `manual` |
+| `source` | object, `type` and `ref` required. Types in use: `decisions-log`, `watch`, `goal`, `route-done`, `decide-learn-this`, `manual`. Rows from `decisions-log`, `goal` and `route-done` with no `title` pass `teachable()`: fleet plumbing (lane lifecycle, desk or kit setup, routing, launch or park, tooling) and answerless lines (bare option letters, step names) are skipped by sync and `add`, and their cards retire. `learn: teach` / `learn: skip` in the line, or `"learn"` in the lane's goal file, overrides |
 | `quote` | required, non-empty, verbatim from the source. Every grade is computed against it |
 | `topic` | grouping key (same PR, call or lane share one); defaults to the first tag, else the source ref |
 | `supersedes` | lid of the row this one replaces (a newer answer to the same call), or null |
