@@ -562,6 +562,7 @@ tm kill-session -t "=nosuch-$$decoy" 2>/dev/null
 
 # ================================================================ 7. side runs follow the parent (issue #18)
 SIDE=$HERE/../lib/fleet_side.py
+export FLEET_SIDE_WATCH_SPAWN=0 FLEET_WAKE_SPAWN=0   # #14: no detached watcher or wake from start(); socket is already throwaway
 FLEETBIN=$HERE/../bin/fleet
 srow() { python3 "$SIDE" show "$1" 2>/dev/null | jq -r ".$2"; }
 dead() { ! kill -0 "$1" 2>/dev/null || ps -o stat= -p "$1" 2>/dev/null | grep -q '^Z'; }
