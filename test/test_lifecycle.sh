@@ -560,5 +560,93 @@ t "cleanup with a missing session does not report a prefix-matching session's wi
 t "cleanup with a missing session does not kill a prefix-matching session's window" bash -c 'tmux -L "$1" list-windows -t "=nosuch-$2decoy" -F "#W" | grep -qx prefixwin' _ "$FLEET_TMUX_SOCKET" "$$"
 tm kill-session -t "=nosuch-$$decoy" 2>/dev/null
 
+# ================================================================ 7. side runs follow the parent (issue #18)
+SIDE=$HERE/../lib/fleet_side.py
+FLEETBIN=$HERE/../bin/fleet
+srow() { python3 "$SIDE" show "$1" 2>/dev/null | jq -r ".$2"; }
+dead() { ! kill -0 "$1" 2>/dev/null || ps -o stat= -p "$1" 2>/dev/null | grep -q '^Z'; }
+# 7.1 park stops the parent's running side runs and marks them killed
+reset_state
+pane=$(mkwin L); addlane L claude worker "$(uid 81)" "$pane"
+sleep 300 & SPID=$!
+sid=$(python3 "$SIDE" start --parent L --host codex --pid "$SPID" 2>&1)
+eq "side setup: registered the sleep as S1" S1 "$sid"
+pane2=$(mkwin M); addlane M claude worker "$(uid 82)" "$pane2"
+sleep 300 & MPID=$!
+python3 "$SIDE" start --parent M --host codex --pid "$MPID" >/dev/null 2>&1
+out=$("$LC" park L --no-compact 2>&1); rc=$?
+eq "park L --no-compact exits 0 with a side run" 0 "$rc"
+sleep 1
+t "park L killed its side run's pid" dead "$SPID"
+eq "park L marked the side run killed" killed "$(srow S1 status)"
+t "park L stamped endedAt on the killed run" test -n "$(srow S1 endedAt | grep -v null)"
+t "park L stamped notifiedAt, so the watcher sends no completion to the parked parent" test -n "$(srow S1 notifiedAt | grep -v null)"
+t "park L wrote nothing into L's inbox" test ! -s "$FLEET_STATE/inbox/L.jsonl"
+t "control: park L left another lane's side run alive" kill -0 "$MPID"
+eq "control: the other lane's row stays running" running "$(srow S2 status)"
+t "park says how many side runs it stopped" has "$out" "OK stopped 1 side run of L"
+# a group-leader side run: SIGTERM goes to its whole process group, so a grandchild dies too
+python3 -c 'import os,sys; os.setpgid(0,0); os.execvp("sh", ["sh","-c","sleep 300 & echo $! > \"$1\"; wait", "sh", sys.argv[1]])' "$T/gchild" & GPID2=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s "$T/gchild" ] && break; sleep 0.2; done
+GC=$(cat "$T/gchild")
+python3 "$SIDE" start --parent M --host agy --pid "$GPID2" >/dev/null 2>&1
+out=$("$FLEETBIN" stop M 2>&1); rc=$?
+eq "fleet stop M exits 0 with side runs" 0 "$rc"
+sleep 1
+t "fleet stop M killed its side run's pid" dead "$MPID"
+t "fleet stop M killed the group leader" dead "$GPID2"
+t "fleet stop M killed the leader's grandchild (process group)" dead "$GC"
+eq "fleet stop M marked both its rows killed" "killed killed" "$(srow S2 status) $(srow S3 status)"
+t "fleet stop M still closed the pane" bash -c '! tmux -L "$1" list-panes -a -F "#{pane_id}" | grep -qx "$2"' _ "$FLEET_TMUX_SOCKET" "$pane2"
+kill "$SPID" "$MPID" "$GPID2" "$GC" 2>/dev/null
+
+# 7.2 --keep-sides leaves the run alive and marks it orphan
+reset_state
+pane=$(mkwin L); addlane L claude worker "$(uid 81)" "$pane"
+sleep 300 & SPID=$!
+python3 "$SIDE" start --parent L --host codex --pid "$SPID" >/dev/null 2>&1
+out=$("$LC" park L --no-compact --keep-sides 2>&1); rc=$?
+eq "park --keep-sides exits 0" 0 "$rc"
+eq "park --keep-sides parked the lane" parked "$(jq -r .L.status "$FLEET_STATE/roster.json")"
+sleep 1
+t "park --keep-sides left the side pid alive" kill -0 "$SPID"
+eq "park --keep-sides marked the row orphan" orphan "$(srow S1 status)"
+t "park --keep-sides left endedAt empty (the watcher still enforces the bound)" test "$(srow S1 endedAt)" = null
+
+# 7.3 cleanup lists ORPHAN-SIDE; a dry run changes nothing; --apply --kill-orphans kills it
+before=$(cksum < "$FLEET_STATE/sides.jsonl")
+dry=$("$LC" cleanup 2>&1)
+t "cleanup prints section (6)" has "$dry" "(6) side runs whose parent is parked, done or gone, or whose pid outlived its bound:"
+t "cleanup lists ORPHAN-SIDE S1 parent=L" has "$dry" "ORPHAN-SIDE S1 parent=L pid=$SPID"
+t "cleanup line carries age and bound" bash -c 'printf "%s" "$1" | grep -Eq "ORPHAN-SIDE S1 parent=L pid=[0-9]+ age=[0-9]+m bound=30m"' _ "$dry"
+t "cleanup dry run left the side pid alive" kill -0 "$SPID"
+eq "cleanup dry run left sides.jsonl unchanged" "$before" "$(cksum < "$FLEET_STATE/sides.jsonl")"
+# controls: a live parent's run under its bound is not listed; a run past its bound is, whatever the parent
+pane=$(mkwin P); addlane P claude worker "$(uid 83)" "$pane"
+sleep 300 & PPID2=$!
+python3 "$SIDE" start --parent P --host codex --pid "$PPID2" >/dev/null 2>&1
+sleep 300 & OPID=$!
+python3 "$SIDE" start --parent P --host codex --pid "$OPID" --bound 1s >/dev/null 2>&1
+sleep 2
+dry=$("$LC" cleanup 2>&1)
+t "control: cleanup does not list a live parent's run under its bound" hasnt "$dry" "ORPHAN-SIDE S2 "
+t "cleanup lists a live parent's run past its bound" has "$dry" "ORPHAN-SIDE S3 parent=P pid=$OPID"
+# a live roster entry whose pane is gone counts as a gone parent
+addlane G claude worker "$(uid 84)" %9998
+sleep 300 & GOPID=$!
+python3 "$SIDE" start --parent G --host codex --pid "$GOPID" >/dev/null 2>&1
+dry=$("$LC" cleanup 2>&1)
+t "cleanup lists a run whose parent's pane is gone" has "$dry" "ORPHAN-SIDE S4 parent=G pid=$GOPID"
+"$LC" cleanup --apply >/dev/null 2>&1
+t "cleanup --apply without --kill-orphans keeps the orphan side pid" kill -0 "$SPID"
+"$LC" cleanup --apply --kill-orphans >/dev/null 2>&1
+sleep 1
+t "cleanup --apply --kill-orphans killed the orphan side pid" dead "$SPID"
+eq "cleanup --apply --kill-orphans marked the row killed" killed "$(srow S1 status)"
+t "cleanup --apply --kill-orphans killed the over-bound run" dead "$OPID"
+t "control: cleanup --apply --kill-orphans left the live parent's run alive" kill -0 "$PPID2"
+eq "control: that row stays running" running "$(srow S2 status)"
+kill "$SPID" "$PPID2" "$OPID" "$GOPID" 2>/dev/null
+
 echo "---"
 if [ "$FAILS" -eq 0 ]; then echo "ALL PASS"; else echo "$FAILS FAILED"; exit 1; fi

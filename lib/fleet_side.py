@@ -186,6 +186,17 @@ def get(id):
     return None
 
 
+def stop_for_parent(name, keep=False):
+    """Park/stop hook (issue #18): kill NAME's running side runs, or keep=True marks them orphan. See fleet_side_lifecycle."""
+    import fleet_side_lifecycle
+    return fleet_side_lifecycle.stop_for_parent(name, keep=keep)
+
+
+def _lazy(mod, fn):
+    """A COMMANDS entry from another module, imported only when the subcommand runs (no import cycle)."""
+    return lambda argv: getattr(__import__(mod), fn)(argv)
+
+
 # ---------------------------------------------------------------- CLI
 
 def cmd_start(argv):
@@ -243,6 +254,8 @@ COMMANDS = {
     "end": cmd_end,
     "ls": cmd_ls,
     "show": cmd_show,
+    "stop-parent": _lazy("fleet_side_lifecycle", "cmd_stop_parent"),  # issue #18
+    "orphans": _lazy("fleet_side_lifecycle", "cmd_orphans"),  # issue #18
 }
 
 

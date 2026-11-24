@@ -731,6 +731,26 @@ any CLI. The kit tracks only its pid, log path and result path, so it stays host
 - Refusals (`no lane NAME in the roster`, dead pid, bound over 12h, `no side run S9`, bad status) come back as
   `isError: true` with `error: <reason>` through `call_tool`; the server keeps running.
 
+## Side runs follow the parent (lib/fleet_side_lifecycle.py, issue #18)
+
+- `fleet park NAME [--keep-sides]` and `fleet stop NAME [--keep-sides]`: before the pane is killed (after park's
+  compact), every `running` side run of NAME is stopped: SIGTERM, then SIGKILL after `FLEET_SIDE_KILL_GRACE` seconds
+  (default 5), and the row gets `status=killed`, `endedAt` and `notifiedAt` (so no completion message reaches the
+  parent that is going away). The signal goes to the run's process group when the pid leads its own group (and it is
+  not the caller's group), else to the pid alone. A failure warns and never blocks the park or stop.
+  `--keep-sides` leaves the pids alive and sets `status=orphan` (no `endedAt`); the watcher still enforces the bound.
+  Prints `OK stopped N side run(s) of NAME (S1 ...)` or `OK kept ...`. A park refused before the kill (unconfirmed
+  compact) touches no side run. `fleet reopen` revives nothing: killed rows stay killed.
+- `fleet cleanup` section `(6) side runs whose parent is parked, done or gone, or whose pid outlived its bound:`,
+  one line per live (`running|orphan`, pid alive, not a zombie) run:
+  `  ORPHAN-SIDE S3 parent=L pid=1234 age=41m bound=30m why=parked|done|archived|gone|over-bound`. Gone = no roster
+  row, or a live row in cleanup's (3) (pane gone). A dry run and `--apply` alone change nothing here;
+  `--apply --kill-orphans` kills them the same way (`status=killed`, prints `OK killed side S3 pid=1234`).
+- `fleet side stop-parent NAME [--keep-sides]` and `fleet side orphans [--dead A,B] [--json] [--kill]` are the CLI
+  hooks the above call. Python: `fleet_side.stop_for_parent(name, keep=False) -> [rows]`;
+  `fleet_side_lifecycle.orphans(dead=(), now=None)` (rows plus `why`, `ageSec`), `kill_orphans(dead=())`,
+  `kill_run(row, grace=None) -> bool`.
+
 ## Side-run usage (lib/fleet_side_usage.py, issue #13)
 
 Pure functions over files; nothing here reads or writes `$FLEET_STATE/sides.jsonl`.
