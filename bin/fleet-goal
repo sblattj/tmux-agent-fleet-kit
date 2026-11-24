@@ -3,12 +3,14 @@
 #   fleet-goal new <goal.json> --goal "<text>" [--report-to NAME]
 #   fleet-goal condition <goal.json> [--report-to NAME] [--turns N]
 #   fleet-goal check <goal.json>        first line "OK" or "FAIL <path>: <why>"; exit 0/1
+# goal: a string, or an object with title/objective. phases[]: each needs an id. openCalls[]: calls waiting on the
+# decisions desk (legacy name openForHuman is still read).
 # Optional keepTools: ["Workflow"|"ScheduleWakeup"|"ReportFindings"|"all"] keeps those tools in a claude
 # worker lane, which fleet launch otherwise disallows (set "Workflow" when the goal permits a workflow).
 # Needs python3 (stdlib only). Portable to bash 3.2 and 5.
 set -eu
 
-usage() { sed -n '2,7p' "$0"; }
+usage() { sed -n '2,10p' "$0"; }
 
 [ $# -ge 1 ] || { usage; exit 2; }
 
@@ -22,6 +24,16 @@ import sys
 ISO = re.compile(r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})$')
 AT_KEYS = ('at', 'answeredAt', 'lastReconciled')
 KEEP_TOOLS = ('Workflow', 'ScheduleWakeup', 'ReportFindings', 'all')
+# Calls waiting on the decisions desk. openCalls is written; the legacy names after it are still read.
+OPEN_KEYS = ('openCalls', 'openForHuman')
+
+
+def open_key(d):
+    """The open-calls key this file uses (first of OPEN_KEYS present), else openCalls."""
+    for k in OPEN_KEYS:
+        if k in d:
+            return k
+    return OPEN_KEYS[0]
 
 
 def now():
@@ -60,25 +72,37 @@ def validate(path):
     if not isinstance(d, dict):
         return 'top level must be an object'
     g = d.get('goal')
-    if not isinstance(g, str) or not g.strip():
-        return 'goal: must be a non-empty string'
+    if isinstance(g, dict):
+        if not any(isinstance(g.get(k), str) and g.get(k).strip() for k in ('title', 'objective')):
+            return 'goal: an object goal needs a non-empty title or objective'
+    elif not isinstance(g, str) or not g.strip():
+        return 'goal: must be a non-empty string or an object with title or objective'
     ph = d.get('phases')
     if not isinstance(ph, list) or not ph:
         return 'phases: must be a non-empty list'
     for i, p in enumerate(ph):
-        if not isinstance(p, dict) or not p.get('id') or not p.get('title'):
-            return 'phases[%d]: needs id and title' % i
+        if not isinstance(p, dict):
+            return 'phases[%d]: must be an object' % i
+        if not p.get('id'):
+            return 'phases[%d]: missing id' % i
     na = d.get('nextAction')
     if not isinstance(na, str) or not na.strip():
         return 'nextAction: must be a non-empty string'
     if not isinstance(d.get('done'), list):
         return 'done: must be a list'
-    ofh = d.get('openForHuman')
+    both = [k for k in OPEN_KEYS if k in d]
+    if len(both) > 1:
+        return '%s: use one open-calls list, not %s' % (both[0], ' and '.join(both))
+    ok = open_key(d)
+    ofh = d.get(ok)
     if not isinstance(ofh, list):
-        return 'openForHuman: must be a list'
+        return '%s: must be a list' % ok
     for i, q in enumerate(ofh):
-        if not isinstance(q, dict) or not q.get('id') or not q.get('question') or not q.get('status'):
-            return 'openForHuman[%d]: needs id, question and status' % i
+        if not isinstance(q, dict):
+            return '%s[%d]: must be an object' % (ok, i)
+        miss = [f for f in ('id', 'question', 'status') if not q.get(f)]
+        if miss:
+            return '%s[%d]: missing %s' % (ok, i, ', '.join(miss))
     dec = d.get('decisions')
     if not isinstance(dec, list):
         return 'decisions: must be a list'
@@ -147,7 +171,7 @@ def cmd_new(args):
         'mustNot': [],
         'nextAction': 'Read the goal, split it into phases[], then start phase P1.',
         'done': [],
-        'openForHuman': [],
+        'openCalls': [],
         'decisions': [],
         'changelog': [{'at': t, 'change': 'created', 'why': 'new goal'}],
     }
@@ -197,7 +221,7 @@ def cmd_condition(args):
         'disagrees with it, the file wins.' % abspath,
         'Start at its nextAction and follow phases[] in order: each step closes only with evidence the world '
         'produced, recorded in done[]; after every edit to the goal file run `%s`.' % chk,
-        'Questions for the human go to openForHuman in the file plus a message to the decisions desk, never a '
+        'Questions for the human go to openCalls in the file (each with its Q id) plus a message to the decisions desk, never a '
         'blocking prompt; keep working on everything that does not depend on the answer.',
     ]
     if report:
@@ -209,11 +233,11 @@ def cmd_condition(args):
                    'output it summarizes' % (n, ', '.join('GATE %s PASS' % g for g in gates)))
         n += 1
     if report:
-        met.append('(%d) a message to %s with the deliverable paths, the gate lines and the openForHuman list' % (n, report))
+        met.append('(%d) a message to %s with the deliverable paths, the gate lines and the openCalls list' % (n, report))
     parts.append('The goal is met when this transcript shows all of: ' + '; '.join(met) + '.')
     parts.append('The goal also ends when the transcript shows a line GOAL HALT: <reason> after a hit bound, a '
                  'failed safety gate, or two identical failures with no alternative path, followed by a report.')
-    parts.append('When only openForHuman items remain, say so once and end the turn. Or stop after %d turns.' % turns)
+    parts.append('When only openCalls items remain, say so once and end the turn. Or stop after %d turns.' % turns)
     text = ' '.join(parts)
     if len(text) > 4000:
         die('condition is %d chars, max 4000 (shorten the goal path or gate ids)' % len(text), 1)

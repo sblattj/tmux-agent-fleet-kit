@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """fleet decisions: the DECISIONS UI. A second front end on the desk's state, never a new source of truth.
 
-Python 3.8+ stdlib only. Reads decisions.jsonl, the desk goal file (openForHuman[]), decisions-log.jsonl,
+Python 3.8+ stdlib only. Reads decisions.jsonl, the desk goal file (openCalls[], or legacy openForHuman[]), decisions-log.jsonl,
 decisions-reports.jsonl and the roster; writes only through the desk's own paths (fleet_mesh mark/deliver,
 desk.sh answer/revise), so the desk pane and the UI end in the same state.
 
@@ -176,9 +176,17 @@ def build_options(raw):
 
 # ---------------------------------------------------------------- reading state
 
+GOAL_OPEN_KEYS = ("openCalls", "openForHuman")  # written name first, then legacy names still read
+
+
 def goal_items():
     g = _read_json(goal_path(), {})
-    return g.get("openForHuman") or [] if isinstance(g, dict) else []
+    if not isinstance(g, dict):
+        return []
+    for k in GOAL_OPEN_KEYS:
+        if k in g:
+            return g.get(k) or []
+    return []
 
 
 def latest_log():

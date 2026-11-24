@@ -27,7 +27,7 @@ out=$("$GOAL" check "$g" 2>&1); rc=$?
 [ "$out" = "OK" ] && [ $rc -eq 0 ] && pass "check on new file prints OK, exit 0" || fail "check on new file prints OK, exit 0 (rc=$rc out=$out)"
 expect_not "new refuses to overwrite an existing file" "$GOAL" new "$g" --goal "again"
 expect "new records reportTo" jq -e '.reportTo == "ORCHESTRATOR"' "$g"
-expect "new has all required keys" jq -e 'has("goal") and has("phases") and has("nextAction") and has("done") and has("openForHuman") and has("decisions") and has("gates") and has("mustNot") and has("changelog")' "$g"
+expect "new has all required keys" jq -e 'has("goal") and has("phases") and has("nextAction") and has("done") and has("openCalls") and (has("openForHuman")|not) and has("decisions") and has("gates") and has("mustNot") and has("changelog")' "$g"
 
 jq '.keepTools=["Workflow"]' "$g" > "$g.kt" && expect "check accepts keepTools [Workflow]" "$GOAL" check "$g.kt"
 jq '.keepTools=["Bogus"]' "$g" > "$g.kt" && expect_not "check refuses an unknown keepTools entry" "$GOAL" check "$g.kt"
@@ -46,7 +46,7 @@ has "condition: GATE line per gates key" "$cond" "GATE G1-evidence PASS"
 has "condition: names the fleet-goal check OK line" "$cond" "fleet-goal check $g"
 has "condition: first line OK required" "$cond" "first line OK"
 has "condition: GOAL HALT exit" "$cond" "GOAL HALT: <reason>"
-has "condition: only-openForHuman exit" "$cond" "When only openForHuman items remain, say so once and end the turn"
+has "condition: only-openCalls exit" "$cond" "When only openCalls items remain, say so once and end the turn"
 has "condition: reports to ORCHESTRATOR" "$cond" "ORCHESTRATOR"
 if printf '%s' "$cond" | grep -q "$(printf '\342\200\224')"; then fail "condition has no em dash"; else pass "condition has no em dash"; fi
 cond2=$("$GOAL" condition "$g" 2>&1)
@@ -76,17 +76,47 @@ jq '.changelog[0].at = "yesterday"' "$g" > "$tmp/badat.json"
 out=$("$GOAL" check "$tmp/badat.json" 2>&1)
 case $out in FAIL*ISO-8601*) pass "control: non-ISO at is rejected" ;; *) fail "control: non-ISO at is rejected (got: $out)" ;; esac
 
-jq '.openForHuman = [{"id":"Q1","question":"q"}]' "$g" > "$tmp/noststatus.json"
+jq '.openCalls = [{"id":"Q1","question":"q"}]' "$g" > "$tmp/noststatus.json"
 out=$("$GOAL" check "$tmp/noststatus.json" 2>&1)
-case $out in FAIL*openForHuman*) pass "control: openForHuman item without status is rejected" ;; *) fail "control: openForHuman item without status is rejected (got: $out)" ;; esac
+case $out in "FAIL $tmp/noststatus.json: openCalls[0]: missing status") pass "control: openCalls item without status FAILs naming status" ;; *) fail "control: openCalls item without status FAILs naming status (got: $out)" ;; esac
 
 jq '.decisions = [{"id":"D1"}]' "$g" > "$tmp/nodec.json"
 out=$("$GOAL" check "$tmp/nodec.json" 2>&1)
 case $out in FAIL*decisions*) pass "control: decision without 'decision' is rejected" ;; *) fail "control: decision without 'decision' is rejected (got: $out)" ;; esac
 
-jq '.phases = [{"id":"P1"}]' "$g" > "$tmp/nophase.json"
+# --- issue #3: object goal, id-only phases, legacy open-calls names
+jq '.phases = [{"id":"P1"},{"id":"P2","title":"t"}]' "$g" > "$tmp/idphase.json"
+out=$("$GOAL" check "$tmp/idphase.json" 2>&1)
+[ "$out" = "OK" ] && pass "check accepts a phase with only an id" || fail "check accepts a phase with only an id (got: $out)"
+jq '.phases = [{"title":"no id"}]' "$g" > "$tmp/nophase.json"
 out=$("$GOAL" check "$tmp/nophase.json" 2>&1)
-case $out in FAIL*phases*) pass "control: phase without title is rejected" ;; *) fail "control: phase without title is rejected (got: $out)" ;; esac
+[ "$out" = "FAIL $tmp/nophase.json: phases[0]: missing id" ] && pass "control: phase without an id FAILs naming id" || fail "control: phase without an id FAILs naming id (got: $out)"
+jq '.goal = {"id":"G-7","title":"Ship the thing","objective":"all of it"}' "$g" > "$tmp/objgoal.json"
+out=$("$GOAL" check "$tmp/objgoal.json" 2>&1)
+[ "$out" = "OK" ] && pass "check accepts an object goal with title" || fail "check accepts an object goal with title (got: $out)"
+jq '.goal = {"objective":"all of it"}' "$g" > "$tmp/objgoal2.json"
+out=$("$GOAL" check "$tmp/objgoal2.json" 2>&1)
+[ "$out" = "OK" ] && pass "check accepts an object goal with only objective" || fail "check accepts an object goal with only objective (got: $out)"
+expect "condition works on an object-goal file" "$GOAL" condition "$tmp/objgoal.json"
+jq '.goal = {"id":"G-7"}' "$g" > "$tmp/objgoal3.json"
+out=$("$GOAL" check "$tmp/objgoal3.json" 2>&1)
+case $out in "FAIL $tmp/objgoal3.json: goal: an object goal needs a non-empty title or objective") pass "control: object goal with neither title nor objective FAILs" ;; *) fail "control: object goal with neither title nor objective FAILs (got: $out)" ;; esac
+jq '.goal = 7' "$g" > "$tmp/numgoal.json"
+out=$("$GOAL" check "$tmp/numgoal.json" 2>&1)
+case $out in "FAIL $tmp/numgoal.json: goal:"*) pass "control: a number goal FAILs" ;; *) fail "control: a number goal FAILs (got: $out)" ;; esac
+jq '.openForHuman = [{"id":"Q1","question":"q","status":"open"}] | del(.openCalls)' "$g" > "$tmp/legacy.json"
+out=$("$GOAL" check "$tmp/legacy.json" 2>&1)
+[ "$out" = "OK" ] && pass "check still reads the legacy openForHuman" || fail "check still reads the legacy openForHuman (got: $out)"
+jq '.openForHuman = [{"id":"Q1","question":"q"}] | del(.openCalls)' "$g" > "$tmp/legacy2.json"
+out=$("$GOAL" check "$tmp/legacy2.json" 2>&1)
+[ "$out" = "FAIL $tmp/legacy2.json: openForHuman[0]: missing status" ] && pass "control: a broken legacy item FAILs under its own key" || fail "control: a broken legacy item FAILs under its own key (got: $out)"
+cond=$("$GOAL" condition "$tmp/legacy.json" 2>&1) && pass "condition works on a legacy openForHuman file" || fail "condition works on a legacy openForHuman file ($cond)"
+jq '.openForHuman = []' "$g" > "$tmp/both.json"
+out=$("$GOAL" check "$tmp/both.json" 2>&1)
+case $out in "FAIL $tmp/both.json: openCalls: use one open-calls list, not openCalls and openForHuman") pass "control: both openCalls and openForHuman FAILs naming both" ;; *) fail "control: both keys FAILs naming both (got: $out)" ;; esac
+jq 'del(.openCalls)' "$g" > "$tmp/noopen.json"
+out=$("$GOAL" check "$tmp/noopen.json" 2>&1)
+[ "$out" = "FAIL $tmp/noopen.json: openCalls: must be a list" ] && pass "control: no open-calls list FAILs naming openCalls" || fail "control: no open-calls list FAILs naming openCalls (got: $out)"
 
 # --- desk.sh on a temp goal file
 d=$tmp/desk.goal.json
@@ -99,16 +129,16 @@ out=$("$DESK" add Q1 lane-a "Ship now? (a, rec) yes (b) no" lane-a ORCHESTRATOR 
 out=$("$DESK" open 2>&1)
 has "desk open lists Q1" "$out" "Q1"
 has "desk open shows the asker" "$out" "lane-a"
-expect "desk add stored relayTo" jq -e '.openForHuman[0].relayTo == ["lane-a","ORCHESTRATOR"]' "$d"
+expect "desk add stored relayTo" jq -e '.openCalls[0].relayTo == ["lane-a","ORCHESTRATOR"]' "$d"
 "$DESK" add Q2 lane-b "Second call" >/dev/null 2>&1
 out=$("$DESK" relayto Q2 add lane-c 2>&1)
 [ "$out" = "OK" ] && pass "desk relayto add prints OK" || fail "desk relayto add (out=$out)"
-expect "desk relayto stored the target" jq -e '.openForHuman[1].relayTo == ["lane-c"]' "$d"
+expect "desk relayto stored the target" jq -e '.openCalls[1].relayTo == ["lane-c"]' "$d"
 out=$("$DESK" revise Q2 "Second call, revised" 2>&1)
-[ "$out" = "OK" ] && expect "desk revise changed the question" jq -e '.openForHuman[1].question == "Second call, revised"' "$d" || fail "desk revise (out=$out)"
+[ "$out" = "OK" ] && expect "desk revise changed the question" jq -e '.openCalls[1].question == "Second call, revised"' "$d" || fail "desk revise (out=$out)"
 out=$("$DESK" answer Q1 "yes, ship it" lane-a ORCHESTRATOR 2>&1)
 [ "$out" = "OK" ] && pass "desk answer prints OK" || fail "desk answer prints OK (out=$out)"
-expect "desk answer closed Q1" jq -e '.openForHuman[0].status == "answered" and .openForHuman[0].answer == "yes, ship it"' "$d"
+expect "desk answer closed Q1" jq -e '.openCalls[0].status == "answered" and .openCalls[0].answer == "yes, ship it"' "$d"
 expect "desk answer appended decision D1" jq -e '.decisions | length == 1 and .[0].id == "D1" and .[0].decision == "yes, ship it"' "$d"
 [ -f "$dlog" ] && [ "$(wc -l < "$dlog" | tr -d ' ')" = 1 ] && pass "desk answer appended one decisions-log line" || fail "desk answer appended one decisions-log line"
 expect "decisions-log line has id, asker, verbatim, relayedTo, at" jq -e '.id == "Q1" and .asker == "lane-a" and .verbatim == "yes, ship it" and .relayedTo == ["lane-a","ORCHESTRATOR"] and (.at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T"))' "$dlog"
@@ -123,11 +153,22 @@ has "desk open still lists Q2" "$out" "Q2"
 "$DESK" amend Q1 "and tag it" >/dev/null 2>&1
 expect "desk amend extends the decision" jq -e '.decisions[0].decision | contains("amended: and tag it")' "$d"
 out=$("$DESK" elsewhere Q2 "no (typed in ORCHESTRATOR)" 2>&1)
-[ "$out" = "OK" ] && expect "desk elsewhere closes Q2" jq -e '.openForHuman[1].status == "answered-elsewhere"' "$d" || fail "desk elsewhere (out=$out)"
+[ "$out" = "OK" ] && expect "desk elsewhere closes Q2" jq -e '.openCalls[1].status == "answered-elsewhere"' "$d" || fail "desk elsewhere (out=$out)"
 out=$("$GOAL" check "$d" 2>&1)
 [ "$out" = "OK" ] && pass "desk goal file still validates after all edits" || fail "desk goal file validates (out=$out)"
 expect "desk wrote ISO-8601 at stamps" jq -e '[.. | objects | .at? | select(. != null)] | all(test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]+Z$"))' "$d"
 expect_not "control: desk refuses a missing goal file" env FLEET_DESK_GOAL="$tmp/nope.json" "$DESK" add Q9 x "q"
+
+# --- desk.sh on a legacy openForHuman file: reads and writes that key, never adds openCalls
+L=$tmp/legacy-desk.goal.json
+jq 'del(.openCalls) | .openForHuman = []' "$tmp/objgoal.json" > "$L"
+out=$(FLEET_DESK_GOAL=$L "$DESK" add Q5 lane-z "Legacy call?" lane-z 2>&1)
+[ "$out" = "OK" ] && pass "legacy desk add prints OK" || fail "legacy desk add prints OK (out=$out)"
+has "legacy desk open lists Q5" "$(FLEET_DESK_GOAL=$L "$DESK" open 2>&1)" "Q5"
+FLEET_DESK_GOAL=$L "$DESK" answer Q5 "yes" lane-z >/dev/null 2>&1
+expect "legacy desk answer closed Q5 under openForHuman" jq -e '.openForHuman[0].status == "answered" and .openForHuman[0].id == "Q5"' "$L"
+expect "legacy desk never added an openCalls key" jq -e 'has("openCalls") | not' "$L"
+expect "legacy desk answer appended decision D1" jq -e '.decisions[0].item == "Q5"' "$L"
 
 # --- retire roster.sh (bash 3.2 safe, no declare -A)
 if grep -q 'declare -A' "$ROOT/skills/retiring-the-fleet-into-handoffs/roster.sh"; then fail "roster.sh avoids declare -A"; else pass "roster.sh avoids declare -A"; fi

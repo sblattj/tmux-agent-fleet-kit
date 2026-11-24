@@ -146,7 +146,7 @@ fleet decisions learn [<id>]             one LEARN row with the human's verbatim
   (`decide/fyi-forwarded.json`) and logs a `fleet_probe_contract.log_row("fyi-forward", ...)` row. Rows with an `action`
   key are not Called answers.
 - `POST /api/learn {id}` (token and loopback checks as every route; 409 when already learned) = TUI key `l`.
-- A call = a `decisions.jsonl` row and/or a desk goal `openForHuman[]` item with the same id; open only while every store
+- A call = a `decisions.jsonl` row and/or a desk goal `openCalls[]` item (or legacy `openForHuman[]`) with the same id; open only while every store
   that has it says `open`. Open calls with the same normalized question (`fleet_mesh._norm`) form one card: the oldest id
   is primary, the rest are `dupIds`; askers = each id's `from` + `relayTo`, unique, in order. An id whose two stores
   hold different questions (normalized, neither containing the other) is not one call: the card carries `conflict`,
@@ -303,11 +303,12 @@ With `FLEET_SIDE` unset nothing changes. Helpers: `side_run()` -> `(id, parent)`
 ## bin/fleet-goal
 
 ```
-fleet-goal new <goal.json> --goal "<text>" [--report-to NAME]   skeleton with goal, owner, reportTo, phases[], gates{}, mustNot[], nextAction, done[], openForHuman[], decisions[], changelog[]
+fleet-goal new <goal.json> --goal "<text>" [--report-to NAME]   skeleton with goal, owner, reportTo, phases[], gates{}, mustNot[], nextAction, done[], openCalls[], decisions[], changelog[]
 fleet-goal condition <goal.json> [--report-to NAME] [--turns N]  prints a /goal condition (<= 4000 chars) that passes the fleet launch lint
 fleet-goal check <goal.json>     first line `OK` or `FAIL <path>: <why>`; exit 0/1
 ```
-Desk helper `skills/running-the-decisions-desk/desk.sh` uses `fleet-goal check` and field `openForHuman`.
+`check` accepts `goal` as a string or an object with `title`/`objective`, phases with only an `id`, and the open-calls list as `openCalls` or the legacy `openForHuman` (one per file).
+Desk helper `skills/running-the-decisions-desk/desk.sh` uses `fleet-goal check` and field `openCalls`; on a file that already has `openForHuman` it reads and writes that key instead (never migrated in place, so readers that know only the legacy name keep working). `lib/fleet_decisions.py` reads the same way.
 
 ## v2 addendum (roles, lifecycle, routing)
 

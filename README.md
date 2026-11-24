@@ -179,7 +179,7 @@ fleet-goal new <goal.json> --goal "<text>" [--report-to NAME]
 fleet-goal check <goal.json>        first line OK or FAIL <path>: <why>; exit 0/1
 fleet-goal condition <goal.json> [--report-to NAME] [--turns N]
 ```
-`check` needs `goal`, `phases[{id,title}]`, `nextAction`, `done[]`, `openForHuman[{id,question,status}]`, `decisions[{id,decision}]`, and ISO-8601 `at` stamps where present. `condition` prints a `/goal` line under 4000 characters that names the file, says the file wins, requires one `GATE <id> PASS` line per `gates` key plus the `fleet-goal check` OK line after the last edit, has a `GOAL HALT: <reason>` exit, a turn bound, and ends the turn when only `openForHuman` items remain.
+`check` needs `goal` (a string, or an object with a non-empty `title` or `objective`), `phases[{id}]` (`title` optional), `nextAction`, `done[]`, `openCalls[{id,question,status}]` (calls waiting on DECIDE, each carrying its Q id; a file that still uses the legacy name `openForHuman` is read as is, one of the two per file), `decisions[{id,decision}]`, and ISO-8601 `at` stamps where present. `condition` prints a `/goal` line under 4000 characters that names the file, says the file wins, requires one `GATE <id> PASS` line per `gates` key plus the `fleet-goal check` OK line after the last edit, has a `GOAL HALT: <reason>` exit, a turn bound, and ends the turn when only `openCalls` items remain. A FAIL line names the field and what is missing (`phases[0]: missing id`, `openCalls[2]: missing status`).
 
 ## DECISIONS UI
 

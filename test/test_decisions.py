@@ -201,7 +201,21 @@ class TestPick(Base):
         self.assertEqual(len([x for x in self.log_lines() if x["id"] == "Q2"]), 1, "one log line per pick")
         self.assertIn("delivered", last["delivery"]["lane-a"])
         self.assertEqual(self.rows()["Q2"]["status"], "answered")
-        self.assertEqual(self.goalfile()["openForHuman"][0]["status"], "answered")
+        self.assertEqual(self.goalfile()["openCalls"][0]["status"], "answered")
+
+    def test_pick_on_a_legacy_openForHuman_desk_file(self):
+        # issue #3: a desk goal file that still uses openForHuman is read and written under that key
+        g = self.goalfile()
+        g["openForHuman"] = g.pop("openCalls")
+        with open(self.goal, "w") as f:
+            json.dump(g, f)
+        p = self.fleet("pick", "Q2", "a")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        # lane-c is a relay target only in the goal file (desk.sh relayto), so this proves the legacy read
+        self.assertEqual(self.answers_in("lane-c"), ["[answer Q2] a: alone"])
+        g = self.goalfile()
+        self.assertNotIn("openCalls", g)
+        self.assertEqual(g["openForHuman"][0]["status"], "answered")
 
     def test_own_answer_is_verbatim(self):
         text = "b, but only for the staging profile\nand tag it"
@@ -245,7 +259,7 @@ class TestPick(Base):
         p = self.fleet("pick", "Q7", "a")
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertEqual(self.answers_in("lane-c"), ["[answer Q7] a: rename now"])
-        item = [g for g in self.goalfile()["openForHuman"] if g["id"] == "Q7"][0]
+        item = [g for g in self.goalfile()["openCalls"] if g["id"] == "Q7"][0]
         self.assertEqual(item["status"], "answered")
         self.assertEqual(len([x for x in self.log_lines() if x["id"] == "Q7"]), 1)
         again = self.fleet("pick", "Q7", "b")
@@ -261,7 +275,7 @@ class TestPick(Base):
         os.chmod(os.path.join(shim, "jq"), 0o755)
         p = self.fleet("pick", "Q7", "a", env={"PATH": shim + os.pathsep + self.env["PATH"]})
         self.assertIn("desk.sh answer Q7 failed", p.stdout + p.stderr)
-        item = [g for g in self.goalfile()["openForHuman"] if g["id"] == "Q7"][0]
+        item = [g for g in self.goalfile()["openCalls"] if g["id"] == "Q7"][0]
         self.assertEqual(item["status"], "open", "the shim really made desk.sh answer fail")
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertEqual(len(self.answers_in("lane-c")), 1)
@@ -357,13 +371,13 @@ class TestSameStateAsDesk(Base):
         rows = {k: {f: v for f, v in r.items() if f not in ("at", "answeredAt", "answerKind", "via")}
                 for k, r in self.rows().items()}
         g = self.goalfile()
-        ofh = [{f: v for f, v in i.items() if f not in ("at", "answeredAt")} for i in g["openForHuman"]]
+        ofh = [{f: v for f, v in i.items() if f not in ("at", "answeredAt")} for i in g["openCalls"]]
         decs = [{f: v for f, v in d.items() if f != "at"} for d in g["decisions"]]
         latest = {}
         for ln in self.log_lines():
             latest[ln["id"]] = {f: ln.get(f) for f in ("id", "asker", "verbatim", "relayedTo")}
         inboxes = {n: [m["text"] for m in self.inbox(n)] for n in ("lane-a", "lane-b", "lane-c")}
-        return {"rows": rows, "openForHuman": ofh, "decisions": decs, "log": latest, "inboxes": inboxes}
+        return {"rows": rows, "openCalls": ofh, "decisions": decs, "log": latest, "inboxes": inboxes}
 
     def test_ui_pick_and_desk_pane_answer_end_in_the_same_state(self):
         verbatim = "a: alone"
