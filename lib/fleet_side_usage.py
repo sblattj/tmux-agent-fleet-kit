@@ -8,6 +8,8 @@ fmt(row, now=None)   -> one roster line, e.g. "codex gpt-x 7m/30m 2.1M tok"; unk
 Token sources, first hit wins:
   1. row["result"] parses as an ach RunResult (tokens[] of inputTokens/outputTokens/cacheReadTokens/
      cacheWriteTokens): in = input + cacheRead + cacheWrite, out = output. source "ach".
+  1b. row["result"] is an ach RunRecord (registry file, issue #19): totals.inputTokens/outputTokens/
+     cacheReadTokens/cacheWriteTokens, summed the same way. source "ach".
   2. row["result"] is {"tokens": {"in": N, "out": N}} (the generic host-wrapper contract). source "result".
   3. host "codex" with row["sessionId"]: fleet_probe.tokens_for("codex", sid), plus the same for every helper
      session whose rollout session_meta names it (or one of its helpers) as parent. source "codex".
@@ -59,6 +61,13 @@ def result_tokens(path):
             tin += sum(parts)
             tout += o
         return tin, tout, "ach"
+    tot = d.get("totals")
+    if isinstance(tot, dict) and "runId" in d:  # ach RunRecord (<state>/runs/<runId>.json), issue #19
+        parts = [_int(tot.get(k, 0)) for k in ("inputTokens", "cacheReadTokens", "cacheWriteTokens")]
+        o = _int(tot.get("outputTokens", 0))
+        if None in parts or o is None:
+            return None, None, None
+        return sum(parts), o, "ach"
     if isinstance(t, dict):
         tin, tout = _int(t.get("in")), _int(t.get("out"))
         if tin is not None and tout is not None:

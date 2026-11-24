@@ -1,0 +1,14 @@
+{
+  "runId": "00000000-0000-4000-8000-000000000019",
+  "agent": "codex",
+  "sessionId": "th-ach-19",
+  "pid": 1,
+  "cwd": "/tmp",
+  "promptPreview": "stub side run",
+  "startedAt": 0,
+  "updatedAt": 0,
+  "status": "running",
+  "totals": {"inputTokens": 0, "outputTokens": 0, "cacheReadTokens": 0, "cacheWriteTokens": 0, "costUsd": 0},
+  "rawTranscript": "/tmp/ach-state/raw/codex-th-ach-19.jsonl",
+  "metadata": {"model": "gpt-x"}
+}

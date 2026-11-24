@@ -836,3 +836,32 @@ the default: every row).
   reads); `--gone` prints the gone block.
 - API: `visible(row)`, `is_orphan(row, roster)`, `line(row, roster, now)`, `side_rows(roster, now) ->
   {parent: [rows]}`, `child_lines(name, roster, now)`, `gone(roster, now)`, `gone_lines(roster, now)`.
+
+## Side runs from ach (lib/fleet_side_ach.py, issue #19)
+
+Registers `ach` runs as side runs with no change to ach, from its run registry: one record per run at
+`$AGENTIC_CODING_HARNESS_STATE_DIR/runs/<runId>.json` (default `~/.agentic-coding-harness`; agentic-coding-harness
+`src/core/store.ts` `stateDir`, `src/core/registry.ts` `RunRecord`).
+
+- `fleet side adopt-ach [--apply]`: scans records with `status=running`. For each, the parent lane is the first
+  roster lane (not parked/archived) whose `pid`, or whose pane's tmux `#{pane_pid}` (`$FLEET_TMUX_SOCKET`), is on
+  the record `pid`'s ppid chain (one `ps -axo pid=,ppid=,args=`). A match not yet registered (no side row with
+  `source=ach` and the same `achRunId`) is registered through `fleet_side.start` with `host=<agent>`,
+  `model` = `metadata.model` (else `model` from `<--output-dir>/invocation.json`, the dir read from the ach
+  process's argv, a relative dir joined to the record's `cwd`), `boundSec` = `FLEET_SIDE_ACH_BOUND` (default 30m), `log` = `rawTranscript`, `result` = the record
+  file, `sessionId`, `source=ach`, `achRunId=<runId>`. Output, one line per record:
+  `S1 parent=L host=codex source=ach achRunId=... pid=N` (applied), `would register parent=L ...` (dry run, the
+  default), `skip <runId>: pid N not alive | no lane ancestor for pid N | <start refusal>`. Nothing to scan:
+  `(no running ach runs to adopt)`. Idempotent: a second `--apply` registers nothing; `--apply` holds
+  `$FLEET_STATE/side-adopt-ach.lock` for the whole scan, so concurrent adopters register a run once.
+- `fleet tick` runs it as a dry run and prints only matches, prefixed `side adopt-ach: `; `fleet tick --adopt`
+  applies. With `--json` the dry run is skipped and `--adopt` output goes to stderr, so stdout stays pure JSON.
+  No daemon.
+- Usage (#13): `fleet_side_usage.result_tokens` also reads an ach RunRecord (`runId` + `totals` dict): in =
+  `inputTokens + cacheReadTokens + cacheWriteTokens`, out = `outputTokens`, `source="ach"`.
+- Completion (#14 watcher): `fleet_side_ach.finish_status(row)` returns `None` while a `source=ach` row's record
+  says running, else `done` (`success`) or `failed` (`error | aborted | unavailable | interrupted`); `None` for any
+  other row. `fleet_side_watch._loop` calls it each poll and skips its "result unchanged for 2 polls" rule for
+  `source=ach` (the record exists from the start and sits unchanged while the run works); an ach pid gone with the
+  record still `running` ends `failed`. `fleet side adopt-ach --apply` goes through `fleet_side.start`, so each
+  adopted run gets its watcher.

@@ -264,6 +264,7 @@ COMMANDS = {
     "watch": lambda argv: __import__("fleet_side_watch").cmd_watch(argv),  # issue #14
     "run": lambda argv: __import__("fleet_side_run").cmd_run(argv),  # issue #15: lib/fleet_side_run.py
     "roster": lambda argv: __import__("fleet_side_roster").cmd_roster(argv),  # issue #17: roster child lines
+    "adopt-ach": lambda a: __import__("fleet_side_ach").cmd_adopt_ach(a),  # issue #19
 }
 
 
