@@ -1,0 +1,7 @@
+#!/bin/sh
+# Fake `whosaid decisions <ws> <meeting> --json`: prints <meeting>.decisions.json from this folder, exit 3 when absent.
+here=$(cd "$(dirname "$0")" && pwd)
+[ "$1" = decisions ] || exit 2
+f="$here/$3.decisions.json"
+[ -f "$f" ] || exit 3
+cat "$f"

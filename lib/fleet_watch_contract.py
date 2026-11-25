@@ -31,6 +31,8 @@ SOURCES = {
     "bitbucket": "watch_sources.bitbucket",
     "gitlab": "watch_sources.gitlab",  # GitLab and Gitea
     "webhook": "watch_sources.webhook",  # phase 6 loopback receiver
+    "whosaid": "watch_sources.whosaid",  # call decisions from a local whosaid workspace (LEARN Q702)
+    "linear": "watch_sources.linear",  # Linear issues over GraphQL (LEARN Q702)
 }
 
 # --- routing ---------------------------------------------------------------------------------------------------------
@@ -345,6 +347,8 @@ SOURCE_REQUIRED = {
     "command": ("argv",),
     "call": (),
     "webhook": ("auth",),  # the receiver refuses a route without a secret reference
+    "whosaid": ("workspace",),
+    "linear": ("teams",),
 }
 FILTER_DROP_KEYS = ("actor", "type", "actorMatches")
 FILTER_WHEN_KEYS = ("tags", "type", "branchOwner", "any", "actorMatches", "source")

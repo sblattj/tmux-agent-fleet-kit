@@ -1,0 +1,6 @@
+{"data": {"issues": {"pageInfo": {"hasNextPage": false, "endCursor": null}, "nodes": [
+ {"id": "i2", "identifier": "ENG-9", "title": "Pick a CDN", "url": "https://linear.example/acme/issue/ENG-9",
+  "createdAt": "2026-01-04T08:00:00.000Z", "updatedAt": "2026-01-07T08:00:00.000Z",
+  "state": {"name": "Todo", "type": "unstarted"}, "team": {"key": "ENG"}, "project": null, "parent": null,
+  "cycle": null, "assignee": null, "history": {"nodes": []}, "comments": {"nodes": []}, "inverseRelations": {"nodes": []}}
+]}}}

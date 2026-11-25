@@ -1,0 +1,9 @@
+{"data": {"issues": {"pageInfo": {"hasNextPage": true, "endCursor": "c1"}, "nodes": [
+ {"id": "i1", "identifier": "ENG-12", "title": "Retry uploads with backoff", "url": "https://linear.example/acme/issue/ENG-12",
+  "createdAt": "2026-01-05T09:00:00.000Z", "updatedAt": "2026-01-06T10:00:00.000Z",
+  "state": {"name": "Done", "type": "completed"}, "team": {"key": "ENG"}, "project": {"name": "Uploads"},
+  "parent": null, "cycle": {"name": "Cycle 4", "number": 4}, "assignee": {"displayName": "Dev One"},
+  "history": {"nodes": [{"createdAt": "2026-01-06T10:00:00.000Z", "fromState": {"name": "In Progress"}, "toState": {"name": "Done", "type": "completed"}}]},
+  "comments": {"nodes": [{"id": "k1", "body": "cap at 3, jittered", "createdAt": "2026-01-05T12:00:00.000Z"}]},
+  "inverseRelations": {"nodes": [{"type": "blocks", "issue": {"identifier": "ENG-9"}}]}}
+]}}}
