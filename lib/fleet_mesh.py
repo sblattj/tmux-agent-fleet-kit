@@ -3,7 +3,7 @@
 
 Python 3.8+ stdlib only. See INTERFACES.md for the contract.
   fleet_mesh.py serve | send <from> <to> <text> | inbox <name> | roster | mirror (hook JSON on stdin)
-                | wake-later <to> | pane-state <pane> | stale | version
+                | wake-later <to> | pane-state <pane> | type <pane> <text> [cli] | stale | version
 """
 import base64
 import datetime
@@ -321,7 +321,7 @@ def wake(frm, to, text, entry):
             why = "this mesh server runs code %s, the kit on disk is %s" % st
             notice(to, entry, frm, unread_count(to), why)
             return "tmux send-keys", True, "deferred (stale: %s); not typed, tmux notice left" % why
-        ok, detail = type_wake(pane, wake_note(frm, to, entry))
+        ok, detail = type_wake(pane, wake_note(frm, to, entry), cli)
         if ok:
             mark_woken(to)
         if ok is None:  # the pane is busy: never type into it now; a detached waker retries, then leaves a notice
@@ -539,18 +539,40 @@ def pane_busy(pane):
     if in_mode:
         return True, "pane is in copy mode"
     state, why = input_state(screen, cx, cy)
-    if state == "empty" and _claude_vim() and _claude_prompt_row(screen, cy) and \
-            not any("-- INSERT --" in _plain(screen_cells(ln)) for ln in screen.split("\n")[-8:]):
-        # Claude Code's vim mode shows `-- INSERT --` while inserting and nothing in NORMAL mode, where typed keys
-        # would run as vim commands (`[fleet] mes` eaten up to the `s`, measured 2026-11-23)
-        return True, "vim NORMAL mode (no -- INSERT -- shown)"
+    # Claude Code's vim NORMAL mode (no `-- INSERT --` in the footer) is not busy: typed keys would run as vim
+    # commands (`[fleet] mes` eaten up to the `s`, issue #38), but a Claude pane gets its wake as one bracketed paste,
+    # which lands verbatim in NORMAL mode too, and Enter submits from NORMAL mode (both measured on 2.1.332).
     return state != "empty", why
 
 
+def _claude_settings_paths():
+    """Files that may set Claude Code's editorMode: $FLEET_CLAUDE_SETTINGS (os.pathsep separated) when set, else
+    ~/.claude.json ($FLEET_CLAUDE_JSON) plus settings.json and settings.local.json in $CLAUDE_CONFIG_DIR or ~/.claude
+    (Claude Code 2.1.33x keeps editorMode in settings.json; v0.5.0 read only ~/.claude.json, issue #38)."""
+    s = os.environ.get("FLEET_CLAUDE_SETTINGS")
+    if s is not None:
+        return [p for p in s.split(os.pathsep) if p]
+    home = os.path.expanduser("~")
+    cfg = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(home, ".claude")
+    return [os.environ.get("FLEET_CLAUDE_JSON") or os.path.join(home, ".claude.json"),
+            os.path.join(cfg, "settings.json"), os.path.join(cfg, "settings.local.json")]
+
+
 def _claude_vim():
-    """True when Claude Code's editorMode is vim (~/.claude.json, or $FLEET_CLAUDE_JSON)."""
-    path = os.environ.get("FLEET_CLAUDE_JSON") or os.path.join(os.path.expanduser("~"), ".claude.json")
-    return _read_json(path).get("editorMode") == "vim"
+    """True when Claude Code's editorMode is vim in any of its settings files (the last one that sets it wins)."""
+    mode = None
+    for p in _claude_settings_paths():
+        v = _read_json(p).get("editorMode")
+        if v:
+            mode = v
+    return mode == "vim"
+
+
+def _vim_normal(screen, cy):
+    """True when a Claude pane in vim mode shows no `-- INSERT --` footer below its prompt row (vim NORMAL mode).
+    Only rows below the cursor count, so conversation text above the box can't fake the footer."""
+    rows = screen.split("\n")[cy + 1:]
+    return _claude_vim() and not any("-- INSERT --" in _plain(screen_cells(ln)) for ln in rows)
 
 
 def _claude_prompt_row(screen, cy):
@@ -595,15 +617,76 @@ def _leftover_pointer(pane):
     return bool(text) and bool(_POINTER.match("".join(text.split())))
 
 
-def type_wake(pane, note):
-    """Type `note` + Enter only into an empty, quiet prompt. Returns (True|False, detail), or (None, why) if busy."""
+TYPE_TRIES = 3  # attempts per typed wake when the box ends up holding a fragment of it (issue #38)
+
+
+def type_wake(pane, note, cli=None):
+    """Type `note` + Enter only into an empty, quiet prompt. Returns (True|False, detail), or (None, why) if busy.
+    cli: the lane's CLI when known; "claude" (or an unknown CLI on a `❯` prompt row) gets a bracketed paste."""
     with _PaneLock(pane) as got:
         if not got:
             return None, "another wake is typing into %s" % pane
-        return _type_wake_locked(pane, note)
+        return _type_wake_locked(pane, note, cli)
 
 
-def _type_wake_locked(pane, note):
+def _squash(text):
+    return "".join((text or "").split())
+
+
+def _box(pane, want):
+    """(text, screen, cy): what the input box at the cursor holds, or Nones when tmux can't read the pane.
+    Solid text wins; placeholder-styled cells count only when they read as our own text (Claude draws a typed
+    `/compact` in colour), so a dim `Try "..."` placeholder reads as an empty box."""
+    s = _read_screen(pane)
+    if not s or s[0] is None:
+        return None, None, None
+    solid = input_text(s[0], s[2])
+    if _squash(solid):
+        return solid, s[0], s[2]
+    every = input_text(s[0], s[2], every=True)
+    return (every if _ours(every, want) else ""), s[0], s[2]
+
+
+def _ours(box, want):
+    """True when the box holds nothing but a piece of what we typed (so clearing it deletes no human key)."""
+    b = _squash(box)
+    return bool(b) and b in want
+
+
+def _deliver_text(pane, note, paste):
+    if not paste:
+        return _run(_tmux_argv("send-keys", "-t", pane, "-l", note))
+    # bracketed paste: the TUI takes the text as one block, so vim NORMAL mode (or a redraw) can't eat its keys
+    buf = "fleet-wake-%d" % os.getpid()
+    ok, detail = _run(_tmux_argv("set-buffer", "-b", buf, "--", note))
+    if not ok:
+        return ok, detail
+    return _run(_tmux_argv("paste-buffer", "-p", "-d", "-b", buf, "-t", pane))
+
+
+def _clear_ours(pane, want):
+    """Delete a fragment of our own text from the box (C-a C-k in INSERT or a non-vim box; `0 D` in vim NORMAL).
+    True once the box reads empty; never touches a box holding anything we did not type."""
+    for _ in range(3):
+        text, screen, cy = _box(pane, want)
+        if text is None:
+            return False
+        if not _squash(text):
+            return True
+        if not _ours(text, want):
+            return False
+        for k in (["0", "D"] if _vim_normal(screen, cy) else ["C-a", "C-k"]):
+            _run(_tmux_argv("send-keys", "-t", pane, k))
+        end = time.time() + 1.0
+        while time.time() < end:
+            text, _, _ = _box(pane, want)
+            if text is not None and not _squash(text):
+                return True
+            time.sleep(0.05)
+    return False
+
+
+def _type_wake_locked(pane, note, cli=None):
     busy, why = pane_busy(pane)
     if busy and not why.startswith("keys from") and _POINTER.match("".join(note.split())) and _leftover_pointer(pane):
         log("type_wake %s: the input holds an unsent fleet pointer; sending its Enter" % pane)
@@ -611,25 +694,41 @@ def _type_wake_locked(pane, note):
         return ok, ("sent Enter for a pointer left unsent earlier" if ok else detail)
     if busy:
         return None, why
-    ok, detail = _run(_tmux_argv("send-keys", "-t", pane, "-l", note))
-    if not ok:
-        return False, detail
-    # race guard: Enter only once the input reads exactly the pointer; a human key in between means no Enter
-    want, got, end = "".join(note.split()), None, time.time() + 2.0
-    while True:
+    paste = cli == "claude"
+    if cli is None:
         s = _read_screen(pane)
-        got = input_text(s[0], s[2]) if s and s[0] is not None else None
-        if got is not None and "".join(got.split()) == want:
-            break
-        every = input_text(s[0], s[2], every=True) if s and s[0] is not None else None
-        if every is not None and "".join(every.split()) == want:  # a coloured slash command (Claude `/compact`)
-            break
-        if time.time() > end:
+        paste = bool(s and s[0] is not None and _claude_prompt_row(s[0], s[2]))
+    want, got = _squash(note), None
+    tries = max(1, int(_env_float("FLEET_WAKE_TYPE_TRIES", TYPE_TRIES)))
+    for attempt in range(1, tries + 1):
+        ok, detail = _deliver_text(pane, note, paste)
+        if not ok:
+            return False, detail
+        # race guard: Enter only once the input reads exactly the pointer; a human key in between means no Enter
+        end = time.time() + 2.0
+        while True:
+            got, _, _ = _box(pane, want)
+            if got is not None and _squash(got) == want:
+                return _run(_tmux_argv("send-keys", "-t", pane, "Enter"))
+            if time.time() > end:
+                break
+            time.sleep(0.05)
+        # the box holds something else. A piece of our own text (keys eaten, issue #38), or nothing at all, is
+        # cleared and retried; anything else may hold a human's keys and stays as it is, without Enter
+        if got is None or (_squash(got) and not _ours(got, want)):
             log("type_wake %s: input read %r after typing, not the pointer alone; Enter not sent" % (pane, got))
             return False, ("typed the pointer, but the input then read %r, not the pointer alone; Enter not sent"
                            " (a human may have typed at the same moment)" % (got or "")[:80])
-        time.sleep(0.05)
-    return _run(_tmux_argv("send-keys", "-t", pane, "Enter"))
+        log("type_wake %s: attempt %d left %r in the input (keys eaten); clearing it" % (pane, attempt, got))
+        if not _clear_ours(pane, want):
+            return False, ("typed the pointer, the input then read %r and could not be cleared; Enter not sent"
+                           % (got or "")[:80])
+        busy, why = pane_busy(pane)
+        if busy:
+            return None, why
+    log("type_wake %s: %d attempts left fragments; input cleared, the message waits in the inbox" % (pane, tries))
+    return False, ("the input ate part of the pointer %d times (last read %r); input cleared, Enter not sent, the"
+                   " message waits in the inbox" % (tries, (got or "")[:80]))
 
 
 def _waker_lock_path(to):
@@ -758,7 +857,7 @@ def wake_later(to):
                        % entry.get("role"))
                 return "notice"
             if need and entry.get("cli") in ("claude", "kiro", "agy") and entry.get("pane"):
-                ok, why = type_wake(entry["pane"], wake_note(frm or "?", to, entry))
+                ok, why = type_wake(entry["pane"], wake_note(frm or "?", to, entry), entry.get("cli"))
                 if ok:
                     mark_woken(to)
                     log("wake-later %s: typed wake landed after %ds" % (to, time.time() - start))
@@ -1587,8 +1686,8 @@ def main(argv):
         busy, why = pane_busy(argv[2])
         print("%s %s" % ("busy" if busy else "empty", why))
         return 1 if busy else 0
-    if cmd == "type" and len(argv) == 4:  # guarded type + Enter (fleet park's /compact): exit 0 sent, 1 failed, 3 busy
-        ok, why = type_wake(argv[2], argv[3])
+    if cmd == "type" and len(argv) in (4, 5):  # guarded type + Enter (fleet park's /compact): 0 sent, 1 failed, 3 busy
+        ok, why = type_wake(argv[2], argv[3], argv[4] if len(argv) == 5 and argv[4] else None)
         print("%s %s" % ({True: "sent", False: "failed", None: "busy"}[ok], why))
         return {True: 0, False: 1, None: 3}[ok]
     if cmd == "mesh":  # one line per roster lane: "<name> yes|no" (fleet ls)
@@ -1606,7 +1705,7 @@ def main(argv):
         print(json.dumps(load_roster(), indent=2, sort_keys=True))
         return 0
     sys.stderr.write("usage: fleet_mesh.py serve | send <from> <to> <text> | inbox <name> | roster | mesh | mirror"
-                     " | wake-later <to> | pane-state <pane> | type <pane> <text> | stale | version\n")
+                     " | wake-later <to> | pane-state <pane> | type <pane> <text> [cli] | stale | version\n")
     return 2
 
 

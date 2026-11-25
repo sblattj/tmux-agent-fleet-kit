@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.5.1 (2026-11-25)
+
+Typed wakes that arrive whole in a vim-mode Claude pane, and a phone attach that finds tmux and mosh-server.
+
+- A typed wake into a Claude pane is one bracketed paste (`tmux set-buffer` + `paste-buffer -p`), then Enter, instead of `send-keys -l`. In Claude Code's vim NORMAL mode typed keys ran as vim commands and ate `[fleet] mes`, leaving `sage from ROUTE: ...` stuck in the box with no Enter, which also blocked `fleet park` and serve reconnects. v0.5.0's NORMAL-mode guard never fired because it read `editorMode` only from `~/.claude.json`; Claude Code 2.1.33x keeps it in `~/.claude/settings.json`. The kit now reads both (`$FLEET_CLAUDE_SETTINGS` overrides). If the box then holds only a piece of the pointer, the kit clears that piece (`C-a C-k`, or `0 D` in NORMAL mode) and retries, up to `FLEET_WAKE_TYPE_TRIES` (3); after the last try the box is left empty, Enter is not sent and the message waits in the inbox. A box holding anything else is never cleared. `fleet park` pastes `/compact` the same way (`fleet_mesh.py type <pane> <text> [cli]`). Live loop on Claude 2.1.332 in NORMAL mode, N=20: v0.5.0 left 20 fragments, v0.5.1 submitted all 20. Fixes #38.
+- `fleet remote setup` checks `tmux` and `mosh-server` on the non-interactive ssh PATH (what a phone's `ssh` or `mosh` gets: the system PATH plus `~/.zshenv` for zsh), and when one is missing prints the `export PATH="<brew bin>:$PATH"` line to add to `~/.zshenv`. It never edits shell files. It prints a bare `ssh <user>@<ip> 'tmux -V'` check, and the phone attach line (full paths to `mosh-server` and `tmux`) as its last line. `fleet remote status` reports both tools on the ssh PATH. Fixes #39.
+
 ## v0.5.0 (2026-11-25)
 
 Phone and tablet attach (`fleet remote`), the four desks by default, and fleet-mesh wakes that never type into the decision desk or run stale code after an upgrade.

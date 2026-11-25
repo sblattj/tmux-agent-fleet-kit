@@ -9,6 +9,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -331,24 +332,35 @@ class InputStateTest(unittest.TestCase):
         self.assertEqual(mesh.input_text(screen, 0), "", "control: the solid reading drops coloured cells")
         self.assertEqual(mesh.input_text(screen, 0, every=True), "/mcp")
 
-    def test_claude_vim_normal_mode_is_busy(self):
-        # Claude Code vim mode: `-- INSERT --` in the footer while inserting, nothing in NORMAL mode
+    def test_claude_vim_normal_mode_is_not_busy_and_vim_is_read_from_settings_json(self):
+        # issue #38: NORMAL mode is not busy any more (a Claude pane gets a bracketed paste, which NORMAL mode takes
+        # verbatim), and editorMode is read from Claude's settings.json, where 2.1.33x keeps it, not only ~/.claude.json
         tmp = tempfile.mkdtemp()
-        cfg = os.path.join(tmp, "claude.json")
-        old = {k: os.environ.get(k) for k in ("FLEET_CLAUDE_JSON", "FLEET_WAKE_QUIET")}
-        os.environ.update(FLEET_CLAUDE_JSON=cfg, FLEET_WAKE_QUIET="0")
+        cfgdir = os.path.join(tmp, "cfg")
+        os.makedirs(cfgdir)
+        keys = ("FLEET_CLAUDE_JSON", "FLEET_CLAUDE_SETTINGS", "CLAUDE_CONFIG_DIR", "FLEET_WAKE_QUIET")
+        old = {k: os.environ.get(k) for k in keys}
+        os.environ.pop("FLEET_CLAUDE_SETTINGS", None)
+        os.environ.update(FLEET_CLAUDE_JSON=os.path.join(tmp, "claude.json"), CLAUDE_CONFIG_DIR=cfgdir,
+                          FLEET_WAKE_QUIET="0")
         rule = "\u2500" * 40
         normal = "\u276f \n%s\n  bypass permissions on\n" % rule
         insert = "\u276f \n%s\n  -- INSERT -- bypass permissions on\n" % rule
         orig = mesh._read_screen
         try:
-            for vim, screen, want in ((True, normal, True), (True, insert, False), (False, normal, False)):
-                with open(cfg, "w") as f:
-                    json.dump({"editorMode": "vim"} if vim else {}, f)
+            self.assertFalse(mesh._claude_vim(), "control: no settings file says vim")
+            with open(os.path.join(cfgdir, "settings.json"), "w") as f:
+                json.dump({"editorMode": "vim"}, f)
+            self.assertTrue(mesh._claude_vim(), "editorMode in settings.json was not read")
+            self.assertTrue(mesh._vim_normal(normal, 0))
+            self.assertFalse(mesh._vim_normal(insert, 0))
+            self.assertTrue(mesh._vim_normal("-- INSERT -- in a reply above\n" + normal, 1),
+                            "text above the prompt row faked the INSERT footer")
+            for screen in (normal, insert):
                 mesh._read_screen = lambda pane, s=screen: (s, 2, 0, False)
                 got = mesh.pane_busy("%0")
-                print("LABEL vim=%s insert=%s -> %r" % (vim, "INSERT" in screen, got))
-                self.assertEqual(got[0], want, (vim, screen))
+                print("LABEL insert=%s -> %r" % ("INSERT" in screen, got))
+                self.assertFalse(got[0], screen)
         finally:
             mesh._read_screen = orig
             for k, v in old.items():
@@ -360,6 +372,122 @@ class InputStateTest(unittest.TestCase):
         self.assertEqual(mesh.input_state("❯ \n", 2, 5)[0], "busy")
         self.assertEqual(mesh.input_state("❯ \n", 2, 0)[0], "empty")  # control
 
+
+
+VIM_FIXTURE = os.path.join(ROOT, "test", "fixtures", "vim_prompt.py")
+
+
+@unittest.skipUnless(shutil.which("tmux"), "needs tmux")
+class VimNormalWakeTest(unittest.TestCase):
+    """Issue #38: a Claude pane in vim NORMAL mode ate `[fleet] mes` and kept `sage from ...` stuck in the box.
+    The fixture (test/fixtures/vim_prompt.py) eats typed keys the way Claude Code 2.1.332 does (measured live, the same
+    fragment) and takes a bracketed paste verbatim. Real tmux on a private socket; the wake goes through deliver()."""
+
+    def start(self, mode="normal", eat=0, vim_config=False):
+        _N[0] += 1
+        self.sock = "fleetvim-%d-%d" % (os.getpid(), _N[0])
+        self.tmp = tempfile.mkdtemp(prefix="wakevim-")
+        self.state = os.path.join(self.tmp, "state")
+        os.makedirs(self.state)
+        self.log = os.path.join(self.tmp, "submitted.log")
+        open(self.log, "w").close()
+        settings = os.path.join(self.tmp, "settings.json")
+        with open(settings, "w") as f:
+            json.dump({"editorMode": "vim"} if vim_config else {}, f)
+        self.env = {"FLEET_STATE": self.state, "FLEET_TMUX_SOCKET": self.sock, "FLEET_NAME": "alpha",
+                    "FLEET_DECIDE": "DECISIONS", "FLEET_ROUTE": "ORCHESTRATOR",
+                    "FLEET_CLAUDE_JSON": os.path.join(self.tmp, "claude.json"), "FLEET_CLAUDE_SETTINGS": settings,
+                    "FLEET_WAKE_DEFER_MAX": "6", "FLEET_WAKE_BACKOFF": "0.3", "FLEET_WAKE_QUIET": "0",
+                    "FLEET_NATIVE_GRACE": "120", "CLAUDECODE": "", "FLEET_WAKE_SPAWN": "0"}
+        self._saved = {k: os.environ.get(k) for k in self.env}
+        os.environ.update(self.env)
+        subprocess.run(["tmux", "-L", self.sock, "-f", "/dev/null", "new-session", "-d", "-s", "w", "-x", "120",
+                        "-y", "30", "env LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 FIXTURE_EAT=%d %s %s %s %s"
+                        % (eat, sys.executable, VIM_FIXTURE, self.log, mode)], check=True)
+        self.pane = self.tm("display-message", "-p", "-t", "w", "#{pane_id}").strip()
+        roster = {"cl": {"name": "cl", "cli": "claude", "mode": "prompt", "pane": self.pane,
+                         "session_id": "u-1", "port": None, "status": "running"}}
+        with open(os.path.join(self.state, "roster.json"), "w") as f:
+            json.dump(roster, f)
+        self.assertTrue(_wait(lambda: "❯" in self.tm("capture-pane", "-p", "-t", self.pane)),
+                        "control: fixture prompt never drew")
+
+    def tearDown(self):
+        subprocess.run(["tmux", "-L", self.sock, "kill-server"], stderr=subprocess.DEVNULL)
+        for k, v in self._saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def tm(self, *args):
+        return subprocess.run(["tmux", "-L", self.sock] + list(args), stdout=subprocess.PIPE,
+                              universal_newlines=True, check=True).stdout
+
+    def row(self):
+        return self.tm("capture-pane", "-p", "-t", self.pane).split("\n")[1].rstrip()
+
+    def submitted(self):
+        with open(self.log) as f:
+            return [ln[len("SUBMIT:"):].rstrip("\n") for ln in f if ln.startswith("SUBMIT:")]
+
+    def note(self):
+        return mesh.wake_note("ORCHESTRATOR", "cl", mesh.load_roster()["cl"])
+
+    def test_control_typed_keys_in_normal_mode_leave_the_issue_38_fragment(self):
+        # the fixture must reproduce the live failure, or the tests below prove nothing
+        self.start("normal")
+        self.tm("send-keys", "-t", self.pane, "-l", self.note())
+        self.assertTrue(_wait(lambda: self.row().startswith("❯ sage from ORCHESTRATOR:")), self.row())
+
+    def test_normal_mode_wake_arrives_whole_and_is_submitted(self):
+        # issue #38's failure case: vim set in Claude's settings.json (not ~/.claude.json), box idle in NORMAL mode
+        for vim_config in (False, True):
+            with self.subTest(vim_config=vim_config):
+                self.start("normal", vim_config=vim_config)
+                res = mesh.deliver("ORCHESTRATOR", "cl", "body")
+                print("LABEL vim_config=%s -> %s | box %r | submitted %r"
+                      % (vim_config, res, self.row(), self.submitted()))
+                self.assertTrue(_wait(lambda: self.submitted() == [self.note()]), (res, self.submitted()))
+                self.assertEqual(self.submitted(), [self.note()])
+                self.assertEqual(self.row().rstrip(), "❯", "a fragment was left in the box")
+                self.assertIn("ok", res)
+                self.tearDown()
+
+    def test_insert_mode_wake_is_submitted(self):
+        self.start("insert", vim_config=True)
+        res = mesh.deliver("ORCHESTRATOR", "cl", "body")
+        self.assertTrue(_wait(lambda: self.submitted() == [self.note()]), (res, self.submitted()))
+
+    def test_park_compact_in_normal_mode(self):
+        # fleet park's `type <pane> /compact claude`: the classpass `ct` fragment was `/compact` eaten up to the `a`
+        self.start("normal", vim_config=True)
+        p = subprocess.run([sys.executable, MESH, "type", self.pane, "/compact", "claude"], stdout=subprocess.PIPE,
+                           universal_newlines=True, env=os.environ)
+        self.assertEqual(p.returncode, 0, p.stdout)
+        self.assertTrue(_wait(lambda: self.submitted() == ["/compact"]), self.submitted())
+
+    def test_a_tui_that_keeps_eating_keys_is_left_empty(self):
+        # never leave a fragment: bounded retries, then the box is cleared; the inbox still holds the message
+        self.start("insert", eat=11, vim_config=True)
+        res = mesh.deliver("ORCHESTRATOR", "cl", "the body")
+        print("LABEL eat=11 -> %s | box %r" % (res, self.row()))
+        self.assertIn("FAILED", res)
+        self.assertIn("input cleared", res)
+        self.assertEqual(self.submitted(), [])
+        self.assertEqual(self.row().rstrip(), "❯", "a fragment was left in the box")
+        self.assertEqual([m["text"] for m in mesh.read_inbox("cl")], ["the body"])
+
+    def test_human_text_in_a_normal_mode_box_is_never_cleared(self):
+        self.start("insert", vim_config=True)
+        self.tm("send-keys", "-t", self.pane, "-l", "good morni")
+        self.tm("send-keys", "-t", self.pane, "Escape")
+        self.assertTrue(_wait(lambda: "-- INSERT --" not in self.tm("capture-pane", "-p", "-t", self.pane)))
+        res = mesh.deliver("ORCHESTRATOR", "cl", "x")
+        self.assertIn("deferred", res)
+        self.assertEqual(self.row().rstrip(), "❯ good morni")
+        self.assertEqual(self.submitted(), [])
 
 if __name__ == "__main__":
     unittest.main()

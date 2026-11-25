@@ -19,7 +19,8 @@ spec.loader.exec_module(mesh)
 FAKE = "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done >> \"$0.argv\"\nprintf -- '--END--\\n' >> \"$0.argv\"\nif [ \"$1 $2 $3\" = \"-L testsock capture-pane\" ] && [ -f \"$0.screen\" ]; then cat \"$0.screen\"; fi\n"
 
 # a fake tmux that behaves like an idle prompt: capture-pane shows `❯ ` (or $0.screen), display-message reports the
-# cursor right after the glyph, `send-keys -l` makes the input row read the typed text, Enter clears it
+# cursor right after the glyph, `send-keys -l` (or set-buffer + paste-buffer) makes the input row read the typed
+# text, Enter clears it
 FAKE_TMUX = r"""#!/bin/sh
 for a in "$@"; do printf '%s\n' "$a"; done >> "$0.argv"
 printf -- '--END--\n' >> "$0.argv"
@@ -30,13 +31,16 @@ case "$3" in
     if [ "$4" = "-p" ]; then printf '2\t0\t0\n'; fi ;;
   send-keys)
     if [ "$6" = "-l" ]; then printf '\342\235\257 %s\n' "$7" > "$0.typed"; elif [ "$6" = "Enter" ]; then rm -f "$0.typed"; fi ;;
+  set-buffer) printf '%s' "$7" > "$0.buf" ;;
+  paste-buffer) { printf '\342\235\257 '; cat "$0.buf"; printf '\n'; } > "$0.typed"; rm -f "$0.buf" ;;
 esac
 """
 
 
 def keys(path):
-    """Only the send-keys calls a fake tmux recorded (the reads around them are the guard, tested elsewhere)."""
-    return [c for c in calls(path) if "send-keys" in c]
+    """Only the calls a fake tmux recorded that put keys or text into a pane: send-keys, and set-buffer +
+    paste-buffer (a Claude pane's bracketed paste, issue #38). The reads around them are the guard, tested elsewhere."""
+    return [c for c in calls(path) if "send-keys" in c or "set-buffer" in c or "paste-buffer" in c]
 
 
 class Recorder(http.server.BaseHTTPRequestHandler):
@@ -216,9 +220,10 @@ class TestDelivery(MeshBase):
     def test_send_claude(self):
         res = mesh.deliver("alpha", "cl", "secret body")
         self.assertTrue(os.path.exists(self.tmux + ".argv"), "control: fake tmux never ran")
+        buf = "fleet-wake-%d" % os.getpid()  # a Claude pane gets one bracketed paste, then Enter (issue #38)
         self.assertEqual(keys(self.tmux), [
-            ["-L", "testsock", "send-keys", "-t", "%3", "-l",
-             self.note("alpha", "cl")],
+            ["-L", "testsock", "set-buffer", "-b", buf, "--", self.note("alpha", "cl")],
+            ["-L", "testsock", "paste-buffer", "-p", "-d", "-b", buf, "-t", "%3"],
             ["-L", "testsock", "send-keys", "-t", "%3", "Enter"],
         ])
         with open(self.tmux + ".argv") as fh:

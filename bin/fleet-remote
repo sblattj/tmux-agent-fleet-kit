@@ -140,6 +140,36 @@ mosh_paths() { # sets MOSH_LINK, MOSH_REAL, MOSH_ON_DEFAULT_PATH (1 when a non-l
 
 state_file() { printf '%s\n' "$STATE/remote.json"; }
 
+# The PATH a phone's `ssh host cmd` / `mosh host -- cmd` gets: sshd's default (/usr/bin:/bin:/usr/sbin:/sbin), plus
+# whatever the login shell's non-interactive startup adds (zsh reads ~/.zshenv; bash -c reads nothing). Homebrew's
+# bin dir (/opt/homebrew/bin, /usr/local/bin) is not on it by default, so a bare `tmux` or `mosh-server` fails there.
+# FLEET_REMOTE_SSH_SHELL / FLEET_REMOTE_SSH_BASEPATH override the shell and sshd's base PATH (tests).
+ssh_path_find() { # ssh_path_find <tool>: its path on the non-interactive ssh PATH, else nothing (exit 1)
+  local sh=${FLEET_REMOTE_SSH_SHELL:-${SHELL:-/bin/sh}} base=${FLEET_REMOTE_SSH_BASEPATH:-/usr/bin:/bin:/usr/sbin:/sbin}
+  env -i HOME="$HOME" USER="$(id -un)" LOGNAME="$(id -un)" SHELL="$sh" PATH="$base" "$sh" -c "command -v $1" 2>/dev/null \
+    | tail -1 | grep . 
+}
+brew_bin() { # the bin dir that holds this host's tmux/mosh-server when they come from Homebrew or similar
+  local p
+  if have brew && p=$("$(tool brew)" --prefix 2>/dev/null) && [ -n "$p" ]; then printf '%s/bin\n' "$p"; return; fi
+  p=$(command -v tmux 2>/dev/null) && dirname "$p"
+}
+ssh_path_report() { # prints ok/warn lines for tmux and mosh-server on the non-interactive ssh PATH; sets SSH_PATH_OK
+  local n f missing=
+  SSH_PATH_OK=1
+  for n in tmux mosh-server; do
+    if f=$(ssh_path_find "$n"); then ok "$n on the non-interactive ssh PATH: $f"
+    else missing="$missing $n"; SSH_PATH_OK=0; fi
+  done
+  [ "$SSH_PATH_OK" = 1 ] && return 0
+  local bb; bb=$(brew_bin)
+  warn "not on the non-interactive ssh PATH:$missing (sshd starts commands with /usr/bin:/bin:/usr/sbin:/sbin)"
+  warn "the attach line below uses full paths, so it works anyway; to make a bare \`ssh <host> 'tmux -V'\` work too,"
+  warn "add this line to ~/.zshenv (zsh) or put it where your login shell reads it for \`ssh host cmd\` (fleet remote never edits shell files):"
+  printf '        export PATH="%s:$PATH"\n' "${bb:-/opt/homebrew/bin}"
+}
+
+
 attach_cmd() { # attach_cmd <ip> <readonly 0|1>
   local ip=$1 ro=$2 user tmuxbin server='' tmx
   user=$(id -un)
@@ -173,6 +203,7 @@ cmd_setup() {
   mosh_paths || die "mosh-server not found on PATH; install mosh (brew install mosh / apt install mosh)"
   ok "mosh-server: $MOSH_LINK -> $MOSH_REAL"
   command -v tmux >/dev/null 2>&1 || die "tmux not found"
+  ssh_path_report
   local oi; oi=$(overlay_ip)
   if [ -n "$oi" ]; then ok "overlay address: ${oi% *} (${oi##* })"; else warn "no overlay address found (ZeroTier or Tailscale joined?); --ip ADDR sets one"; fi
   case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
@@ -291,12 +322,15 @@ cmd_setup() {
     tm set -g window-size latest && ok "window-size latest (was $ws)"
   fi
 
-  say "attach"
   local ip=${oi% *}; [ -n "$ip" ] || ip='<overlay-ip>'
-  printf '    %s\n' "$(attach_cmd "$ip" 0)"
+  say "check from the phone (or any ssh client) before the first attach"
+  printf '    ssh %s@%s %s   # prints the tmux version; "command not found" means the PATH note above applies\n' \
+    "$(id -un)" "$ip" "'tmux -V'"
   printf '    keep the host awake while away (macOS: caffeinate -dims; Linux: systemd-inhibit)\n'
   raw_tcp_warning
   if [ $DRY = 1 ]; then say "dry run: nothing changed"; else say "done"; fi
+  say "phone attach line (Blink Shell: paste at the blink> prompt)"
+  printf '    %s\n' "$(attach_cmd "$ip" 0)"
 }
 
 # ---------------------------------------------------------------- status
@@ -322,6 +356,10 @@ cmd_status() {
     echo "auth: unknown (sshd -T needs sudo without a prompt)"
   fi
   echo "note: sshd listens on every interface, not just the overlay; key-only auth is the guard"
+  local n f
+  for n in tmux mosh-server; do
+    if f=$(ssh_path_find "$n"); then echo "ssh PATH $n: $f"; else echo "ssh PATH $n: missing (a bare ssh host '$n ...' fails; the attach line uses full paths)"; fi
+  done
   if mosh_paths; then
     if [ "$MOSH_ON_DEFAULT_PATH" = 1 ]; then echo "mosh-server: $MOSH_LINK (on the non-login ssh PATH)"
     else echo "mosh-server: $MOSH_LINK, not on a non-login ssh PATH; attach with --server=$MOSH_LINK (fleet remote qr does)"; fi

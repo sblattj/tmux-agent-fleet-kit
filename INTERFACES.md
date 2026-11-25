@@ -263,9 +263,13 @@ Delivery (`deliver(frm, to, text)`): always append to inbox/<to>.jsonl, then wak
   native message reaches the target without touching its input box; the mirror hook links it to the pending line
   (`inbox/<to>.native`) instead of writing a copy. A safety-net waker types the guarded pointer (below) only if no
   `SendMessage` was linked after `FLEET_NATIVE_GRACE` seconds. See Messaging model for why this is safe.
-- claude, any other sender: `tmux [-L sock] send-keys -t <pane> -l "[fleet] message from <frm>: run peer_inbox to read it"`
+- claude, any other sender: one bracketed paste of the pointer, `tmux [-L sock] set-buffer -b fleet-wake-<pid> --
+  "[fleet] message from <frm>: run peer_inbox to read it"` then `paste-buffer -p -d -b fleet-wake-<pid> -t <pane>`,
   then `send-keys -t <pane> Enter`, guarded (see Typed wakes: only into an empty, quiet input box)
-  (never the message body itself: typed input is treated as the human's). PROVEN on Claude 2.1.330.
+  (never the message body itself: typed input is treated as the human's). Paste, not keys (issue #38): in Claude
+  Code's vim NORMAL mode typed keys run as vim commands and `[fleet] mes` was eaten up to the `s`, leaving
+  `sage from ...` stuck in the box; a bracketed paste lands verbatim in NORMAL and INSERT mode, and Enter submits from
+  either. PROVEN on Claude 2.1.332 (see Typed wakes for the live loop).
 - kiro: same guarded typed pointer line and `Enter` as claude (PROVEN: starts a turn on an idle lane; the lane then runs `peer_inbox`)
 - agy: same guarded typed pointer line and `Enter` as claude (PROVEN typed text + Enter starts a turn on an idle agy 1.5.13 TUI;
   the woken lane then runs `peer_inbox`: PROVEN by the kit's live proof run (agy 1.5.13)). No pane in the roster: inbox only and the result says the wake failed.
@@ -287,7 +291,10 @@ decide never gets typed keys ...)`. The inbox line is written first either way.
 **Typed wakes (claude, kiro, agy).** `type_wake()` never types into text a human is writing. Before typing:
 1. No attached client whose current pane is the target sent a key in the last `FLEET_WAKE_QUIET` seconds
    (`list-clients -F '#{pane_id} #{client_activity}'`).
-2. The pane is not in copy mode, and no vim `-- NORMAL --` line shows. With Claude Code's `editorMode: vim` (`~/.claude.json`, or `$FLEET_CLAUDE_JSON`), a `❯` prompt also needs `-- INSERT --` in the footer, because Claude Code shows nothing in NORMAL mode.
+2. The pane is not in copy mode, and no vim `-- NORMAL --` line shows. Claude Code's own vim NORMAL mode (no
+   `-- INSERT --` in its footer) is NOT busy: a Claude pane gets the bracketed paste above, which NORMAL mode takes
+   verbatim (v0.5.0 deferred it instead, but read `editorMode` only from `~/.claude.json`, while Claude Code 2.1.33x
+   keeps it in `~/.claude/settings.json`, so the guard never fired and the keys were eaten; issue #38).
 3. The row under the cursor (`display-message -p '#{cursor_x} #{cursor_y}'`, `capture-pane -p -e`) is an EMPTY prompt:
    the text left of the cursor is exactly a prompt glyph (`❯` Claude Code, `›` kiro-cli, `>` agy), and every other
    cell on that row and on the rows below it, up to the box's rule line, is placeholder: faint (Claude) or drawn in an
@@ -301,9 +308,16 @@ the lane reads its inbox, or `FLEET_WAKE_DEFER_MAX` passes. Then it leaves a not
 `peer_inbox`; show it with `#{@fleet_unread}` in a status format).
 Check, type, verify and Enter run under a per-pane flock (`wake/pane-<id>.lock`, waits up to 8 s, else counts as
 busy), so two senders never type into one box at once. After typing, Enter is sent only once the input row reads
-exactly the pointer (whitespace ignored, wrapped rows joined). A box that holds nothing but an unsent fleet pointer (an
+exactly the pointer (whitespace ignored, wrapped rows joined). When the box instead holds only a piece of what was
+just typed (the TUI ate keys), the kit clears it (`C-a C-k`, or `0 D` in Claude's vim NORMAL mode, read from
+`editorMode` in `~/.claude.json` ($FLEET_CLAUDE_JSON), `settings.json` and `settings.local.json` in
+`$CLAUDE_CONFIG_DIR` or `~/.claude`; `$FLEET_CLAUDE_SETTINGS` replaces that list), checks the box is empty and quiet
+again, and retries, up to `FLEET_WAKE_TYPE_TRIES` (3) attempts. After the last one the box is left empty, Enter is not
+sent, and the result says so; the inbox still holds the message. A box holding anything that is not a piece of the
+pointer is never cleared (it may hold a human's keys). A box that holds nothing but an unsent fleet pointer (an
 earlier timeout) gets its Enter on the next wake instead of blocking every later wake. `fleet park` types `/compact`
-through the same guard (`fleet_mesh.py type`) and refuses to park when the box is busy.
+through the same guard (`fleet_mesh.py type <pane> /compact <cli>`; a Claude pane gets the paste) and refuses to park
+when the box is busy. Without a cli argument, `type` pastes into a pane whose cursor row starts with `❯`.
 **Residual race:** a key the human presses in the milliseconds between the last check and `send-keys` still lands next
 to the pointer. The post-type check then sees more than the pointer and sends no Enter, so the human's half sentence
 is never submitted; the pointer stays in their box for them to delete. The kit cannot remove it without deleting
@@ -519,7 +533,7 @@ flags were PROVEN on hand-launched Claude 2.1.330 lanes (a real Claude through `
 | Target cli | Wake used by `deliver()` | Status |
 |---|---|---|
 | claude, from a live fleet Claude lane | none typed: the sender's own `SendMessage` (native cross-session message), typed fallback after `FLEET_NATIVE_GRACE` | PROVEN 2.1.330: a bypass lane's `SendMessage` to a bypass session ran a background turn with `good morni` still in the receiver's box |
-| claude, from anyone else | guarded typed pointer line + Enter (`tmux send-keys`), only into an empty input | PROVEN 2.1.330 (hand-launched lane, launcher flags): idle bypass lane ran `peer_inbox`, cursor advanced |
+| claude, from anyone else | guarded bracketed paste of the pointer (`set-buffer` + `paste-buffer -p`) + Enter, only into an empty input | PROVEN 2.1.330 (typed keys, hand-launched lane): idle bypass lane ran `peer_inbox`; PROVEN 2.1.332 (paste, issue #38): see Typed wakes |
 | kiro | guarded typed pointer line + Enter | PROVEN kiro-cli 3.5.0 |
 | agy | guarded typed pointer line (`send-keys -l`) + Enter | PROVEN agy 1.5.13 that typed text + Enter starts a turn; the full `peer_inbox` round trip through `fleet launch`: PROVEN by the kit's live proof run (agy 1.5.13) |
 | codex | `codex queue --thread` (body included) | PROVEN |

@@ -29,6 +29,8 @@ case "$3" in
   list-clients) printf 'client0\n' ;;
   send-keys)
     if [ "$6" = "-l" ]; then printf '\342\235\257 %s\n' "$7" > "$0.typed"; elif [ "$6" = "Enter" ]; then rm -f "$0.typed"; fi ;;
+  set-buffer) printf '%s' "$7" > "$0.buf" ;;
+  paste-buffer) { printf '\342\235\257 '; cat "$0.buf"; printf '\n'; } > "$0.typed"; rm -f "$0.buf" ;;
 esac
 """
 

@@ -279,6 +279,29 @@ t "a stub missing from the sandbox is an error" test "$rc" != 0
 t "the error names the missing stub" has "$out" "sandbox has no bin/sshd"
 t "nothing switched on after the error" bash -c '! grep -q setremotelogin "$1"' _ "$LOG"
 
+# ---- (10b) tmux and mosh-server on the NON-interactive ssh PATH (a phone's `ssh host cmd`), and the attach line last
+fresh
+out=$(FLEET_REMOTE_SSH_SHELL=/bin/sh R setup --pubkey "$PUB"); rc=$?
+t "ssh PATH: setup still exits 0 when tmux/mosh-server are off the ssh PATH" test "$rc" = 0
+t "ssh PATH: names both tools missing from the non-interactive ssh PATH" has "$out" "not on the non-interactive ssh PATH: tmux mosh-server"
+t "ssh PATH: prints the PATH export to add, with the brew bin dir" has "$out" "export PATH=\"$(dirname "$(command -v tmux)"):\$PATH\""
+t "ssh PATH: never writes a shell startup file" test ! -e "$HOME/.zshenv" -a ! -e "$HOME/.bashrc" -a ! -e "$HOME/.profile"
+t "ssh PATH: prints the bare ssh 'tmux -V' check" has "$out" "ssh $(id -un)@192.0.2.10 'tmux -V'"
+t "attach line is the last line of setup" bash -c 'printf "%s\n" "$1" | tail -1 | grep -qF "mosh --server=$2 $3@192.0.2.10 -- "' _ "$out" "$T/path/mosh-server" "$(id -un)"
+t "attach line uses the full tmux path" bash -c 'printf "%s\n" "$1" | tail -1 | grep -qF -- "-- $2 -L "' _ "$out" "$(command -v tmux)"
+fresh
+printf 'export PATH="%s:%s:$PATH"\n' "$T/path" "$(dirname "$(command -v tmux)")" > "$HOME/.zshenv"
+if command -v zsh >/dev/null 2>&1; then
+  out=$(FLEET_REMOTE_SSH_SHELL=$(command -v zsh) R setup --pubkey "$PUB")
+  t "ssh PATH control: ~/.zshenv puts tmux on the ssh PATH" has "$out" "ok: tmux on the non-interactive ssh PATH: $(command -v tmux)"
+  t "ssh PATH control: and mosh-server" has "$out" "ok: mosh-server on the non-interactive ssh PATH: $T/path/mosh-server"
+  t "ssh PATH control: no PATH warning" bash -c '! printf "%s" "$1" | grep -qF "not on the non-interactive ssh PATH"' _ "$out"
+  out=$(FLEET_REMOTE_SSH_SHELL=$(command -v zsh) R status)
+  t "status: reports tmux on the ssh PATH" has "$out" "ssh PATH tmux: $(command -v tmux)"
+fi
+out=$(FLEET_REMOTE_SSH_SHELL=/bin/sh R status)
+t "status: reports a tool missing from the ssh PATH" has "$out" "ssh PATH tmux: missing"
+
 # ---- (11) nothing escaped the sandbox
 t "tripwire: no real privileged tool was called" test ! -s "$TRIP" || sed 's/^/    /' "$TRIP"
 HOME=$REAL_HOME
