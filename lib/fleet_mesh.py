@@ -3,9 +3,11 @@
 
 Python 3.8+ stdlib only. See INTERFACES.md for the contract.
   fleet_mesh.py serve | send <from> <to> <text> | inbox <name> | roster | mirror (hook JSON on stdin)
-                | wake-later <to> | pane-state <pane>
+                | wake-later <to> | pane-state <pane> | stale | version
 """
+import base64
 import datetime
+import hashlib
 import fcntl
 import json
 import os
@@ -310,6 +312,11 @@ def wake(frm, to, text, entry):
             hit = next((m for m in AGY_BLOCKING_SCREENS if m in screen), None)
             if hit:
                 return "tmux send-keys", False, "agy pane %s shows a %r screen; not typing into it" % (pane, hit)
+        st = mesh_stale()
+        if st:  # issue #31: old code must never type; the inbox holds the message, a notice replaces the typing
+            why = "this mesh server runs code %s, the kit on disk is %s" % st
+            notice(to, entry, frm, unread_count(to), why)
+            return "tmux send-keys", True, "deferred (stale: %s); not typed, tmux notice left" % why
         ok, detail = type_wake(pane, wake_note(frm, to, entry))
         if ok:
             mark_woken(to)
@@ -1305,11 +1312,213 @@ def handle(msg):
     return {"jsonrpc": "2.0", "id": mid, "result": result}
 
 
+# ---------------------------------------------------------------- stale servers (issue #31)
+#
+# An MCP client starts `fleet_mesh.py serve` once and keeps it for the whole session, so a kit upgrade on disk never
+# reaches a running server: servers started before 9e39566 kept typing wakes into panes a human was typing in. Each
+# server records the content hash of this file at start (`$FLEET_STATE/mesh/<pid>.json`) and compares it with the file
+# on disk before every request and every typed wake. Stale before a request: re-exec in place (same pid, same stdio
+# pipes; the request and any unread input are handed to the new image, and the protocol keeps no state after
+# initialize, so the client's session goes on). Stale where re-exec is off or impossible: typed wakes are refused
+# (inbox + tmux notice). `fleet_mesh.py stale` (and `fleet tick`) lists stale servers, older ones by start time.
+
+MESH_FILE = os.path.abspath(__file__)
+LOADED_HASH = None  # set by serve(); None outside a server, so CLI runs are never stale
+REEXEC_MAX = 20  # re-execs one process may do (a bound against a loop)
+
+
+def code_hash(path=None):
+    with open(path or MESH_FILE, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()[:12]
+
+
+def mesh_stale():
+    """None when this server runs the code on disk (or is not a server), else (loaded hash, disk hash)."""
+    if LOADED_HASH is None:
+        return None
+    try:
+        disk = code_hash()
+    except OSError:
+        disk = "missing"
+    return None if disk == LOADED_HASH else (LOADED_HASH, disk)
+
+
+def _mesh_dir():
+    return os.path.join(state_dir(), "mesh")
+
+
+def write_mesh_record():
+    try:
+        os.makedirs(_mesh_dir(), exist_ok=True)
+        _atomic_write(os.path.join(_mesh_dir(), "%d.json" % os.getpid()), json.dumps({
+            "pid": os.getpid(), "lane": os.environ.get("FLEET_NAME", ""), "hash": LOADED_HASH, "file": MESH_FILE,
+            "started": now(), "reexecs": int(os.environ.get("FLEET_MESH_REEXECS", "0") or 0)}) + "\n")
+    except OSError as e:
+        log("mesh record: %s" % e)
+
+
+def drop_mesh_record():
+    try:
+        os.unlink(os.path.join(_mesh_dir(), "%d.json" % os.getpid()))
+    except OSError:
+        pass
+
+
+def try_reexec(pending):
+    """Replace this process with the code on disk, handing it `pending` (unread stdin bytes). Returns only when it
+    can't: re-exec off (FLEET_MESH_REEXEC=0), over the bound, or the file on disk doesn't compile."""
+    if os.environ.get("FLEET_MESH_REEXEC", "1") == "0":
+        return "re-exec off"
+    n = int(os.environ.get("FLEET_MESH_REEXECS", "0") or 0)
+    if n >= REEXEC_MAX:
+        return "re-exec bound reached"
+    # run the new file once first: a syntax or import-time error must not kill the client's MCP session
+    try:
+        disk = code_hash()
+        got = subprocess.run([sys.executable, MESH_FILE, "version"], capture_output=True, text=True, timeout=15,
+                             stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError) as e:
+        return "could not run the code on disk: %s" % e
+    if got.returncode != 0 or got.stdout.strip() != disk:
+        return "the code on disk failed its self-check (exit %s): %s" % (
+            got.returncode, (got.stderr.strip().splitlines() or [""])[-1][:200])
+    log("mesh %d: code changed on disk (%s -> %s); re-exec in place" % ((os.getpid(),) + mesh_stale()))
+    os.environ["FLEET_MESH_CARRY"] = base64.b64encode(pending).decode("ascii")
+    os.environ["FLEET_MESH_REEXECS"] = str(n + 1)
+    sys.stdout.flush()
+    sys.stderr.flush()
+    try:
+        os.execv(sys.executable, [sys.executable, MESH_FILE, "serve"])
+    except OSError as e:
+        return "exec failed: %s" % e
+
+
+class _Lines:
+    """Unbuffered line reader on fd 0: the bytes not yet handled are always in .buf, so a re-exec loses nothing."""
+
+    def __init__(self, carry=b""):
+        self.buf = carry
+
+    def readline(self):
+        while True:
+            i = self.buf.find(b"\n")
+            if i >= 0:
+                line, self.buf = self.buf[:i], self.buf[i + 1:]
+                return line
+            chunk = os.read(0, 65536)
+            if not chunk:
+                line, self.buf = self.buf, b""
+                return line if line else None
+            self.buf += chunk
+
+
+def _ps_rows():
+    """(pid, ppid, start epoch, command) for every process, via ps."""
+    try:
+        out = subprocess.run(["ps", "-axww", "-o", "pid=,ppid=,lstart=,command="], capture_output=True, text=True,
+                             timeout=10, env=dict(os.environ, LC_ALL="C")).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    rows = []
+    for ln in out.splitlines():
+        parts = ln.split(None, 7)
+        if len(parts) < 8:
+            continue
+        try:
+            st = time.mktime(time.strptime(" ".join(parts[2:7]), "%a %b %d %H:%M:%S %Y"))
+            rows.append((int(parts[0]), int(parts[1]), st, parts[7]))
+        except ValueError:
+            continue
+    return rows
+
+
+def _env_lane(pid):
+    """FLEET_NAME from the process environment (Linux /proc, macOS ps -E), else ''."""
+    try:
+        with open("/proc/%d/environ" % pid, "rb") as f:
+            for kv in f.read().split(b"\0"):
+                if kv.startswith(b"FLEET_NAME="):
+                    return kv[11:].decode("utf-8", "replace")
+            return ""
+    except OSError:
+        pass
+    try:
+        out = subprocess.run(["ps", "-p", str(pid), "-wwE", "-o", "command="], capture_output=True, text=True,
+                             timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    m = re.search(r"(?:^|\s)FLEET_NAME=(\S+)", out)
+    return m.group(1) if m else ""
+
+
+def _lane_of(pid, ppid_of):
+    """The lane a server belongs to: its FLEET_NAME, else the roster lane whose pane process is an ancestor, else ''."""
+    env = _env_lane(pid)
+    if env:
+        return env
+    pane_pids = {}
+    for name, e in load_roster().items():
+        pane = (e or {}).get("pane") if isinstance(e, dict) else None
+        if pane:
+            got = _tmux_out("display-message", "-p", "-t", pane, "#{pane_pid}")
+            if got and got.strip().isdigit():
+                pane_pids[int(got.strip())] = name
+    seen = 0
+    while pid and pid > 1 and seen < 64:
+        if pid in pane_pids:
+            return pane_pids[pid]
+        pid, seen = ppid_of.get(pid, 0), seen + 1
+    return ""
+
+
+def stale_servers():
+    """[(pid, lane, why)] for live `fleet_mesh.py serve` processes of this kit that run older code than the disk."""
+    rows = _ps_rows()
+    ppid_of = {p: pp for p, pp, _, _ in rows}
+    try:
+        disk, mtime = code_hash(), os.path.getmtime(MESH_FILE)
+    except OSError:
+        return []
+    out = []
+    for pid, _, started, cmd in rows:
+        argv = cmd.split()
+        if "serve" not in argv or not any(a.endswith("fleet_mesh.py") for a in argv):
+            continue
+        path = next(a for a in argv if a.endswith("fleet_mesh.py"))
+        if os.path.realpath(path) != os.path.realpath(MESH_FILE):
+            continue  # another kit checkout's server
+        rec = _read_json(os.path.join(_mesh_dir(), "%d.json" % pid)) or {}
+        if rec.get("hash"):
+            if rec["hash"] == disk:
+                continue
+            why = "loaded %s, disk %s" % (rec["hash"], disk)
+        elif started < mtime:
+            why = "started before the kit changed (no version record)"
+        else:
+            continue
+        out.append((pid, rec.get("lane") or _lane_of(pid, ppid_of) or "?", why))
+    return out
+
+
 def serve():
-    for line in sys.stdin:
-        line = line.strip()
+    global LOADED_HASH
+    LOADED_HASH = code_hash()
+    carry = base64.b64decode(os.environ.pop("FLEET_MESH_CARRY", "") or b"")
+    write_mesh_record()
+    rd = _Lines(carry)
+    stuck = None
+    while True:
+        raw = rd.readline()
+        if raw is None:
+            break
+        line = raw.decode("utf-8", "replace").strip()
         if not line:
             continue
+        if mesh_stale():
+            why = try_reexec(raw + b"\n" + rd.buf)  # returns only when the re-exec could not happen
+            if why != stuck:
+                log("mesh %d stale, still on old code (typed wakes refused): %s" % (os.getpid(), why))
+                stuck = why
         try:
             msg = json.loads(line)
         except ValueError:
@@ -1324,6 +1533,7 @@ def serve():
         if resp is not None:
             sys.stdout.write(json.dumps(resp) + "\n")
             sys.stdout.flush()
+    drop_mesh_record()
 
 
 # ---------------------------------------------------------------- CLI
@@ -1362,11 +1572,18 @@ def main(argv):
         for n, e in sorted(load_roster().items()):
             print("%s %s" % (n, "yes" if has_mesh(n, e if isinstance(e, dict) else {}) else "no"))
         return 0
+    if cmd == "version":  # the content hash of this file (issue #31; the re-exec self-check)
+        print(code_hash())
+        return 0
+    if cmd == "stale":  # issue #31: "STALE mesh <lane> pid <pid>: <why>" per stale server of this kit; exit 0
+        for pid, lane, why in stale_servers():
+            print("STALE mesh %s pid %d: %s; restart its CLI's MCP server (or the lane)" % (lane, pid, why))
+        return 0
     if cmd == "roster":
         print(json.dumps(load_roster(), indent=2, sort_keys=True))
         return 0
     sys.stderr.write("usage: fleet_mesh.py serve | send <from> <to> <text> | inbox <name> | roster | mesh | mirror"
-                     " | wake-later <to> | pane-state <pane> | type <pane> <text>\n")
+                     " | wake-later <to> | pane-state <pane> | type <pane> <text> | stale | version\n")
     return 2
 
 

@@ -20,6 +20,8 @@
 # type page; agent = a cdp-toolkit origin record exists; just N when CDP_ARTIFACT_DIR is absent), a WARN line when
 # N > FLEET_TAB_WARN, and `chrome tabs: unavailable` when Chrome can't be read. Before it, `WARN desks down: deskA (ROUTE
 # dead, DECIDE missing); run fleet desks up` when a desk of deskA or deskB has a dead or missing pane. --json output is unchanged.
+# Then one `STALE mesh <lane> pid N: <why>` line per fleet-mesh server of this kit running older code than lib/fleet_mesh.py
+# on disk (issue #31; FLEET_TICK_NO_MESH_SCAN=1 skips the ps scan).
 # ACTION: park = worker AND (goal achieved OR goal stopped > 600 s) AND no unread inbox line under 3600 s old;
 # orchestrator-decides = worker with goal none; forget = a row with a retired role (orchestrator, desk, listener,
 # replaced by the four desks): `fleet forget` it; - = nothing. Only workers are parked: route/decide/watch/learn never are.
@@ -474,6 +476,19 @@ def side_roster():
     return fleet_side_roster
 
 
+def stale_mesh_lines():
+    """Issue #31: 'STALE mesh <lane> pid N: ...' per fleet-mesh server running older code than the kit on disk."""
+    lib = os.environ.get("FLEET_KIT_LIB")
+    if not lib or os.environ.get("FLEET_TICK_NO_MESH_SCAN") == "1":
+        return []
+    try:
+        out = subprocess.run([sys.executable, os.path.join(lib, "fleet_mesh.py"), "stale"], capture_output=True,
+                             text=True, timeout=30).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return [ln for ln in out.splitlines() if ln.startswith("STALE mesh ")]
+
+
 _SIDES = None
 
 
@@ -606,6 +621,8 @@ def cmd_tick(args):
         dl = desks_line(load_roster())
         if dl:
             print(dl)
+        for ln in stale_mesh_lines():
+            print(ln)
         print_chrome_tabs()
         return
     rows = [("NAME", "CLI", "ROLE", "TIER", "LAST-ACTIVE", "GOAL", "UNREAD", "ACTION")]
@@ -622,6 +639,8 @@ def cmd_tick(args):
     dl = desks_line(load_roster())
     if dl:
         print(dl)
+    for ln in stale_mesh_lines():
+        print(ln)
     print_chrome_tabs()
 
 

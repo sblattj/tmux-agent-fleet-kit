@@ -228,9 +228,24 @@ python3 lib/fleet_mesh.py roster                print roster.json
 python3 lib/fleet_mesh.py mirror                PostToolUse hook: copy a native SendMessage into the mesh (stdin = hook JSON, exit 0)
 python3 lib/fleet_mesh.py wake-later <name>     deferred waker (started detached by a deferred wake; one per lane)
 python3 lib/fleet_mesh.py pane-state <pane>     "empty <why>" exit 0, or "busy <why>" exit 1: may a wake be typed now
+python3 lib/fleet_mesh.py stale                 "STALE mesh <lane> pid N: <why>" per serve process of this kit on older code (exit 0)
+python3 lib/fleet_mesh.py version               the content hash (sha256, 12 hex) of lib/fleet_mesh.py
 python3 lib/fleet_mesh.py type <pane> <text>    guarded type + Enter (the same checks, lock and Enter rule as a typed
                                                 wake): "sent" exit 0, "failed" exit 1, "busy <why>" exit 3 (fleet park)
 ```
+
+Stale servers (issue #31). An MCP client keeps one `serve` process for its whole session, so a kit upgrade on disk does
+not reach it on its own. Each server writes `$FLEET_STATE/mesh/<pid>.json` (`pid`, `lane` = `FLEET_NAME`, `hash`,
+`file`, `started`, `reexecs`) and compares `hash` with the file on disk before every request and every typed wake:
+- Stale before a request: it runs the new file once (`version` must print the disk hash), then `execv`s it in place.
+  Same pid, same stdin/stdout. The request and any bytes still unread are handed over (`FLEET_MESH_CARRY`), and the
+  protocol keeps no state after `initialize`, so the client's session carries on. Bound: 20 re-execs per process.
+- When it can't re-exec (`FLEET_MESH_REEXEC=0`, the self-check fails, the bound is reached): typed wakes are refused.
+  The message is in the inbox, a tmux notice plus `@fleet_unread` replaces the typing, and the result says
+  `typed wake deferred (stale: ...)`. Codex queue and OpenCode HTTP wakes are not typed and go as before.
+- `fleet tick` prints the `stale` lines after the table (`FLEET_TICK_NO_MESH_SCAN=1` skips the ps scan). A server from
+  before this change has no record; it is listed when it started before the file's mtime, its lane read from its
+  `FLEET_NAME` env or the roster pane it runs under.
 MCP tools: `peer_list {}`, `peer_send {to, text, from?}`, `peer_inbox {name?, all?}`,
 `decision_open {question, options?: [str], from?}` (appends decisions.jsonl and delivers to $FLEET_DECIDE),
 `decision_list {status?}`, `decision_answer {id, answer}` (marks answered, delivers to the asker only; see Messaging routing),
