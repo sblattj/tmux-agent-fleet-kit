@@ -26,4 +26,4 @@
 
 - [x] 5.1 `/api/lessons`, `/api/seen`, Lesson tab with deterministic SVG; verify: test_learn_serve.py cases for token, seen and JSON equal to pane
 - [x] 5.2 roles/learn.md (+ codex/agy variants, route kind line), contract, README, `-h` docstring; verify: role grep test, `-h` loop covers new verbs
-- [ ] 5.3 Full suite against the 3e306bd baseline, leak lint on a clean export; verify: same failures as baseline only
+- [x] 5.3 Full suite against the 3e306bd baseline, leak lint on a clean export; verify: same failures as baseline only
