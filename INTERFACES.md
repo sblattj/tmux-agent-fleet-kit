@@ -26,6 +26,7 @@ and `$FLEET_ROUTE` (default `ROUTE`). There is no alias layer: a message goes to
 | FLEET_WAKE_DEFER_MAX | `900` | seconds a deferred typed wake keeps retrying before it leaves a notice instead (see Typed wakes) |
 | FLEET_WAKE_BACKOFF | `2` | first retry gap of a deferred wake, in seconds; doubles, capped at 30 |
 | FLEET_WAKE_QUIET | `3` | a pane that got keys from an attached client this many seconds ago counts as busy; `0` turns the check off |
+| FLEET_NO_TYPE_ROLES | `decide` | roles (comma or space separated, roster `role`) whose pane never gets typed keys: native `SendMessage` or a tmux notice only (issue #34); empty allows typing everywhere |
 | FLEET_NATIVE_GRACE | `120` | seconds a Claude to Claude `peer_send` waits for the sender's `SendMessage` before the typed fallback |
 | FLEET_NATIVE | `1` | `0` turns the Claude to Claude native route off (every Claude target gets the guarded typed wake) |
 | FLEET_WAKE_SPAWN | `1` | `0` never starts a detached waker (unit tests); a busy pane then just keeps its unread message |
@@ -275,6 +276,13 @@ Delivery (`deliver(frm, to, text)`): always append to inbox/<to>.jsonl, then wak
 - target missing from roster: inbox only, result says `queued (no live lane)`.
 Result text names the wake used and whether it succeeded; a failed wake still leaves the message in the inbox.
 A deferred wake reads `delivered X -> Y (inbox written; typed wake deferred (<why>); retrying for up to Ns, then a tmux notice)`.
+
+**No-type panes (issue #34).** A lane whose roster `role` is in `FLEET_NO_TYPE_ROLES` (default `decide`, the desk the
+human answers in) never gets typed keys, empty input or not. A Claude lane's `peer_send` or decision tool call to it
+still goes native: the result tells the sender that its `SendMessage` is the only wake. When the grace runs out with no
+SendMessage linked, the waker leaves the notice below instead of the typed fallback. Every other path (CLI `fleet
+send`, Codex or OpenCode senders, engine rewakes) leaves that notice at once and returns `typed wake deferred (role
+decide never gets typed keys ...)`. The inbox line is written first either way.
 
 **Typed wakes (claude, kiro, agy).** `type_wake()` never types into text a human is writing. Before typing:
 1. No attached client whose current pane is the target sent a key in the last `FLEET_WAKE_QUIET` seconds

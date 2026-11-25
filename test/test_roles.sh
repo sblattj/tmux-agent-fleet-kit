@@ -495,9 +495,11 @@ ad FLEET_NAME=ORCHESTRATOR "$FLEET" send DECIDE "ping decide" >/dev/null 2>&1
 t "beside: fleet send ROUTE lands (second line in inbox/ROUTE.jsonl)" test "$(wc -l < "$AD/inbox/ROUTE.jsonl")" -eq 2
 t "beside: fleet send DECIDE lands in inbox/DECIDE.jsonl" test "$(wc -l < "$AD/inbox/DECIDE.jsonl")" -eq 1
 sleep 1
-for d in ROUTE DECIDE; do
-  t "beside: the $d pane was woken by fleet send" bash -c 'tmux -L "$1" capture-pane -p -t "$2" | grep -q "message from ORCHESTRATOR"' _ "beside-$$" "$(jq -r --arg n $d '.[$n].pane' "$AD/roster.json")"
-done
+t "beside: the ROUTE pane was woken by fleet send" bash -c 'tmux -L "$1" capture-pane -p -t "$2" | grep -q "message from ORCHESTRATOR"' _ "beside-$$" "$(jq -r '.ROUTE.pane' "$AD/roster.json")"
+# issue #34: the decision desk pane never gets typed keys; a tmux notice (@fleet_unread) replaces the pointer
+pDd=$(jq -r '.DECIDE.pane' "$AD/roster.json")
+t "beside: nothing typed into the DECIDE pane by fleet send" bash -c '! tmux -L "$1" capture-pane -p -t "$2" | grep -q "message from ORCHESTRATOR"' _ "beside-$$" "$pDd"
+t "beside: the DECIDE pane got the @fleet_unread notice instead" bash -c 'test -n "$(tmux -L "$1" show-options -p -v -t "$2" @fleet_unread 2>/dev/null)"' _ "beside-$$" "$pDd"
 tk=$(ad FLEET_ROLE=route "$FLEET" tick 2>/dev/null)
 t "beside: tick shows no park for the old-role ORCHESTRATOR/DECISIONS or any desk" bash -c '! printf "%s\n" "$1" | grep -E "^(ORCHESTRATOR|DECISIONS|DECIDE|ROUTE|WATCH|LEARN) " | grep -q "park$"' _ "$tk"
 t "control: tick lists the old-role entries" bash -c 'printf "%s\n" "$1" | grep -q "^ORCHESTRATOR .*orchestrator" && printf "%s\n" "$1" | grep -q "^DECISIONS .*desk"' _ "$tk"

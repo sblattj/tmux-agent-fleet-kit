@@ -312,6 +312,10 @@ def wake(frm, to, text, entry):
             hit = next((m for m in AGY_BLOCKING_SCREENS if m in screen), None)
             if hit:
                 return "tmux send-keys", False, "agy pane %s shows a %r screen; not typing into it" % (pane, hit)
+        if no_type(entry):  # issue #34: the human types in this pane; never keys, a notice instead
+            why = "role %s never gets typed keys (FLEET_NO_TYPE_ROLES)" % entry.get("role")
+            notice(to, entry, frm, unread_count(to), why)
+            return "tmux send-keys", True, "deferred (%s); not typed, tmux notice left" % why
         st = mesh_stale()
         if st:  # issue #31: old code must never type; the inbox holds the message, a notice replaces the typing
             why = "this mesh server runs code %s, the kit on disk is %s" % st
@@ -354,6 +358,15 @@ def wake_result(prefix, frm, to, how, ok, detail):
 PROMPT_GLYPHS = ("❯", "›", ">")  # Claude Code, kiro-cli, agy (captured from each, 2026-11-23)
 DEFER_MAX = 900  # seconds a deferred wake keeps retrying
 NATIVE_GRACE = 120  # seconds a Claude -> Claude message waits for its native SendMessage before a typed wake
+NO_TYPE_ROLES = "decide"  # issue #34: roles whose pane never gets typed keys (the human types in the decision desk)
+
+
+def no_type(entry):
+    """True when this roster entry's pane must never get a typed wake: its role is in FLEET_NO_TYPE_ROLES
+    (comma or space separated, default "decide"; set it empty to allow typing everywhere)."""
+    roles = os.environ.get("FLEET_NO_TYPE_ROLES", NO_TYPE_ROLES)
+    want = set(r.strip().lower() for r in re.split(r"[,\s]+", roles) if r.strip())
+    return bool(entry) and str(entry.get("role") or "").lower() in want
 _SGR = re.compile(r"\x1b\[([0-9;:]*)m")
 _ESC = re.compile(r"\x1b(?:\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[()][0-9A-Za-z]|.)")
 
@@ -740,6 +753,10 @@ def wake_later(to):
             entry = load_roster().get(to) or {}
             if need and start is None:
                 start = time.time()
+            if need and no_type(entry):  # issue #34: the grace ran out without a SendMessage; notice, never type
+                notice(to, entry, frm, need, "role %s never gets typed keys; no SendMessage came within the grace"
+                       % entry.get("role"))
+                return "notice"
             if need and entry.get("cli") in ("claude", "kiro", "agy") and entry.get("pane"):
                 ok, why = type_wake(entry["pane"], wake_note(frm or "?", to, entry))
                 if ok:
@@ -804,6 +821,12 @@ def deliver(frm, to, text, native_ok=False):
     if native:
         spawn_waker(to)  # safety net: a typed wake after the grace, once the input is empty, if no SendMessage came
         log("deliver %s -> %s native pending (no typed wake)" % (frm, to))
+        if no_type(entry):
+            return ("delivered %s -> %s (inbox written; %s's pane never gets typed keys. Now call SendMessage with "
+                    "to=\"%s\" and this same text (for a decision or an answer, the question or answer line): it is "
+                    "the only thing that wakes %s, and the mirror hook links it to this inbox line. Without it, only a "
+                    "tmux notice is left after %ds)" % (frm, to, to, to, to,
+                                                        int(_env_float("FLEET_NATIVE_GRACE", NATIVE_GRACE))))
         return ("delivered %s -> %s (inbox written; no typed wake into a Claude pane. Now call SendMessage with "
                 "to=\"%s\" and this same text (for a decision or an answer, the question or answer line): it reaches %s "
                 "natively without touching its input box, and the mirror hook links it to this inbox line. If no SendMessage follows within %ds, a typed pointer goes once "

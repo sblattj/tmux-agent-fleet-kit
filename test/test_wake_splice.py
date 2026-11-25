@@ -247,6 +247,66 @@ class WakeSpliceTest(unittest.TestCase):
         print("RESULT native-fallback: submitted=%r" % (got,))
         self.assertEqual(got, [self.note()])
 
+    # ---- issue #34: the decision desk pane never gets typed keys, empty input or not
+    def set_role(self, role, name="cl"):
+        with open(os.path.join(self.state, "roster.json")) as f:
+            roster = json.load(f)
+        roster[name]["role"] = role
+        with open(os.path.join(self.state, "roster.json"), "w") as f:
+            json.dump(roster, f)
+
+    def test_decide_pane_with_empty_input_gets_no_keys_only_a_notice(self):
+        self.set_role("decide")
+        res = mesh.deliver("alpha", "cl", "the body")
+        time.sleep(1.0)
+        print("RESULT decide-empty: deliver=%r submitted=%r cursor=%r" % (res, self.submitted(), self.cursor_line()))
+        self.assertEqual(self.submitted(), [], "a wake was typed into the decision desk pane")
+        self.assertEqual(self.cursor_line(), "❯", "the decision desk input box was touched")
+        self.assertIn("not typed", res)
+        self.assertTrue(self.opt("@fleet_unread"), "no @fleet_unread notice on the pane")
+        self.assertEqual(json.loads(open(os.path.join(self.state, "inbox", "cl.jsonl")).readline())["text"],
+                         "the body", "the inbox line is the record")
+
+    def test_no_type_roles_is_configurable(self):
+        self.set_role("decide")
+        os.environ["FLEET_NO_TYPE_ROLES"] = ""  # control: empty set, the decide pane takes a typed wake again
+        try:
+            mesh.deliver("alpha", "cl", "the body")
+            self.assertEqual(_wait(lambda: self.submitted(), timeout=3), [self.note()])
+            self.set_role("route")
+            os.environ["FLEET_NO_TYPE_ROLES"] = "decide, route"
+            mesh.deliver("alpha", "cl", "second")
+            time.sleep(1.0)
+            self.assertEqual(self.submitted(), [self.note()], "a route pane in FLEET_NO_TYPE_ROLES got keys")
+        finally:
+            os.environ.pop("FLEET_NO_TYPE_ROLES", None)
+
+    def test_decision_engine_rewake_types_nothing_into_decide(self):
+        with open(os.path.join(self.state, "roster.json")) as f:
+            roster = json.load(f)
+        roster["DECISIONS"] = dict(roster.pop("cl"), name="DECISIONS", role="decide")
+        with open(os.path.join(self.state, "roster.json"), "w") as f:
+            json.dump(roster, f)
+        res = mesh.t_decision_open({"from": "alpha", "question": "engine q?"})
+        time.sleep(1.0)
+        print("RESULT decide-engine: %r submitted=%r" % (res, self.submitted()))
+        self.assertEqual(self.submitted(), [])
+        self.assertEqual(self.cursor_line(), "❯")
+
+    def test_claude_to_decide_goes_native_with_no_typed_fallback(self):
+        self.claude_sender()
+        self.set_role("decide")
+        res = mesh.call_tool("peer_send", {"to": "cl", "text": "the body"})["content"][0]["text"]
+        self.assertIn("SendMessage", res)
+        self.assertIn("never gets typed keys", res)
+        rec = json.loads(open(os.path.join(self.state, "inbox", "cl.jsonl")).readlines()[-1])
+        self.assertEqual(rec.get("native"), "pending")
+        got = _wait(lambda: self.opt("@fleet_unread"), timeout=10)  # the waker outlives the 2s grace
+        print("RESULT decide-native: deliver=%r submitted=%r unread=%r" % (res, self.submitted(), got))
+        self.assertTrue(got, "no tmux notice after the grace ran out")
+        self.assertEqual(self.submitted(), [], "the typed fallback still fired into the decision desk pane")
+        self.assertEqual(self.cursor_line(), "❯")
+
 
 class InputStateTest(unittest.TestCase):
     """The pane parser on screens captured from the real CLIs (`capture-pane -p -e`, 2026-11-23)."""
