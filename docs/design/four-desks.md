@@ -388,7 +388,7 @@ One row per thing worth knowing, append-only; a later row with the same `lid` su
  "tags": ["widget", "reliability"], "supersedes": null}
 ```
 
-`kind`: `decision`, `change` (merged PR, release), `closed` (issue), `doc` (page), `lesson` (a lane's goal-file
+`kind`: `decision`, `change` (merged PR, release), `closed` (issue), `doc` (page), `done` (a lane's goal-file
 `done[]` line). `status`: `confirmed`, `heard` (unconfirmed call decision), `superseded`. `origin` (Q91): `fleet`
 (we decided or shipped it) or `outside` (someone else changed it); required, never inferred later.
 

@@ -19,15 +19,17 @@ with the first exposure never counted as learned.
 - **BREAKING** (scheduling): a card is due only after its row's lesson was seen. The 24 h proof clock starts at the
   seen time. No migration: Q694 answered that old LEARN data is thrown away and re-derived from its sources.
 - New `fleet learn rebuild`: everything LEARN holds is re-derivable. It regenerates the ledger, entities, cards,
-  schedules and proof from the sources (decisions log, WATCH events, achieved goal files, and the inputs journal of
-  ROUTE, DECIDE and LEARN messages), keeping only the human's own results (reviews and seen), which re-attach to the
-  rebuilt rows by source key.
+  schedules and proof from the sources (decisions log, WATCH events, achieved goal files, and the configured
+  sources), keeping only the human's own results (reviews and seen, Q27 b), which re-attach to the rebuilt rows by
+  source key. A failing source aborts with nothing changed.
+- New sources (Q702 a): one shared `sources.json` (else `watch.json`) with refs-only credentials, read through
+  WATCH's adapter registry, with new `whosaid` (call decisions, heard) and `linear` (GraphQL) adapters.
 - **BREAKING**: ledger kind `lesson` (a goal done line) is renamed `done`.
 - New `fleet learn session --topic T`: the lesson for T, then a quiz on only T's cards, then one result line.
 - New `fleet learn curate <lid> --what W --why Y [--part-of E]`: LEARN fills a row's definition and reason. Lesson
   lines from `what`/`why` must be backed by the row's quote or they are dropped.
-- New entity layer: `fleet learn entity add|list|tree` with typed edges (part-of, ships-in, blocked-by, decided-by,
-  owner) in `entities.jsonl`. A topic rolls up to its entity subtree; the pane shows a text tree.
+- New entity layer (Q697 a): `fleet learn entity list|tree` with typed links (part-of, ships-in, blocked-by,
+  decided-by, owner) in `entities.jsonl`, rebuilt from row topics and the adapters' links. A topic rolls up to its entity subtree; the pane shows a text tree.
 - New `fleet learn brief --for X`: a read-only brief through a pluggable selector command (`learn.json`
   `brief.selector`), with a no-plugin fallback (rows on topic X, else the most recent rows).
 - New `fleet learn digest [--since WHEN]`: teaches the rows newer than a last-looked cursor (or `--since`).
@@ -46,6 +48,7 @@ with the first exposure never counted as learned.
 - `learn-entities`: entities with typed edges, topic rollup and the pane tree.
 - `learn-brief`: the `--for` brief, its selector contract and its fallback.
 - `learn-digest`: lessons since a cursor or a given time.
+- `learn-sources`: the shared sources config, the whosaid and Linear adapters, refs-only credentials.
 - `learn-lesson-page`: the Lesson tab in `fleet learn serve`.
 - `learn-desk-role`: the LEARN role text for teach-first.
 
@@ -58,8 +61,8 @@ with the first exposure never counted as learned.
   `lib/fleet_learn_lesson.py` (lesson builder, entities, brief, digest, rebuild), `lib/fleet_learn_serve.py` and
   `lib/learn-ui.html` (Lesson tab, `/api/lessons`, `/api/seen`), `roles/learn.md`, `lib/fleet_learn_contract.md`,
   `README.md`, `DESIGN-NOTES.md`.
-- State: new `learn/seen.jsonl` and `learn/inputs.jsonl` (append-only), derived `learn/entities.jsonl`;
-  `cursors.json` gets a `digest` key; `learn.json` gets an optional `brief` section. No migration (Q694): the live
+- State: new `learn/seen.jsonl` (append-only; the digest cursor is its latest `via: digest` row), derived
+  `learn/entities.jsonl`; optional `$FLEET_STATE/sources.json`; `learn.json` gets an optional `brief` section. No migration (Q694): the live
   state is wiped and rebuilt only when the chosen branch lands, never from this worktree.
 - Tests: new `test/test_learn_lesson.sh`, new cases in `test/test_learn_serve.py`; existing tests that expect a card
   due right after `add` get a lesson step in their setup, and `--kind lesson` becomes `--kind done`.

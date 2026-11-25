@@ -2,31 +2,32 @@
 
 ## Purpose
 
-Work subjects (repos, PRs, goals, features) form a tree. Lessons and briefs roll a topic up to its subtree, and
-the pane shows that tree as text.
+Work subjects (repos, PRs, tickets, goals, features) form a graph with typed links (Q697 a). Lessons and briefs roll
+a topic up to its subtree, and the pane shows the part-of tree as text. Every entity and link is rebuilt from the
+sources.
 
 ## ADDED Requirements
 
-### Requirement: Entities with typed edges
-`fleet learn entity add <id> --type T --definition D --quote Q --source S [--part-of P] [--ships-in X]
-[--blocked-by B] [--decided-by Q] [--owner O]` SHALL record an entity in `entities.jsonl`. Edge types are only
-part-of, ships-in, blocked-by, decided-by and owner. The definition SHALL be backed by the quote, as for what lines.
-
-#### Scenario: Add and list
-- **WHEN** `fleet learn entity add acme/widget --type repo --definition "the widget service" --quote "the widget service owns uploads" --source git:acme/widget` runs
-- **THEN** `fleet learn entity list` shows `acme/widget` with type `repo`
-
-#### Scenario: Unknown edge refused
-- **WHEN** `--edge likes:X` or an unknown edge type is given
-- **THEN** it exits 1 naming the five edge types
-
-### Requirement: Entities are derived plus journaled
-Entities named by row topics SHALL be derived at sync and rebuild; entities from `entity add` SHALL be journaled in
-`inputs.jsonl`, so `entities.jsonl` is always regenerable.
+### Requirement: Entities with typed links from the sources
+`entities.jsonl` SHALL hold one entity per work subject with a type and links of only these types: part-of,
+ships-in, blocked-by, decided-by and owner. Entities SHALL be derived at sync and rebuild from row topics and from
+the links the adapters report (a Linear issue's project and blockers, a PR's repo, a call decision's meeting).
 
 #### Scenario: Topic becomes an entity
-- **WHEN** a row has topic `acme/widget#7` and no entity was added
-- **THEN** after sync, `entity list` shows `acme/widget#7` with type `pr` and part-of `acme/widget`
+- **WHEN** a row has topic `acme/widget#7`
+- **THEN** after sync, `fleet learn entity list` shows `acme/widget#7` with type `pr` and part-of `acme/widget`
+
+#### Scenario: Links come back after a rebuild
+- **WHEN** the derived files are deleted and `fleet learn rebuild` runs
+- **THEN** `fleet learn entity list --json` equals the list before
+
+### Requirement: Curated part-of
+`fleet learn curate <lid> --part-of E` SHALL place a row's topic under E. Curation is a message, not a source, so a
+rebuild drops it.
+
+#### Scenario: Curate then rebuild
+- **WHEN** a row is curated with `--part-of` and `fleet learn rebuild` runs
+- **THEN** the curated link is gone
 
 ### Requirement: Topic rolls up to its subtree
 A topic filter in lesson, session, brief and due SHALL match rows on the topic or on any entity whose part-of chain
@@ -37,8 +38,8 @@ reaches it.
 - **THEN** that row is in the lesson
 
 ### Requirement: Text tree
-`fleet learn entity tree [ROOT]` SHALL print the part-of tree with indentation and each node's row count.
+`fleet learn entity tree [ROOT]` SHALL print the part-of tree with indentation, each node with its type.
 
 #### Scenario: Tree output
 - **WHEN** `acme/widget#7` is part of `acme/widget`
-- **THEN** `entity tree` prints `acme/widget` with `  acme/widget#7` indented under it
+- **THEN** `entity tree` prints `acme/widget (repo)` with `  acme/widget#7` indented under it
