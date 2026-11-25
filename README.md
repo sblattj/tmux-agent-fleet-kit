@@ -109,11 +109,29 @@ The launcher warns once and launches without the role when the Codex profile, Op
   score >= `learn.minScore`, and the goal files of lanes whose goal is achieved. Call decisions
   (`decided-on-call`) arrive as `heard` and are never quizzed until a desk answer or `fleet learn confirm`
   backs them.
+- Teach before test. `fleet learn lesson [--topic T]` shows the terms first (each work subject with a verbatim
+  definition and its typed links), then each row in context; every line is a verbatim quote plus its source, and a
+  what/why line its quote does not back is dropped and counted, never reworded. Heard rows show "not decided yet".
+  Showing a lesson records it seen (`learn/seen.jsonl`, the human only); only then do that row's cards come due, and
+  the 24 h proof clock starts there. `--preview` records nothing. `fleet learn lessons` lists what waits.
+- `fleet learn session --topic T` is the lesson for T, a quiz on T's cards only, and one result line; a first
+  exposure is never graded as learned. `fleet learn digest [--since ISO|Nd|Nh]` teaches the rows newer than the last
+  digest (default 7 days). `fleet learn brief --for X` is a read-only brief for any role; `learn.json`
+  `brief.selector` names an optional command (JSON on stdin, one row id per line out, bounded by
+  `brief.timeoutSec`), with a fallback to X's rows, else the most recent.
+- Sources: `$FLEET_STATE/sources.json` (else `watch.json`) names the git repos, trackers and call workspaces LEARN
+  reads through WATCH's adapter registry, credentials as `env:`, `keychain:` or `cmd:` references only
+  (`fleet learn sources` checks them). Generic example: `docs/learn-sources.example.json`. Adapters include
+  `whosaid` (call decisions, local, heard) and `linear` (GraphQL, read-only). No config, no polling.
+- `fleet learn rebuild` regenerates the ledger, cards, entity graph (`part-of`, `ships-in`, `blocked-by`,
+  `decided-by`, `owner` links from the sources), proof and cursors from the sources. Only the human's own results,
+  `reviews.jsonl` and `seen.jsonl`, are kept; they re-attach by source key, and a failing source aborts with the old
+  state intact. A manual `fleet learn add` is not a source, so a rebuild drops it (its seen rows show as orphaned).
 - `fleet learn quiz` runs recall (self-rated), multiple choice (distractors are other ledger rows, never
   invented) and source check (paste a verbatim line) on FSRS intervals (`"scheduler": "fixed"` in `learn/learn.json` keeps 1/3/7/21 days). Explain back and
   apply cards are graded by an optional `command` grader in `learn.json`, else self-graded.
-- An item is learned only with a recall pass and a checkable pass, the latest at least 24 h after the first
-  review, and no fail since. `fleet learn proof --check` rebuilds proof.json from reviews.jsonl and compares.
+- An item is learned only with a recall pass and a checkable pass, the latest at least 24 h after first exposure
+  (the lesson seen, else the first review), and no fail since. `fleet learn proof --check` rebuilds proof.json from reviews.jsonl and compares.
 - `fleet learn snapshot` gives counts per origin, never one blended total. `fleet learn export` writes one
   markdown file per topic.
 
@@ -233,6 +251,8 @@ state (tested: reviews, card schedules, `proof.json` and the snapshot compared, 
 
     fleet learn serve --open      # http://127.0.0.1:7341/?t=<token>, opened in the background browser
 
+- **Lesson**: the first topic waiting, terms (with a part-of map) then rows in context, each with its quote and
+  source; "Seen" records it (POST `/api/seen`, token and the human only) and its cards join the quiz.
 - **Quiz**: due cards in the TUI's order. Recall: type from memory, Reveal shows the source quote, then rate
   again / hard / good / easy. Choice: click one of four. Source check: paste the line; it must be a verbatim substring
   of the quote. Only due cards take an answer, so a double click or a second tab is a 409 and writes nothing.
@@ -315,6 +335,8 @@ bash test/test_launch_env.sh  # fleet launch --env, FLEET_STRIP_EXTRA, FLEET_PRE
 bash test/test_privacy.sh     # no personal data in the repo (FLEET_PRIVACY_TERMS=a|b adds names)
 python3 -m unittest test/test_contracts.py   # four-desks contracts (WATCH, probe) and the watch|learn|probe dispatch
 bash test/test_learn.sh       # fleet learn: ledger, sync, quiz, 24 h proof with an injected clock, export
+bash test/test_learn_lesson.sh   # teach before test: lesson, session, digest, brief, seen gate, guard, rebuild
+python3 -m unittest test/test_learn_sources.py   # whosaid + linear adapters on fakes, sources.json refs-only, rebuild from sources
 python3 -m unittest test.test_fsrs test.test_explain   # FSRS against py-fsrs reference values; explain back grader
 python3 -m unittest test/test_learn_serve.py   # LEARN page: token/loopback, page answer == TUI answer, score history per topic
 python3 -m unittest test/test_watch.py   # WATCH engine: replay counts, scrub, dedupe, filters, quiet hours, literal-credential refusal
@@ -339,7 +361,7 @@ python3 -m unittest test/test_watch_webhook.py   # WATCH webhook receiver: signa
 - Waking an idle Claude lane from a non-Claude peer relies on typed input into the pane (see above).
 - Kiro: the role deny misses `sh -c "fleet park X"` (PROVEN it ran), so a Kiro role is not a hard fence. `KIRO_API_KEY` is passed through as-is; behaviour when it is set is UNVERIFIED. Whether Kiro's own auto-compaction writes the same `tombstone` marker is UNVERIFIED. A goal that stops at max iterations being read as `stopped` is UNVERIFIED. Live Kiro lanes on Linux are UNVERIFIED.
 - agy: the role deny's reach beyond the named shell commands (edit tools, artifacts, `sh -c` wrappers) is UNVERIFIED, so an agy role is not a hard fence. agy has no config-dir override, so lanes share the user's `~/.gemini` sign-in and conversations. Whether agy's own auto-compaction writes the same `CHECKPOINT` marker is UNVERIFIED. Live agy lanes on Linux are UNVERIFIED.
-- Nothing is pushed or sent anywhere by the kit; the only network calls are the two plugin `git clone`s in `install/opencode.sh` and the WATCH sources you list in `watch.json`.
+- Nothing is pushed or sent anywhere by the kit; the only network calls are the two plugin `git clone`s in `install/opencode.sh` and the WATCH and LEARN sources you list in `watch.json` or `sources.json`.
 
 ## WATCH: the engine
 

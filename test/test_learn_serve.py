@@ -326,6 +326,59 @@ class TestPage(Base):
 
 # ------------------------------------------------------------------ the acceptance clause: page == TUI
 
+class TestLessonPage(Base):
+    """The Lesson tab: GET /api/lessons is the pane's preview (records nothing); POST /api/seen is the pane's
+    seen verb, and only after it do that row's cards join the quiz (teach before test)."""
+    def setUp(self):
+        super().setUp()
+        for kind, origin, src, quote, title, topic in ROWS:
+            p = self.learn("add", "--kind", kind, "--origin", origin, "--source", src, "--quote", quote,
+                           "--title", title, "--topic", topic)
+            self.assertEqual(p.returncode, 0, p.stderr)
+        self.s = Server(self)
+
+    def tearDown(self):
+        self.s.stop()
+        super().tearDown()
+
+    def seen_path(self):
+        return os.path.join(self.learn_dir(), "seen.jsonl")
+
+    def test_lessons_equal_the_pane_and_record_nothing(self):
+        st, body = self.s.json("GET", "/api/lessons")
+        self.assertEqual(st, 200)
+        self.assertEqual(body["waiting"], json.loads(self.learn("lessons", "--json").stdout))
+        pane = json.loads(self.learn("lesson", "--preview", "--json", "--topic", body["lesson"]["topic"]).stdout)
+        for k in ("topic", "terms", "context", "dropped", "lids"):
+            self.assertEqual(body["lesson"][k], pane[k], k)
+        for row in body["lesson"]["context"]:
+            self.assertTrue(row["quote"] and row["source"], row)
+        self.assertFalse(os.path.exists(self.seen_path()))
+        self.assertEqual(json.loads(self.learn("due", "--json").stdout), [])
+        self.assertEqual(self.s.json("GET", "/api/state")[1]["quiz"], [])
+
+    def test_seen_starts_the_quiz_for_those_rows_only(self):
+        lesson = self.s.json("GET", "/api/lessons")[1]["lesson"]
+        st, r = self.s.json("POST", "/api/seen", {"lids": lesson["lids"]})
+        self.assertEqual((st, r["marked"]), (200, lesson["lids"]))
+        quiz = self.s.json("GET", "/api/state")[1]["quiz"]
+        self.assertTrue(quiz)
+        lid_of = {c["cid"]: c["lid"] for c in self.cards().values()}
+        self.assertEqual({lid_of[q["cid"]] for q in quiz}, set(lesson["lids"]))
+        with open(self.seen_path()) as f:
+            vias = {json.loads(ln)["via"] for ln in f if ln.strip()}
+        self.assertEqual(vias, {"page"})
+        left = self.s.json("GET", "/api/lessons")[1]["waiting"]
+        self.assertNotIn(lesson["topic"], [w["topic"] for w in left])
+
+    def test_bad_seen_requests_are_refused_without_writing(self):
+        self.assertEqual(self.s.json("POST", "/api/seen", {"lids": []})[0], 400)
+        self.assertEqual(self.s.json("POST", "/api/seen", {"lids": ["L99"]})[0], 400)
+        self.assertEqual(self.s.json("POST", "/api/seen", {"lids": "L1"})[0], 400)
+        self.assertEqual(self.s.req("POST", "/api/seen", {"lids": ["L1"]}, token=False)[0], 403)
+        self.assertFalse(os.path.exists(self.seen_path()))
+
+
 class TestPageAndTuiSameState(Base):
     def answer_all_in_page(self, state, wrong_cid=None):
         s = Server(self, state=state)

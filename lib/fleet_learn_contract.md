@@ -42,7 +42,7 @@ refused with `Refused`. `export(to=DIR)` is the one exception: the human may exp
 | field | rule |
 |---|---|
 | `lid` | `L<n>`, allocated by the API under `.lock`; callers never choose it |
-| `kind` | `decision`, `change`, `closed`, `doc`, `lesson` |
+| `kind` | `decision`, `change`, `closed`, `doc`, `done` (a lane's goal-file `done[]` line; the old kind `lesson` is refused, Q694) |
 | `origin` | `fleet` or `outside`; required, never inferred |
 | `status` | `confirmed`, `heard`, `superseded`, `dropped`. `heard` = unconfirmed (a `decided-on-call` row); it becomes `confirmed` only through `confirm()` with a source other than its own, or a sync where a desk answer quotes it |
 | `source` | object, `type` and `ref` required. Types in use: `decisions-log`, `watch`, `goal`, `route-done`, `decide-learn-this`, `manual`. Rows from `decisions-log`, `goal` and `route-done` with no `title` pass `teachable()`: fleet plumbing (lane lifecycle, desk or kit setup, routing, launch or park, tooling) and answerless lines (bare option letters, step names) are skipped by sync and `add`, and their cards retire. `learn: teach` / `learn: skip` in the line, or `"learn"` in the lane's goal file, overrides |
@@ -111,8 +111,13 @@ add_item(*, kind, origin, quote, source, title="", what="", why="", status="conf
 #                                source={"type": "decide-learn-this", "ref": "Q12"}, by="decide")
 # WATCH LEARN-ITEM:     add_learn_item(event) -> dict | None     (event = a watch/events.jsonl row; origin outside;
 #                       dedupes on event eid; quote = event's quote field; returns None for a dupe)
-# ROUTE "done" copy:    add_item(kind="lesson", origin="fleet", quote=<done line>, source={"type": "route-done",
-#                                "ref": <lane>}, by="route")
+# ROUTE "done" copy:    add_item(kind="done", origin="fleet", quote=<done line>, source={"type": "route-done",
+#                                "ref": <lane>}, by="route")   (not kept by rebuild(); done lines come from goal files)
+# Sources (Q702):       sync() also polls sources.json (else watch.json) through WATCH's adapter registry and adds
+#                       each event with add_learn_item(event, by="source"); whosaid call decisions are heard
+# Teach first:          mark_seen(lids, via) (human only) starts the 24 h clock; due() lists only seen rows' cards
+# Rebuild (Q27 b):      rebuild() regenerates ledger, cards, entities, proof, cursors from the sources; keeps only
+#                       reviews.jsonl and seen.jsonl, which re-attach by source key (skey) and card key (ckey)
 confirm(lid, *, source, quote, by="manual") -> dict   # heard -> confirmed
 supersede(lid, *, quote, source, by="sync") -> dict   # new row, old one status superseded
 drop(lid, *, reason) -> dict
