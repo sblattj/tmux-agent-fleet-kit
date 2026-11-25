@@ -1,0 +1,10 @@
+{"status": "ok", "at": "2026-01-01T10:00:00Z"}
+{"id": "transcript-chat-message-s1/r1", "at": "2026-01-01T10:00:01Z", "speaker": "", "text": "can we get the retry change into this week?", "final": true}
+{"id": "transcript-chat-message-s1/r2", "at": "2026-01-01T10:00:05Z", "speaker": "", "text": "I'll need the staging numbers before Friday", "final": true}
+{"status": "ok", "at": "2026-01-01T10:00:06Z"}
+{"gap": true, "at": "2026-01-01T10:00:08Z", "after": "transcript-chat-message-s1/r2", "before": "transcript-chat-message-s1/r9"}
+{"status": "panel closed", "at": "2026-01-01T10:00:10Z"}
+{"status": "panel closed", "at": "2026-01-01T10:00:12Z"}
+not json at all
+{"status": "ok", "at": "2026-01-01T10:00:20Z"}
+{"id": "transcript-chat-message-s2/r1", "at": "2026-01-01T10:00:21Z", "speaker": "", "text": "back after the rejoin", "final": true}

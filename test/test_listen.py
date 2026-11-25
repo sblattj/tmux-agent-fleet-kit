@@ -468,6 +468,73 @@ class SourceTest(Base):
         self.assertIn("hello there", r.stdout)
         self.assertEqual(r.stdout.count("STATUS source: command error: exit 3"), 1, r.stdout)
 
+    def test_teams_transcript_source_maps_whosaid_events(self):
+        fx = os.path.join(FX, "teams-transcript.jsonl")
+        r = self.run_cli("--source", "teams-transcript", "cat " + fx, "--config", self.cfgfile(), "--plain",
+                         "--exit-at-eof")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        out = r.stdout
+        self.assertIn("staging numbers", out)
+        self.assertIn("back after the rejoin", out)
+        self.assertIn("unknown", out)
+        self.assertEqual(out.count("NOTE teams-transcript lines carry no speaker names"), 1, out)
+        self.assertEqual(out.count("STATUS source: teams-transcript panel closed"), 1, out)  # reported once
+        self.assertEqual(out.count("NOTE teams transcript panel closed; reopen it with: whosaid teams open-transcript"),
+                         1, out)
+        self.assertEqual(out.count("STATUS source: teams-transcript ok"), 2, out)  # once before, once after the close
+        self.assertIn("NOTE teams-transcript gap", out)
+        self.assertNotIn("not json", out)
+        self.assertEqual(len(self.decisions()), 1)  # unnamed lines still route with no speaker filter
+
+    def test_teams_transcript_with_speaker_filter_shows_notice_and_does_not_crash(self):
+        fx = os.path.join(FX, "teams-transcript.jsonl")
+        r = self.run_cli("--source", "teams-transcript", "cat " + fx, "--config", self.cfgfile(speakers=["Alice_Example"]),
+                         "--plain", "--exit-at-eof")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("a speaker filter cannot match them", r.stdout)
+        self.assertIn("staging numbers", r.stdout)
+        self.assertEqual(self.decisions(), [])  # shown, never routed under a filter
+        self.assertEqual(self.orch(), [])
+
+    def test_unnamed_lines_stay_visible_under_a_speaker_filter(self):
+        lis = L.Listener(self.cfg(speakers=["Alice_Example"]))
+        lis.feed(L.parse_utterance('{"speaker": "unknown", "unnamed": true, "text": "line with no name", "final": true}'))
+        lis.feed(L.parse_utterance('{"speaker": "Bob_Example", "text": "bravo line from bob", "final": true}'))
+        lis.flush()
+        out = L.render(lis, 100, 30)
+        self.assertIn("line with no name", out)
+        self.assertNotIn("bravo line from bob", out)
+        self.assertEqual(self.orch(), [])
+
+    def test_teams_transcript_bare_port_runs_the_whosaid_preset(self):
+        bindir = os.path.join(self.tmp, "bin")
+        os.makedirs(bindir)
+        stub = os.path.join(bindir, "whosaid")
+        with open(stub, "w") as f:
+            f.write('#!/bin/sh\necho "{\\"status\\": \\"window not found\\", \\"args\\": \\"$*\\"}"\necho "$*" > "%s"\n'
+                    % os.path.join(self.tmp, "argv"))
+        os.chmod(stub, 0o755)
+        r = self.run_cli("--source", "teams-transcript", "9333", "--config", self.cfgfile(), "--plain", "--exit-at-eof",
+                         env={"PATH": bindir + os.pathsep + os.environ["PATH"]})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(os.path.join(self.tmp, "argv")) as f:
+            self.assertEqual(f.read().strip(), "teams transcript-live --jsonl --port 9333")
+        self.assertEqual(r.stdout.count("STATUS source: teams-transcript window not found"), 1, r.stdout)
+
+    def test_teams_transcript_from_config_and_default_command(self):
+        self.assertEqual(L.TEAMS_TRANSCRIPT_RUN, "whosaid teams transcript-live --jsonl")
+        fx = os.path.join(FX, "teams-transcript.jsonl")
+        cfg = self.cfgfile(source={"kind": "teams-transcript", "run": "cat " + fx})
+        r = self.run_cli("--config", cfg, "--plain", "--exit-at-eof")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("staging numbers", r.stdout)
+
+    def test_teams_transcript_failing_command_status_once(self):
+        r = self.run_cli("--source", "teams-transcript", "exit 6", "--config", self.cfgfile(), "--plain",
+                         "--exit-at-eof")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.count("STATUS source: teams-transcript error: exit 6"), 1, r.stdout)
+
     def test_fleet_listen_subcommand_exists(self):
         r = subprocess.run([FLEET, "listen", "--source", "replay", os.path.join(FX, "call.jsonl"), "--speed", "0",
                             "--config", self.cfgfile(), "--plain", "--exit-at-eof"],

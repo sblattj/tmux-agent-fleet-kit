@@ -149,8 +149,11 @@ def parse_utterance(raw, aliases=None):
         elif isinstance(d.get("clock"), str) and re.match(r"^\d{1,2}:\d{2}(:\d{2})?$", d["clock"]):
             t, base, clock = float(_seconds_from_clock(d["clock"])), "offset", d["clock"]
         speaker = str(speaker)
-        return {"clock": clock, "t": t, "base": base, "speaker": aliases.get(speaker, speaker),
-                "text": " ".join(text.split()), "final": final}
+        u = {"clock": clock, "t": t, "base": base, "speaker": aliases.get(speaker, speaker),
+             "text": " ".join(text.split()), "final": final}
+        if d.get("unnamed") is True:  # the source has no speaker name for this line (teams-transcript)
+            u["unnamed"] = True
+        return u
     m = TEXT_LINE.match(line)
     if not m:
         return None
@@ -478,9 +481,15 @@ class Listener:
         self.lines.append({"n": len(self.lines), "note": note})
         self._out("NOTE %s" % note)
 
+    def note(self, note):
+        """A source notice (panel closed, gap, no speaker names): shown in the pane, never routed."""
+        with self.lock:
+            self._add_note(note)
+
     def shown(self, e):
-        """Display filter: notes always, transcript lines only for the chosen speakers (+ me)."""
-        return "note" in e or self._routable(e)
+        """Display filter: notes always, transcript lines only for the chosen speakers (+ me). A line the source
+        could not name (teams-transcript) is always shown, since no filter can match it; it is routed only with no filter."""
+        return "note" in e or bool(e.get("unnamed")) or self._routable(e)
 
     def _routable(self, u):
         return not self.speakers or u["speaker"] in self.speakers or (self.me and u["speaker"] == self.me)
@@ -515,6 +524,8 @@ class Listener:
                 return
             self.tail.pop(u["speaker"], None)
             entry = {"n": len(self.lines), "clock": u["clock"], "speaker": u["speaker"], "text": u["text"], "notes": []}
+            if u.get("unnamed"):
+                entry["unnamed"] = True
             u = dict(u, entry=entry)
             self.lines.append(entry)
             self.transcript.append(u)
@@ -915,8 +926,15 @@ class Page:
 
 # ---------------------------------------------------------------- source adapters
 
+TEAMS_TRANSCRIPT_RUN = "whosaid teams transcript-live --jsonl"
+TEAMS_NO_SPEAKER = "unknown"
+TEAMS_NO_SPEAKER_NOTE = ("teams-transcript lines carry no speaker names; they show as %r, and a speaker filter "
+                         "cannot match them: they stay visible but are routed only with no filter" % TEAMS_NO_SPEAKER)
+TEAMS_PANEL_CLOSED_NOTE = "teams transcript panel closed; reopen it with: whosaid teams open-transcript"
+
+
 class Source:
-    """Runs an adapter in a thread; puts ("line", raw) / ("status", msg) / ("eof", None) on a queue."""
+    """Runs an adapter in a thread; puts ("line", raw) / ("status", msg) / ("note", msg) / ("eof", None) on a queue."""
 
     def __init__(self, kind, arg, q, speed=1.0, poll=1.0, aliases=None):
         self.kind, self.arg, self.q, self.speed, self.poll = kind, arg, q, float(speed), float(poll)
@@ -932,7 +950,7 @@ class Source:
 
     def _run(self):
         try:
-            getattr(self, "_" + self.kind)()
+            getattr(self, "_" + self.kind.replace("-", "_"))()
         except Exception as e:  # an adapter crash is a status, never a dead pane
             self._status("error: %s" % e)
         self.q.put(("eof", None))
@@ -953,6 +971,51 @@ class Source:
             if self.stop.is_set():
                 break
             self.q.put(("line", raw))
+        rc = self.proc.wait()
+        if self.stop.is_set():
+            return
+        self._status("ended" if rc == 0 else "error: exit %d" % rc)
+
+    def _teams_transcript(self):
+        """whosaid's Teams transcript-panel source through the command adapter: rows become lines,
+        its status changes become the source status (each once), a gap or a closed panel becomes a note."""
+        cmd = self.arg or TEAMS_TRANSCRIPT_RUN
+        if re.fullmatch(r"\d{1,5}", cmd.strip()):  # a bare number is the Teams DevTools port
+            cmd = "%s --port %s" % (TEAMS_TRANSCRIPT_RUN, cmd.strip())
+        self.proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                     stdin=subprocess.DEVNULL, text=True, start_new_session=True)
+        last, named_note = None, False
+        self._status("started")
+        for raw in self.proc.stdout:
+            if self.stop.is_set():
+                break
+            try:
+                ev = json.loads(raw)
+            except ValueError:
+                continue
+            if not isinstance(ev, dict):
+                continue
+            if "status" in ev:
+                st = str(ev["status"])
+                if st != last:
+                    last = st
+                    self._status(st)
+                    if st == "panel closed":
+                        self.q.put(("note", TEAMS_PANEL_CLOSED_NOTE))
+                continue
+            if ev.get("gap"):
+                self.q.put(("note", "teams-transcript gap: rows scrolled past between %s and %s may be missing"
+                            % (ev.get("after") or "?", ev.get("before") or "?")))
+                continue
+            if not str(ev.get("text") or "").strip():
+                continue
+            if not str(ev.get("speaker") or "").strip():
+                ev["speaker"], ev["unnamed"] = TEAMS_NO_SPEAKER, True
+                if not named_note:
+                    named_note = True
+                    self.q.put(("note", TEAMS_NO_SPEAKER_NOTE))
+            ev.setdefault("final", True)
+            self.q.put(("line", json.dumps(ev) + "\n"))
         rc = self.proc.wait()
         if self.stop.is_set():
             return
@@ -1056,6 +1119,8 @@ def ui_loop(lis, src, q, page_port, exit_at_eof):
                 lis.feed(parse_utterance(val, lis.cfg["speakerAliases"]))
             elif kind == "status":
                 lis.set_status("source", val)
+            elif kind == "note":
+                lis.note(val)
             elif kind == "eof":
                 lis.flush()
                 state["eof"] = True
@@ -1119,6 +1184,8 @@ def plain_loop(lis, src, q, exit_at_eof):
             lis.feed(parse_utterance(val, lis.cfg["speakerAliases"]))
         elif kind == "status":
             lis.set_status("source", val)
+        elif kind == "note":
+            lis.note(val)
         elif kind == "eof":
             lis.flush()
             if exit_at_eof:
@@ -1164,8 +1231,9 @@ def place_in_tmux(argv, right_of, name):
 def build_parser():
     ap = argparse.ArgumentParser(prog="fleet listen", allow_abbrev=False,
                                  description="WATCH UI: follow a live call, route asks, actions and things to say.")
-    ap.add_argument("--source", choices=("file", "stdin", "command", "replay"))
-    ap.add_argument("arg", nargs="?", help="path (file, replay) or shell command (command)")
+    ap.add_argument("--source", choices=("file", "stdin", "command", "replay", "teams-transcript"))
+    ap.add_argument("arg", nargs="?", help="path (file, replay), shell command (command), or for teams-transcript a "
+                    "DevTools port or a command replacing %r" % TEAMS_TRANSCRIPT_RUN)
     ap.add_argument("--speakers", help='comma list, e.g. "Alice_Example,Bob_Example"; empty = everyone')
     ap.add_argument("--config", help="listener.json (default $FLEET_STATE/listener.json when present)")
     ap.add_argument("--speed", type=float, help="replay speed multiple (1 = real time, 0 = no delay)")

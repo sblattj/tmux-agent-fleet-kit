@@ -567,7 +567,7 @@ gateway lane that turns incoming A2A tasks into `peer_send` and replies from `pe
 
 ## WATCH UI (lib/fleet_listen.py)
 
-`fleet listen ...` execs `python3 lib/fleet_listen.py ...` (stdlib only). Flags: `--source file|stdin|command|replay`
+`fleet listen ...` execs `python3 lib/fleet_listen.py ...` (stdlib only). Flags: `--source file|stdin|command|replay|teams-transcript`
 `[ARG]`, `--speakers "A,B"`, `--config FILE`, `--speed N`, `--poll SEC`, `--title T`, `--name NAME` (default
 `WATCH`), `--page`, `--port N`, `--pane-right-of NAME`, `--here`, `--plain`, `--exit-at-eof`. There is no host flag:
 the page binds 127.0.0.1. Without `--here`/`--plain` (and not `stdin`) it opens a tmux pane (split right of the roster
@@ -580,6 +580,13 @@ is drawn and served (at draw time) as well as to routing.
 - Input line: JSON `{"at": ISO-8601, "speaker", "text", "final"}`; aliases `completed` for `final`, `start`/`end`
   seconds or `clock` for `at`, `name`/`who` for `speaker`; missing `final` = true. Or text `[hh:mm:ss] Speaker: text`.
   Unparseable lines are skipped.
+- `teams-transcript`: runs `whosaid teams transcript-live --jsonl` (ARG all digits: plus `--port ARG`; any other ARG,
+  else `source.run`, replaces it) in a shell (own process group). Its stdout is JSONL: `{"status","at"}` -> source status `teams-transcript <status>` once per change,
+  and on a change to `panel closed` one note `teams transcript panel closed; reopen it with: whosaid teams
+  open-transcript`; `{"gap":true,"after","before"}` -> a note; a row `{"id","at","speaker","text","final"}` -> a line,
+  an empty speaker becomes `unknown` with `unnamed: true` (first time: one note), missing `final` = true. A parsed
+  line with `unnamed: true` is always drawn and served, and routed only when no speaker filter is set. Non-JSON and empty-text lines are
+  skipped. Notes show in the pane and page and are never routed. Exit: `ended`, or `error: exit N` once.
 - Config `$FLEET_STATE/listener.json` keys: `source{kind,path|run,speed}`, `speakers[]`, `me`, `speakerAliases{}`,
   `route{actions}` (default `$FLEET_ROUTE`; asks always go to `$FLEET_DECIDE` via `decision_open`), `classifier{kind: rules|command, run,
   timeoutSec 10, maxTokens 300, minIntervalSec 5, tailChars 1800, rulesFile}`, `facts[{match[],say,source}]`,

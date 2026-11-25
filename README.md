@@ -371,7 +371,7 @@ lands in the same pipeline as the poll, so a webhook plus the next catch-up poll
 `fleet listen` opens a tmux pane that follows a live call or chat, shows the transcript filtered to the speakers you care about, and routes what it hears. It consumes text only: bring your own transcriber or meeting exporter.
 
 ```
-fleet listen [--source file|stdin|command|replay ARG] [--speakers "A,B"] [--config FILE] [--speed N]
+fleet listen [--source file|stdin|command|replay|teams-transcript ARG] [--speakers "A,B"] [--config FILE] [--speed N]
              [--page [--port N]] [--pane-right-of NAME | --here] [--plain] [--exit-at-eof]
 ```
 
@@ -404,8 +404,9 @@ fleet listen [--source file|stdin|command|replay ARG] [--speakers "A,B"] [--conf
 
 - Only final lines are routed (`final: true`, or WhisperLive-style `completed: true`); the unconfirmed tail shows dimmed.
 - Every routed ask, action or decision must quote the transcript verbatim, or it is not sent (counted as `ungrounded`). Duplicates are dropped.
-- Sources: `file` follows a growing or rewritten-in-place transcript and emits each line once; `stdin`; `command` runs any command printing one utterance per line; `replay` plays a saved transcript (`--speed 1` real time, `0` no delay). A line is JSON (`{"at","speaker","text","final"}`, `{"start","end","speaker","text","completed"}` or `{"clock","name","text"}`) or text `[hh:mm:ss] Speaker: text`. `speakerAliases` maps diarizer labels (`SPEAKER_00`) to names.
+- Sources: `file` follows a growing or rewritten-in-place transcript and emits each line once; `stdin`; `command` runs any command printing one utterance per line; `replay` plays a saved transcript (`--speed 1` real time, `0` no delay); `teams-transcript` follows the live transcript panel of a Teams call through whosaid (below). A line is JSON (`{"at","speaker","text","final"}`, `{"start","end","speaker","text","completed"}` or `{"clock","name","text"}`) or text `[hh:mm:ss] Speaker: text`. `speakerAliases` maps diarizer labels (`SPEAKER_00`) to names.
 - A source failure shows once in the status bar and the pane keeps running.
+- `teams-transcript` runs `whosaid teams transcript-live --jsonl` (a numeric ARG adds `--port ARG`; any other ARG or `source.run` replaces the command) through the command adapter. It needs a whosaid release with that command. whosaid only reads the panel. Its status (`ok`, `panel closed`, `window not found`) shows in the status bar once per change. A closed panel (it closes when you rejoin) also adds one note naming `whosaid teams open-transcript`, the one allow-listed click that reopens it. A gap (rows that scrolled past between two reads) adds a note. The panel has no speaker names, so lines show as `unknown` with a one-time note. No speaker filter can match them, so they stay visible under a filter but are routed only when no filter is set.
 - The speaker filter decides what the pane and page show and what gets routed; it is applied at draw time, so widening it brings earlier lines back. `me` lines always show and route (its own questions are not sent to the desk).
 - Keys: `f` change the speaker filter live (the source keeps running), `p` freeze the view, `m` mark the moment, `o` start the explainer page, `?` help, `q` quit.
 - `--page` (or `o`) serves a local explainer page on 127.0.0.1 only (stdlib HTTP, no build step): what is being discussed, glossary terms translated, the SAY THIS list, the calls and actions created, and "load more" for earlier lines.
