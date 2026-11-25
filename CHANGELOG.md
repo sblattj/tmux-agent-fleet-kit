@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## v0.5.0 (2026-11-25)
+
+Phone and tablet attach (`fleet remote`), the four desks by default, and fleet-mesh wakes that never type into the decision desk or run stale code after an upgrade.
 
 - fleet-mesh never types into the decision desk pane. Panes whose roster role is in `FLEET_NO_TYPE_ROLES` (default `decide`) get native `SendMessage` from Claude senders, with no typed fallback after `FLEET_NATIVE_GRACE`. Every other wake path leaves a tmux notice and `@fleet_unread`; the inbox line stays the record. Fixes #34.
 - `fleet remote setup|status|qr|off`: attach to the fleet from a phone or tablet over ssh + mosh on ZeroTier, Tailscale or another private overlay. `setup` is idempotent and takes `--pubkey`, `--ip` and `--dry-run`. It writes a key-only sshd drop-in, validated with `sshd -t` and `sshd -T` and rolled back on failure, before sshd is switched on. It also allows the resolved `mosh-server` path in the macOS firewall (with a rerun-after-upgrade warning) and sets `window-size latest`. `qr` prints the Blink/Termius attach command. The docs warn never to expose the tmux socket over raw TCP. Fixes #22.
