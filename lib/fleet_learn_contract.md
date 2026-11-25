@@ -11,11 +11,22 @@ Other lanes call the API below (import `fleet_learn` from `lib/`) or the CLI; th
 $FLEET_STATE/learn/
   ledger.jsonl    append-only rows (below); a later row with the same lid supersedes the earlier one
   cards.jsonl     quiz cards with schedule, rewritten atomically
-  reviews.jsonl   append-only review results: the record
-  proof.json      derived cache per lid; rebuildable from reviews.jsonl + ledger + cards (rebuild_proof())
+  reviews.jsonl   append-only review results: the human's record (kept by rebuild, re-keyed onto new ids)
+  seen.jsonl      append-only {"lid", "at", "status", "via": "lesson|session|digest|page", "topic", "key"}: the
+                  human saw that row's lesson while it had that status; also the human's record, kept by rebuild
+  inputs.jsonl    append-only journal of desk input with no other source: {"verb": "add|confirm|drop", ...}, keyed
+                  by "key" / "target" = "<source type>|<source ref>|<normalized quote>", never by lid. Sync rows
+                  (by sync or watch) are not journaled; they re-derive from their sources
+  archive/<stamp>/  copies of the files above, made by rebuild() before it re-derives; never deleted by the kit
+  proof.json      derived cache per lid; rebuildable from reviews.jsonl + seen.jsonl (rebuild_proof())
   cursors.json    sync cursors {"watch-events": <lines read>, "goals": {lane: "achieved"}}; decisions-log.jsonl is
                   re-read whole each sync (small; idempotent by source ref, so the latest answer per id wins)
-  learn.json      optional config {"scheduler": "fsrs"|"fixed" (default fsrs), "cardFormats": [...], "learn": {"minScore": 1}, "fsrs": {...}}
+  learn.json      optional config {"scheduler": "fsrs"|"fixed" (default fsrs), "cardFormats": [...], "learn": {"minScore": 1}, "fsrs": {...},
+                  "teachFirst": true|false (default true), "briefSelector": {"kind": "command", "run": CMD, "timeoutSec": 20}}
+
+Re-derivable: everything except reviews.jsonl and seen.jsonl comes back from `rebuild()` (sources:
+`$FLEET_STATE/decisions-log.jsonl`, `$FLEET_STATE/watch/events.jsonl`, achieved lanes' goal files from the roster,
+then inputs.jsonl). A row's identity across rebuilds is its key (source type, ref, normalized quote).
   export/         default target of export(): one markdown file per topic
   .lock           flock for id allocation and rewrites
 ```
@@ -42,7 +53,7 @@ refused with `Refused`. `export(to=DIR)` is the one exception: the human may exp
 | field | rule |
 |---|---|
 | `lid` | `L<n>`, allocated by the API under `.lock`; callers never choose it |
-| `kind` | `decision`, `change`, `closed`, `doc`, `lesson` |
+| `kind` | `decision`, `change`, `closed`, `doc`, `shipped` (a goal or ROUTE done line) |
 | `origin` | `fleet` or `outside`; required, never inferred |
 | `status` | `confirmed`, `heard`, `superseded`, `dropped`. `heard` = unconfirmed (a `decided-on-call` row); it becomes `confirmed` only through `confirm()` with a source other than its own, or a sync where a desk answer quotes it |
 | `source` | object, `type` and `ref` required. Types in use: `decisions-log`, `watch`, `goal`, `route-done`, `decide-learn-this`, `manual`. Rows from `decisions-log`, `goal` and `route-done` with no `title` pass `teachable()`: fleet plumbing (lane lifecycle, desk or kit setup, routing, launch or park, tooling) and answerless lines (bare option letters, step names) are skipped by sync and `add`, and their cards retire. `learn: teach` / `learn: skip` in the line, or `"learn"` in the lane's goal file, overrides |
@@ -98,7 +109,17 @@ any item is wrong; `review()` takes that grade as given.
 `{"<lid>": {"learned": bool, "firstSeen": iso, "passes": [{"at", "format", "kind": "generative|checkable"}],
 "lapsedAt": iso|null, "due": iso|null}}`. Learned = a generative pass (recall good/easy) AND a checkable pass
 (choice correct or source verbatim) AND the latest pass at least 24 h after firstSeen AND no lapse since the last
-pass. `rebuild_proof()` recomputes it from `reviews.jsonl`; the cached file must equal the rebuild.
+pass. firstSeen = the earlier of the lid's first review and its first seen.jsonl row with status confirmed (the
+lesson starts the 24 h clock, Q695); only lids with a review get an entry. `rebuild_proof()` recomputes it from
+`reviews.jsonl` and `seen.jsonl`; the cached file must equal the rebuild.
+
+## Lesson first (seen.jsonl)
+
+With `teachFirst` on (the default; `learn.json {"teachFirst": false}` or `FLEET_LEARN_TEACH_FIRST=0` turns it off),
+`due()` returns a card only when its row has a seen row with status confirmed. `lessons_due()` lists live teachable
+rows not yet seen as their current status. `mark_seen()`, `review()` and `quiz()` raise `RoleRefused` (a `Refused`;
+CLI exit 4) under any `FLEET_ROLE`: only the human marks a lesson seen or answers a card. This is a norm, not a
+security boundary.
 
 ## Python API (`lib/fleet_learn.py`)
 
@@ -111,7 +132,7 @@ add_item(*, kind, origin, quote, source, title="", what="", why="", status="conf
 #                                source={"type": "decide-learn-this", "ref": "Q12"}, by="decide")
 # WATCH LEARN-ITEM:     add_learn_item(event) -> dict | None     (event = a watch/events.jsonl row; origin outside;
 #                       dedupes on event eid; quote = event's quote field; returns None for a dupe)
-# ROUTE "done" copy:    add_item(kind="lesson", origin="fleet", quote=<done line>, source={"type": "route-done",
+# ROUTE "done" copy:    add_item(kind="shipped", origin="fleet", quote=<done line>, source={"type": "route-done",
 #                                "ref": <lane>}, by="route")
 confirm(lid, *, source, quote, by="manual") -> dict   # heard -> confirmed
 supersede(lid, *, quote, source, by="sync") -> dict   # new row, old one status superseded
@@ -137,6 +158,14 @@ scheduler() -> fn               # what review() calls, resolved before the revie
 use_scheduler(fn)               # fn(sched: dict, rating: str, now: datetime) -> sched dict; pins it for this process
                                 # (tests); use_scheduler(None) goes back to learn.json
 rebuild_proof() -> dict
+teach_first() -> bool           # learn.json teachFirst (default True); FLEET_LEARN_TEACH_FIRST=0|1 overrides
+exposed() -> set                # lids seen as confirmed
+lessons_due(now=None, topic=None) -> list   # live teachable rows whose lesson is due, oldest first
+mark_seen(lids, via="lesson", topic=None, now=None) -> list   # human only; appends seen.jsonl; newly seen lids
+rebuild(now=None) -> dict       # archive, re-derive from sources + inputs.jsonl, re-key reviews and seen, replay
+                                # card schedules; {"archive", "rows", "cards", "inputsReplayed", "reviewsKept",
+                                # "reviewsLeftOut", "seenKept", "seenLeftOut", ...}
+source_key(row) -> str          # "<type>|<ref>|<normalized quote>": a row's identity across rebuilds
 snapshot(now=None) -> dict      # below; read-only, for the phase 7 page and status lines
 export(to=None) -> list[str]
 ```
@@ -150,6 +179,7 @@ export(to=None) -> list[str]
  "topics": [{"topic": "widget", "origin": "fleet", "items": 3, "learned": 2, "pct": 67}],
  "due": [{"cid": "C88", "lid": "L42", "format": "recall", "prompt": "...", "origin": "fleet"}],
  "heard": [{"lid": "L7", "quote": "...", "source": {...}}],
+ "lessonsDue": [{"lid": "L43", "topic": "widget", "origin": "fleet", "status": "confirmed"}],
  "recent": [{"cid": "C88", "at": "...", "grade": "pass"}]}
 ```
 
@@ -157,6 +187,8 @@ Origins are never blended: no top-level total.
 
 ## CLI (`bin/fleet-learn`, `fleet learn` once the lander adds the dispatch line)
 
-`add`, `list`, `show`, `confirm`, `drop`, `sync`, `due`, `quiz`, `review`, `proof`, `snapshot`, `export`, and
-`serve` (dispatched to `lib/fleet_learn_serve.py` main(argv) before argparse; phase 7). `fleet-learn -h` is the
+`add`, `list`, `show`, `confirm`, `drop`, `sync`, `due`, `quiz`, `review`, `proof`, `snapshot`, `export`,
+`rebuild`, `serve` (dispatched to `lib/fleet_learn_serve.py` main(argv) before argparse; phase 7), and `lesson`,
+`session`, `brief`, `digest` (dispatched to `lib/fleet_learn_lesson.py`). The page adds `GET /api/lessons[?topic=T]`
+(the pane's `lesson()`) and `POST /api/seen {"lids": [...], "topic"}` (`mark_seen(via="page")`). `fleet-learn -h` is the
 reference. `FLEET_LEARN_NOW=<ISO UTC>` pins the clock for every verb.

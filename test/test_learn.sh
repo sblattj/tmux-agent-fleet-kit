@@ -9,6 +9,9 @@ tmp=$(cd "$tmp" && pwd -P)
 trap 'rm -rf "$tmp"' EXIT
 export FLEET_STATE=$tmp/state
 unset FLEET_ROLE FLEET_LEARN_NOW
+# These checks are about cards and the quiz from phases 1 to 7, where a card is due at creation; the lesson-first
+# gate has its own suite (test/test_learn_lesson.py).
+export FLEET_LEARN_TEACH_FIRST=0
 L=$FLEET_STATE/learn
 LED=$L/ledger.jsonl
 fails=0
@@ -129,7 +132,7 @@ EOF
 out=$(jqs "$S2" sync --goal "$tmp/lane-x.goal.json" --lane lane-x 2>&1)
 has "a finished lane's goal file adds its work done[] and decisions[] (2)" "$out" "added 2,"
 has "  its process steps and step names are skipped (2)" "$out" "skipped: plumbing 2"
-expect "goal rows are lessons/decisions with origin fleet and topic = the work subject" bash -c 'FLEET_STATE=$2 "$1" list --json | jq -e "[.[]|select(.source.type==\"goal\")] | length==2 and all(.origin==\"fleet\" and .topic==\"PROJ-1\") and (map(.kind)|sort)==[\"decision\",\"lesson\"]"' _ "$FL" "$S2"
+expect "goal rows are lessons/decisions with origin fleet and topic = the work subject" bash -c 'FLEET_STATE=$2 "$1" list --json | jq -e "[.[]|select(.source.type==\"goal\")] | length==2 and all(.origin==\"fleet\" and .topic==\"PROJ-1\") and (map(.kind)|sort)==[\"decision\",\"shipped\"]"' _ "$FL" "$S2"
 out=$(jqs "$S2" sync --goal "$tmp/lane-x.goal.json" --lane lane-x 2>&1)
 has "  control: the same goal file again adds 0" "$out" "added 0,"
 python3 -I -c 'import json,sys; json.dump({"lane-y":{"name":"lane-y","goalState":"achieved"},"lane-z":{"name":"lane-z","goalState":"active"}}, open(sys.argv[1],"w"))' "$S2/roster.json"
@@ -247,7 +250,7 @@ rc_is "control: a ledger symlinked outside learn/ is refused" $rc 1
 has "control: the refusal says write outside" "$out" "write outside"
 [ "$(cat "$tmp/outside.jsonl")" = "outside" ] && pass "control: the outside file is unchanged" || fail "control: the outside file is unchanged"
 before=$(cd "$S2" && find . -type f -not -path './learn/*' | LC_ALL=C sort | xargs cat | cksum)
-jqs "$S2" sync >/dev/null; jqs "$S2" add --kind lesson --origin fleet --source manual:y --quote "zz top" >/dev/null
+jqs "$S2" sync >/dev/null; jqs "$S2" add --kind shipped --origin fleet --source manual:y --quote "zz top" >/dev/null
 after=$(cd "$S2" && find . -type f -not -path './learn/*' | LC_ALL=C sort | xargs cat | cksum)
 [ "$before" = "$after" ] && pass "sync and add change nothing in FLEET_STATE outside learn/" || fail "sync and add change nothing in FLEET_STATE outside learn/"
 
@@ -452,14 +455,14 @@ has "#24 {\"learn\": \"skip\"} in a goal file skips the whole lane" "$out" "adde
 
 # ---- route-done adds: plumbing refused unless taught
 S23=$tmp/s23
-out=$(jqs "$S23" add --kind lesson --origin fleet --source route-done:kit-pane-slots --quote "route-done: kit-pane-slots parked (goal met). desk panes pinned to slots 0 and 1" 2>&1); rc=$?
+out=$(jqs "$S23" add --kind shipped --origin fleet --source route-done:kit-pane-slots --quote "route-done: kit-pane-slots parked (goal met). desk panes pinned to slots 0 and 1" 2>&1); rc=$?
 rc_is "#23 a plumbing route-done add exits 0" $rc 0
 has "#23 a plumbing route-done add says SKIP" "$out" "SKIP route-done:kit-pane-slots"
 [ ! -s "$S23/learn/ledger.jsonl" ] && pass "#23 the skipped route-done add wrote no row" || fail "#23 the skipped route-done add wrote no row"
-out=$(jqs "$S23" add --kind lesson --origin fleet --source route-done:kit-pane-slots --title "kit-pane-slots done" --quote "route-done: kit-pane-slots parked (goal met). desk panes pinned to slots 0 and 1" 2>&1)
+out=$(jqs "$S23" add --kind shipped --origin fleet --source route-done:kit-pane-slots --title "kit-pane-slots done" --quote "route-done: kit-pane-slots parked (goal met). desk panes pinned to slots 0 and 1" 2>&1)
 has "#24 a title that is not a question does not exempt a plumbing row" "$out" "SKIP route-done:kit-pane-slots"
-expect "#23 --teach keeps it" jqs "$S23" add --kind lesson --origin fleet --source route-done:kit-pane-slots --quote "route-done: kit-pane-slots parked (goal met). desk panes pinned to slots 0 and 1" --teach
-out=$(jqs "$S23" add --kind lesson --origin fleet --source route-done:widget-retry-lane --quote "route-done: widget-retry-lane parked (goal met). acme/widget#9 caps PROJ-7 upload retries at 3" 2>&1)
+expect "#23 --teach keeps it" jqs "$S23" add --kind shipped --origin fleet --source route-done:kit-pane-slots --quote "route-done: kit-pane-slots parked (goal met). desk panes pinned to slots 0 and 1" --teach
+out=$(jqs "$S23" add --kind shipped --origin fleet --source route-done:widget-retry-lane --quote "route-done: widget-retry-lane parked (goal met). acme/widget#9 caps PROJ-7 upload retries at 3" 2>&1)
 has "#24 a work route-done add is added, topic = its subject" "$out" "OK added"
 expect "#24 that row's topic is PROJ-7" bash -c 'FLEET_STATE=$2 "$1" list --json | jq -e "[.[]|select(.source.ref==\"widget-retry-lane\")][0].topic==\"PROJ-7\""' _ "$FL" "$S23"
 
@@ -497,7 +500,7 @@ S25=$tmp/s25; mkdir -p "$S25/learn"
 cat > "$S25/learn/ledger.jsonl" <<'J'
 {"lid":"L1","at":"2026-01-01T00:00:00Z","kind":"decision","origin":"fleet","status":"confirmed","title":"","what":"","why":"","source":{"type":"decisions-log","ref":"Q1"},"quote":"cap PROJ-3 retries at 3, jittered","links":[],"tags":[],"topic":"work-lane","supersedes":null,"by":"sync","confirmedBy":null}
 {"lid":"L2","at":"2026-01-01T00:00:00Z","kind":"decision","origin":"fleet","status":"confirmed","title":"","what":"","why":"","source":{"type":"decisions-log","ref":"Q2"},"quote":"9a","links":[],"tags":[],"topic":"work-lane","supersedes":null,"by":"sync","confirmedBy":null}
-{"lid":"L3","at":"2026-01-01T00:00:00Z","kind":"lesson","origin":"fleet","status":"confirmed","title":"","what":"","why":"","source":{"type":"route-done","ref":"kit-pane-slots"},"quote":"route-done: kit-pane-slots parked (goal met)","links":[],"tags":[],"topic":"kit-pane-slots","supersedes":null,"by":"manual","confirmedBy":null}
+{"lid":"L3","at":"2026-01-01T00:00:00Z","kind":"shipped","origin":"fleet","status":"confirmed","title":"","what":"","why":"","source":{"type":"route-done","ref":"kit-pane-slots"},"quote":"route-done: kit-pane-slots parked (goal met)","links":[],"tags":[],"topic":"kit-pane-slots","supersedes":null,"by":"manual","confirmedBy":null}
 J
 cat > "$S25/learn/cards.jsonl" <<'J'
 {"cid":"C1","lid":"L1","format":"recall","origin":"fleet","prompt":"What did Q1 say about: decisions-log Q1?","answer":"cap PROJ-3 retries at 3, jittered","grounding":{"quote":"cap PROJ-3 retries at 3, jittered","source":"Q1"},"sched":{"due":"2026-01-05T00:00:00Z","fixedStep":2,"reps":2,"lapses":0,"lastReview":"2026-01-02T00:00:00Z"}}

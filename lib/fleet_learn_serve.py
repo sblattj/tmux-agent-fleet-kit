@@ -121,6 +121,21 @@ def answer(cid, text, rating=None, latency_ms=None):
     return {"review": row, "answer": c.get("answer"), "source": (c.get("grounding") or {}).get("source")}
 
 
+def lessons(topic=None):
+    """The Lesson tab: the same lesson() the pane prints (new lessons by default, every live row on a topic)."""
+    import fleet_learn_lesson as fll
+    ls = fll.lesson(topic=topic)
+    return {"lessons": ls, "due": [{"lid": r["lid"], "topic": fl.topic_of(r), "status": r.get("status")}
+                                   for r in fl.lessons_due()]}
+
+
+def seen(lids, topic=None):
+    """The page's "Mark seen" button: fleet_learn.mark_seen(via="page"), the call the pane's Enter key makes."""
+    if not isinstance(lids, list) or not lids or not all(isinstance(x, str) for x in lids):
+        raise fl.Refused("lids must be a non-empty list of row ids")
+    return {"marked": fl.mark_seen(lids, via="page", topic=topic if isinstance(topic, str) else None)}
+
+
 # ---------------------------------------------------------------- web server
 
 def make_handler(token, allowed_hosts):
@@ -167,6 +182,9 @@ def make_handler(token, allowed_hosts):
                     return self._send(200, page, "text/html")
                 if path == "/api/state":
                     return self._send(200, state())
+                if path == "/api/lessons":
+                    q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+                    return self._send(200, lessons((q.get("topic") or [None])[0]))
             except Exception as e:
                 mesh.log("learn-ui %s error: %s" % (path, e))
                 return self._send(500, {"error": str(e)})
@@ -191,12 +209,14 @@ def make_handler(token, allowed_hosts):
                                  latency_ms=body.get("latencyMs"))
                 elif path == "/api/reveal":
                     res = reveal(body.get("cid"))
+                elif path == "/api/seen":
+                    res = seen(body.get("lids"), body.get("topic"))
                 else:
                     return self._send(404, {"error": "not found"})
             except NotDue as e:
                 return self._send(409, {"error": str(e)})
             except fl.Refused as e:
-                return self._send(404 if str(e).startswith("no card") else 400, {"error": str(e)})
+                return self._send(404 if str(e).startswith(("no card", "no row")) else 400, {"error": str(e)})
             except Exception as e:
                 mesh.log("learn-ui %s error: %s" % (path, e))
                 return self._send(500, {"error": str(e)})

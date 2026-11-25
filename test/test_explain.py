@@ -8,6 +8,9 @@ import importlib.util
 import io
 import json
 import os
+
+# Card and quiz checks from before the lesson-first gate: cards are due at creation here.
+os.environ["FLEET_LEARN_TEACH_FIRST"] = "0"
 import shlex
 import shutil
 import sys

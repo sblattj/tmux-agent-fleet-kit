@@ -46,6 +46,11 @@
   .pass { color:var(--ok); font-weight:700; } .fail { color:var(--bad); font-weight:700; }
   .empty { color:var(--dim); padding:14px 0; }
   .err { color:var(--bad); }
+  .tabs { display:flex; gap:6px; margin:14px 0 4px; }
+  .tabs button.on { border-color:var(--ok); color:var(--ok); }
+  .lline { margin:6px 0; } .lline .src { color:var(--dim); font-size:13px; }
+  .undecided { color:var(--bad); font-weight:700; }
+  svg.tree text { fill:var(--fg); font-size:12px; } svg.tree line { stroke:var(--line); }
   @media (max-width:700px) { .grid { grid-template-columns:1fr; } }
 </style>
 </head>
@@ -57,6 +62,12 @@
   <button id="reload">Reload</button>
 </header>
 <main>
+  <nav class="tabs"><button id="tab-lesson">Lesson</button><button id="tab-quiz">Quiz and scores</button></nav>
+  <section id="pane-lesson">
+  <h2>Lesson</h2>
+  <div id="lesson"></div>
+  </section>
+  <section id="pane-quiz">
   <div class="grid" id="origins"></div>
 
   <h2>Quiz</h2>
@@ -70,6 +81,7 @@
 
   <h2>Recent reviews</h2>
   <div class="card"><table id="recent"></table></div>
+  </section>
 </main>
 <script>
 "use strict";
@@ -92,7 +104,7 @@ function originTag(o) { return el("span", { class: "origin o-" + (o === "outside
 const ORIGIN_TEXT = { fleet: "we decided or shipped it", outside: "someone else changed it" };
 
 async function api(path, body) {
-  const r = await fetch(path + (body ? "" : "?t=" + encodeURIComponent(TOKEN)), {
+  const r = await fetch(path + (body ? "" : (path.includes("?") ? "&" : "?") + "t=" + encodeURIComponent(TOKEN)), {
     method: body ? "POST" : "GET", headers: { "X-Fleet-Token": TOKEN, "Content-Type": "application/json" },
     body: body ? JSON.stringify(body) : undefined });
   const j = await r.json().catch(() => ({}));
@@ -234,6 +246,65 @@ function renderQuiz() {
   box.appendChild(card);
 }
 
+// ------------------------------------------------ Lesson tab: GET /api/lessons, POST /api/seen (mark_seen, via page)
+function treeSvg(t) {
+  // deterministic: one row per node, indented by depth, the same tree the pane prints as text
+  const ns = "http://www.w3.org/2000/svg", rows = [];
+  (function walk(n, d) { rows.push([n, d]); (n.children || []).forEach(k => walk(k, d + 1)); })(t, 0);
+  const H = 20, W = 520, svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("class", "tree"); svg.setAttribute("width", W); svg.setAttribute("height", rows.length * H + 6);
+  rows.forEach(([n, d], i) => {
+    if (d > 0) {
+      const ln = document.createElementNS(ns, "line");
+      ln.setAttribute("x1", 8 + (d - 1) * 18); ln.setAttribute("x2", 4 + d * 18);
+      ln.setAttribute("y1", i * H + 14); ln.setAttribute("y2", i * H + 14); svg.appendChild(ln);
+    }
+    const tx = document.createElementNS(ns, "text");
+    tx.setAttribute("x", 8 + d * 18); tx.setAttribute("y", i * H + 18);
+    tx.textContent = n.label + (n.new ? "  [new]" : "") + (n.status === "heard" ? "  (not decided yet)" : "");
+    svg.appendChild(tx);
+  });
+  return svg;
+}
+function srcLine(x) { return el("div", { class: "src", text: "quote: \u201c" + x.quote + "\u201d  source: " + x.source }); }
+async function loadLesson(topic) {
+  const box = document.getElementById("lesson"); clear(box);
+  let L;
+  try { L = await api("/api/lessons" + (topic ? "?topic=" + encodeURIComponent(topic) : "")); }
+  catch (e) { box.appendChild(el("div", { class: "err", text: e.message })); return; }
+  if (!L.lessons.length) { box.appendChild(el("div", { class: "empty", text: "No lesson due. Cards for seen lessons are in the quiz." })); return; }
+  for (const ls of L.lessons) {
+    const card = el("div", { class: "card" }, el("h2", { text: ls.topic + "  (" + ls.new + " new)" }), treeSvg(ls.tree));
+    card.appendChild(el("h3", { text: "1. Terms" }));
+    ls.rows.forEach(x => card.appendChild(el("div", { class: "lline" }, el("b", { text: x.lid + " " + x.term }), " means: " + (x.definition || "(no definition yet; the quote is the lesson)"), srcLine(x))));
+    card.appendChild(el("h3", { text: "2. In context" }));
+    ls.rows.forEach(x => card.appendChild(el("div", { class: "lline" }, originTag(x.origin), " " + x.kind + ": \u201c" + x.quote + "\u201d", srcLine(x))));
+    const why = ls.rows.filter(x => x.why);
+    if (why.length) { card.appendChild(el("h3", { text: "3. Why" })); why.forEach(x => card.appendChild(el("div", { class: "lline" }, x.lid + " " + x.why, srcLine(x)))); }
+    if (ls.heard.length) {
+      card.appendChild(el("h3", { class: "undecided", text: "Not decided yet" }));
+      ls.heard.forEach(x => card.appendChild(el("div", { class: "lline" }, el("span", { class: "undecided", text: "not decided yet " }), "\u201c" + x.quote + "\u201d", srcLine(x))));
+    }
+    const lids = ls.rows.concat(ls.heard).map(x => x.lid);
+    const out = el("div", { class: "status" });
+    const b = el("button", { text: "Mark seen and quiz this topic", onclick: () => {
+      b.disabled = true;
+      api("/api/seen", { lids, topic: ls.topic }).then(r => { out.textContent = r.marked.length + " marked seen"; load(); show("quiz"); })
+        .catch(e => { b.disabled = false; out.appendChild(el("div", { class: "err", text: e.message })); });
+    } });
+    card.appendChild(el("div", { class: "row" }, b)); card.appendChild(out);
+    box.appendChild(card);
+  }
+}
+function show(which) {
+  for (const k of ["lesson", "quiz"]) {
+    document.getElementById("pane-" + k).style.display = k === which ? "" : "none";
+    document.getElementById("tab-" + k).className = k === which ? "on" : "";
+  }
+}
+document.getElementById("tab-lesson").addEventListener("click", () => { show("lesson"); loadLesson(); });
+document.getElementById("tab-quiz").addEventListener("click", () => show("quiz"));
+
 async function load() {
   try {
     STATE = await api("/api/state");
@@ -244,8 +315,8 @@ async function load() {
     document.getElementById("meta").textContent = "error: " + e.message;
   }
 }
-document.getElementById("reload").addEventListener("click", () => load());
-load();
+document.getElementById("reload").addEventListener("click", () => { load(); loadLesson(); });
+load(); loadLesson(); show("lesson");
 </script>
 </body>
 </html>

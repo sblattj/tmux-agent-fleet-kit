@@ -21,7 +21,19 @@ Python 3.8+ stdlib only. Writes only under $FLEET_STATE/learn/ (export --to DIR 
   fleet learn snapshot                             snapshot() as JSON
   fleet learn export [--to DIR]                    markdown, one file per topic (default $FLEET_STATE/learn/export)
   fleet learn serve [--port P] [--bind 127.0.0.1] [--open]   the phase 7 page (lib/fleet_learn_serve.py, when present)
+  fleet learn lesson [--topic T | --lid L] [--yes] [--json]   the lesson before the quiz: terms, then use in context,
+                                                   then why; every line has its quote and source; heard rows show as
+                                                   "not decided yet". Enter (or --yes) marks it seen: its cards come
+                                                   due and the 24 h proof clock starts (lib/fleet_learn_lesson.py)
+  fleet learn session --topic T [--max N] [--yes]  lesson on T, a quiz on only T's cards, then one result line
+  fleet learn brief --for TEXT [--max N] [--json]  meeting prep: rows for TEXT, picked by learn.json briefSelector
+                                                   (a command) or the built-in fallback; marks nothing seen
+  fleet learn digest [--since ISO|24h|7d|last] [--all] [--json]   lessons for rows new to you since then
+  fleet learn rebuild [--json]                     re-derive ledger and cards from sources plus inputs.jsonl; old files
+                                                   go to learn/archive/<stamp>/; reviews and seen are kept, re-keyed
 
+Teach first: a new row is due as a lesson; its cards come due only after its lesson is seen (learn.json
+{"teachFirst": false} turns that off; FLEET_LEARN_TEACH_FIRST=0|1 overrides it, for tests). lesson/session marking, quiz and review refuse a FLEET_ROLE (exit 4).
 Clock: FLEET_LEARN_NOW=<ISO-8601 UTC> pins "now" (tests). Failure prints "FAIL <reason>" to stderr and exits 1;
 usage errors exit 2.
 """
@@ -40,7 +52,7 @@ sys.path.insert(0, HERE)
 import fleet_mesh as mesh  # noqa: E402
 
 ORIGINS = ("fleet", "outside")
-KINDS = ("decision", "change", "closed", "doc", "lesson")
+KINDS = ("decision", "change", "closed", "doc", "shipped")  # shipped: a goal done line (was "lesson", Q694)
 STATUSES = ("confirmed", "heard", "superseded", "dropped")
 LIVE = ("confirmed", "heard")
 ROUTED_KINDS = ("ask", "task-candidate", "fyi")  # lib/fleet_watch_contract.py KINDS
@@ -56,6 +68,16 @@ CID_RE = re.compile(r"^C[0-9]+$")
 
 class Refused(Exception):
     pass
+
+
+class RoleRefused(Refused):
+    """A verb only the human may run was called under a FLEET_ROLE (the CLI exits 4, as `serve` does)."""
+
+
+def human_only(verb):
+    role = os.environ.get("FLEET_ROLE") or ""
+    if role:
+        raise RoleRefused("role %s can't %s: only the human marks lessons seen and answers cards" % (role, verb))
 
 
 # ---------------------------------------------------------------- clock
@@ -253,6 +275,31 @@ def _next_id(prefix, rows, key):
     return "%s%d" % (prefix, n + 1)
 
 
+# ---------------------------------------------------------------- inputs journal (Q694: re-derivable from sources)
+# Sync rows come from sources outside learn/ (decisions-log.jsonl, watch/events.jsonl, goal files) and are rebuilt
+# from them. A desk's own input (fleet learn add / confirm / drop, DECIDE "learn this", ROUTE "done" lines) has no
+# other source, so each call is journaled to inputs.jsonl as it is made, keyed by the row's source and quote (never
+# by lid, which a rebuild re-allocates). rebuild() replays it after the sync.
+
+DERIVED_BY = ("sync", "watch")
+_REPLAY = [False]
+
+
+def source_key(r):
+    s = r.get("source") or {}
+    return "%s|%s|%s" % (s.get("type"), s.get("ref"), _norm(r.get("quote")))
+
+
+def _journal(verb, row):
+    if _REPLAY[0]:
+        return
+    _append("inputs.jsonl", dict(row, verb=verb))
+
+
+def inputs():
+    return mesh._parse_lines(_p("inputs.jsonl"))
+
+
 def add_item(kind, origin, quote, source, title="", what="", why="", status="confirmed", links=None, tags=None,
              topic=None, by="manual", supersedes=None, now=None):
     """Append a new ledger row and return it. Refuses a row with no quote, no source, or a bad origin/kind/status."""
@@ -271,7 +318,12 @@ def add_item(kind, origin, quote, source, title="", what="", why="", status="con
                "quote": quote, "links": list(links or []), "tags": tags,
                "topic": topic or (tags[0] if tags else str(source.get("ref"))), "supersedes": supersedes,
                "by": by, "confirmedBy": None}
-        return _append("ledger.jsonl", row)
+        _append("ledger.jsonl", row)
+    if by not in DERIVED_BY and supersedes is None:
+        _journal("add", {"at": row["at"], "kind": kind, "origin": origin, "quote": quote, "source": source,
+                         "title": row["title"], "what": row["what"], "why": row["why"], "status": status,
+                         "links": row["links"], "tags": tags, "topic": topic, "by": by})
+    return row
 
 
 def confirm(lid, source, quote, by="manual", now=None):
@@ -283,6 +335,9 @@ def confirm(lid, source, quote, by="manual", now=None):
     own = (r.get("source") or {})
     if (str(source.get("type")), str(source.get("ref"))) == (str(own.get("type")), str(own.get("ref"))):
         raise Refused("the confirming source must differ from the row's own heard source")
+    if by not in DERIVED_BY:
+        _journal("confirm", {"at": _iso(_now(now)), "target": source_key(r), "source": source, "quote": quote,
+                             "by": by})
     return _append("ledger.jsonl", dict(r, at=_iso(_now(now)), status="confirmed", by=by,
                                         confirmedBy={"source": source, "quote": quote}))
 
@@ -317,6 +372,7 @@ def drop(lid, reason, now=None):
     if r.get("status") not in LIVE:
         raise Refused("%s is already %s" % (lid, r.get("status")))
     row = _append("ledger.jsonl", dict(r, at=_iso(_now(now)), status="dropped", dropReason=reason, by="manual"))
+    _journal("drop", {"at": row["at"], "target": source_key(r), "reason": reason})
     _retire_cards(lid)
     return row
 
@@ -658,7 +714,7 @@ def _goal_text(d):
 
 
 def sync_goal(path, lane, now=None, res=None):
-    """done[] and decisions[] of one finished lane's goal file -> fleet rows (lesson / decision). Returns new lids.
+    """done[] and decisions[] of one finished lane's goal file -> fleet rows (shipped / decision). Returns new lids.
     Plumbing lanes, process-evidence steps and answerless lines are skipped (into res["skipped"] when given);
     {"learn": "teach"|"skip"} in the goal file, or "learn: teach|skip" in a line, overrides."""
     try:
@@ -670,7 +726,7 @@ def sync_goal(path, lane, now=None, res=None):
     have, out = _by_source(), []
     lane_ov = _goal_override(g)
     gsubj = subjects(g.get("goal") if isinstance(g.get("goal"), str) else "")
-    for field, kind in (("done", "lesson"), ("decisions", "decision")):
+    for field, kind in (("done", "shipped"), ("decisions", "decision")):
         for i, d in enumerate(g.get(field) or []):
             text = _goal_text(d)
             ref = "%s:%s[%d]" % (lane, field, i)
@@ -742,10 +798,10 @@ def _label(r):
 
 
 _ASK = {"decision": "What was decided about %s?", "change": "What changed in %s?", "closed": "Why was %s closed?",
-        "doc": "What changed in the %s doc?", "lesson": "What did we learn from %s?"}
+        "doc": "What changed in the %s doc?", "shipped": "What shipped in %s?"}
 _ASK_PLAIN = {"decision": "What was decided here, and why?", "change": "What changed here?",
               "closed": "What was closed here, and why?", "doc": "What changed in this doc?",
-              "lesson": "What did we learn here?"}
+              "shipped": "What shipped here?"}
 
 
 def card_prompt(r):
@@ -933,10 +989,77 @@ def _idnum(i):
     return int(i[1:]) if isinstance(i, str) and i[1:].isdigit() else -1
 
 
+# ---------------------------------------------------------------- lessons before cards (seen.jsonl)
+# A new row is due as a lesson first; its cards come due only once the human has seen that lesson while the row was
+# confirmed. seen.jsonl is append-only and, like reviews.jsonl, is the human's own record: rebuild() keeps it.
+# learn.json {"teachFirst": false} turns the gate off (cards due at creation, the phase 3 behaviour).
+
+def teach_first():
+    env = os.environ.get("FLEET_LEARN_TEACH_FIRST")
+    if env in ("0", "1"):
+        return env == "1"
+    cfg = _read_json("learn.json", {})
+    v = cfg.get("teachFirst") if isinstance(cfg, dict) else None
+    return v is not False
+
+
+def seen_rows(lid=None):
+    return [r for r in mesh._parse_lines(_p("seen.jsonl")) if lid is None or r.get("lid") == lid]
+
+
+def exposed():
+    """lids whose lesson the human saw while the row was confirmed: their cards may come due."""
+    return {r.get("lid") for r in seen_rows() if r.get("status") == "confirmed"}
+
+
+def _seen_as():
+    out = {}
+    for r in seen_rows():
+        out.setdefault(r.get("lid"), set()).add(r.get("status"))
+    return out
+
+
+def lessons_due(now=None, topic=None):
+    """Live, teachable rows whose lesson is due: never seen as their current status (a heard row seen as "not
+    decided yet" and later confirmed is due again, as decided). Oldest first."""
+    seen = _seen_as()
+    out = [r for r in items() if r.get("status") not in seen.get(r["lid"], set())
+           and teachable(r)[0] == "teach" and (topic is None or on_topic(r, topic))]
+    out.sort(key=lambda r: _idnum(r["lid"]))
+    return out
+
+
+def mark_seen(lids, via="lesson", topic=None, now=None):
+    """Record that the human saw these rows' lessons (human only: pane, page and digest all call this). A row
+    already seen as its current status is not recorded again. Returns the lids newly recorded."""
+    human_only("mark a lesson seen")
+    if via not in ("lesson", "session", "digest", "page"):
+        raise Refused("via must be lesson, session, digest or page")
+    now = _now(now)
+    have = _seen_as()
+    out = []
+    with _Lock():
+        for lid in lids:
+            r = item(lid)
+            if r.get("status") not in LIVE:
+                raise Refused("%s is %s; only a live row's lesson can be seen" % (lid, r.get("status")))
+            if r.get("status") in have.get(lid, set()) or lid in out:
+                continue
+            _append("seen.jsonl", {"lid": lid, "at": _iso(now), "status": r["status"], "via": via,
+                                   "topic": topic or topic_of(r), "key": source_key(r)})
+            out.append(lid)
+    if out:
+        write_proof()
+    return out
+
+
 def due(now=None, topic=None):
-    """Cards due now, oldest due first; topic narrows to rows on_topic() (a ticket, PR, release or topic name)."""
+    """Cards due now, oldest due first; topic narrows to rows on_topic() (a ticket, PR, release or topic name).
+    With teachFirst (the default) only cards whose row's lesson was seen come due."""
     now = _now(now)
     live = {r["lid"] for r in items(status="confirmed") if topic is None or on_topic(r, topic)}
+    if teach_first():
+        live &= exposed()
     out = [c for c in _cards() if not c.get("retired") and c.get("lid") in live
            and (_parse_ts((c.get("sched") or {}).get("due")) or now) <= now]
     out.sort(key=lambda c: ((c.get("sched") or {}).get("due") or "", _idnum(c["cid"])))
@@ -965,7 +1088,9 @@ def _choice_pick(c, answer):
 
 
 def review(cid, answer, rating=None, now=None, grade=None, gradedBy=None, detail=None, latencyMs=None):
-    """Grade one answer, append reviews.jsonl, reschedule the card, refresh proof.json. Returns the review row."""
+    """Grade one answer, append reviews.jsonl, reschedule the card, refresh proof.json. Returns the review row.
+    Human only: a lane answering cards would fake proof of learning."""
+    human_only("answer a LEARN card")
     now = _now(now)
     c = card(cid)
     if c.get("retired"):
@@ -992,7 +1117,7 @@ def review(cid, answer, rating=None, now=None, grade=None, gradedBy=None, detail
         rating = "good" if g == "pass" else "again"
     elif rating not in RATINGS:
         raise Refused("rating must be again|hard|good|easy")
-    row = {"cid": cid, "lid": c["lid"], "at": _iso(now), "format": fmt, "answer": answer or "", "grade": g,
+    row = {"cid": cid, "lid": c["lid"], "key": source_key(r), "at": _iso(now), "format": fmt, "answer": answer or "", "grade": g,
            "rating": rating, "gradedBy": by, "latencyMs": latencyMs, "quoteChecked": checked, "origin": c.get("origin")}
     if detail is not None:
         row["detail"] = detail
@@ -1015,14 +1140,19 @@ def reviews(lid=None):
 
 
 def rebuild_proof():
-    """Per lid from reviews.jsonl alone (due comes from cards.jsonl): learned = a generative pass and a checkable
-    pass, the latest pass at least 24 h after first exposure, and no failed review since the last pass."""
+    """Per lid from reviews.jsonl (due comes from cards.jsonl): learned = a generative pass and a checkable pass,
+    the latest pass at least 24 h after first exposure, and no failed review since the last pass. First exposure
+    is the earlier of the first review and the first time the lesson was seen as confirmed (seen.jsonl)."""
     by = {}
     for rv in mesh._parse_lines(_p("reviews.jsonl")):
         lid, at = rv.get("lid"), _parse_ts(rv.get("at"))
         if not lid or not at:
             continue
         by.setdefault(lid, []).append((at, rv))
+    seen_at = {}
+    for sr in seen_rows():
+        if sr.get("status") == "confirmed":
+            seen_at.setdefault(sr.get("lid"), []).append(_parse_ts(sr.get("at")))
     dues = {}
     for c in _cards():
         if c.get("retired"):
@@ -1033,7 +1163,7 @@ def rebuild_proof():
     out = {}
     for lid in sorted(by, key=lambda k: int(k[1:]) if k[1:].isdigit() else 0):
         revs = sorted(by[lid], key=lambda t: t[0])
-        first = revs[0][0]
+        first = min([revs[0][0]] + [t for t in seen_at.get(lid, []) if t])
         passes = [{"at": _iso(at), "format": rv.get("format"),
                    "kind": "generative" if rv.get("format") in GENERATIVE else "checkable"}
                   for at, rv in revs if rv.get("grade") == "pass"]
@@ -1090,6 +1220,8 @@ def snapshot(now=None):
                      "origin": c.get("origin")} for c in ds],
             "heard": [{"lid": r["lid"], "quote": r["quote"], "source": r.get("source")} for r in rows
                       if r["status"] == "heard"],
+            "lessonsDue": [{"lid": r["lid"], "topic": topic_of(r), "origin": r.get("origin"),
+                            "status": r.get("status")} for r in (lessons_due(now) if teach_first() else [])],
             "recent": recent}
 
 
@@ -1138,6 +1270,129 @@ def export(to=None):
     return written
 
 
+# ---------------------------------------------------------------- rebuild from sources (Q694)
+
+DERIVED_FILES = ("ledger.jsonl", "cards.jsonl", "proof.json", "cursors.json")
+HUMAN_FILES = ("reviews.jsonl", "seen.jsonl")
+
+
+def rebuild(now=None):
+    """Re-derive everything LEARN holds from its sources: decisions-log.jsonl, WATCH events, achieved lanes' goal
+    files, then the inputs journal (desk add / confirm / drop). The old files are copied to archive/<stamp>/ first,
+    never deleted. The human's own record (reviews.jsonl, seen.jsonl) is kept and re-keyed onto the new ids by each
+    row's source and quote; a review or seen row whose row no longer derives is left out of the live file (it stays
+    in the archive) and counted. Card schedules are replayed from the kept reviews. Returns a report."""
+    now = _now(now)
+    import shutil
+    stamp = _iso(now).replace(":", "").replace("-", "")
+    arch = os.path.join(learn_dir(), "archive", stamp)
+    n = 1
+    while os.path.exists(arch):
+        n += 1
+        arch = os.path.join(learn_dir(), "archive", "%s-%d" % (stamp, n))
+    _guard(os.path.join(arch, "x"))
+    os.makedirs(arch)
+    old_rows = _rows()
+    old_cards = _cards()
+    old_reviews = mesh._parse_lines(_p("reviews.jsonl"))
+    old_seen = seen_rows()
+    for name in DERIVED_FILES + HUMAN_FILES + ("inputs.jsonl",):
+        if os.path.exists(_p(name)):
+            shutil.copy2(_p(name), os.path.join(arch, name))
+    keep = _read_json("cursors.json", {})
+    old_key = {}
+    for r in old_rows:
+        if isinstance(r.get("lid"), str):
+            old_key[r["lid"]] = source_key(r)
+    old_card = {c.get("cid"): (c.get("lid"), c.get("format")) for c in old_cards}
+    for name in DERIVED_FILES + HUMAN_FILES:
+        if os.path.exists(_p(name)):
+            os.remove(_guard(_p(name)))
+    if isinstance(keep, dict) and keep.get("digest"):
+        _write("cursors.json", json.dumps({"digest": keep["digest"]}, indent=1, sort_keys=True) + "\n")
+    res = sync(now)
+    _REPLAY[0] = True
+    replayed, unplayed = 0, 0
+    try:
+        for j in inputs():
+            try:
+                _replay(j, now)
+                replayed += 1
+            except Refused:
+                unplayed += 1
+    finally:
+        _REPLAY[0] = False
+    make_cards(now)
+    rows = items()
+    new_lid = {source_key(r): r["lid"] for r in rows}
+    new_card = {(c.get("lid"), c.get("format")): c["cid"] for c in _cards() if not c.get("retired")}
+    kept_rv, lost_rv = [], 0
+    for rv in old_reviews:
+        key = rv.get("key") or old_key.get(rv.get("lid"))
+        lid = new_lid.get(key)
+        fmt = old_card.get(rv.get("cid"), (None, rv.get("format")))[1] or rv.get("format")
+        cid = new_card.get((lid, fmt))
+        if not lid or not cid:
+            lost_rv += 1
+            continue
+        kept_rv.append(dict(rv, lid=lid, cid=cid, key=key))
+    kept_seen, lost_seen = [], 0
+    for sr in old_seen:
+        key = sr.get("key") or old_key.get(sr.get("lid"))
+        lid = new_lid.get(key)
+        if not lid:
+            lost_seen += 1
+            continue
+        kept_seen.append(dict(sr, lid=lid, key=key))
+    _write("reviews.jsonl", "".join(json.dumps(r, sort_keys=True) + "\n" for r in kept_rv))
+    _write("seen.jsonl", "".join(json.dumps(r, sort_keys=True) + "\n" for r in kept_seen))
+    if kept_rv:
+        sched_fn = scheduler()
+        with _Lock():
+            cs = _cards()
+            by_cid = {}
+            for rv in sorted(kept_rv, key=lambda r: r.get("at") or ""):
+                by_cid.setdefault(rv["cid"], []).append(rv)
+            for c in cs:
+                for rv in by_cid.get(c["cid"], []):
+                    c["sched"] = sched_fn(c.get("sched") or {}, rv.get("rating") or "again",
+                                          _parse_ts(rv.get("at")) or now)
+            _save_cards(cs)
+    write_proof()
+    return {"archive": arch, "rows": len(rows), "cards": len([c for c in _cards() if not c.get("retired")]),
+            "synced": len(res.get("added") or []), "inputsReplayed": replayed, "inputsNotReplayed": unplayed,
+            "reviewsKept": len(kept_rv), "reviewsLeftOut": lost_rv, "seenKept": len(kept_seen),
+            "seenLeftOut": lost_seen}
+
+
+def _by_key(key):
+    for r in items():
+        if source_key(r) == key:
+            return r
+    raise Refused("no live row for %s" % key)
+
+
+def _replay(j, now):
+    at = _parse_ts(j.get("at")) or now
+    v = j.get("verb")
+    if v == "add":
+        try:
+            _by_key("%s|%s|%s" % ((j.get("source") or {}).get("type"), (j.get("source") or {}).get("ref"),
+                                  _norm(j.get("quote"))))
+            return  # already derived (a sync row with the same source and quote)
+        except Refused:
+            pass
+        add_item(j["kind"], j["origin"], j["quote"], j["source"], title=j.get("title"), what=j.get("what"),
+                 why=j.get("why"), status=j.get("status") or "confirmed", links=j.get("links"), tags=j.get("tags"),
+                 topic=j.get("topic"), by=j.get("by") or "manual", now=at)
+    elif v == "confirm":
+        confirm(_by_key(j["target"])["lid"], j["source"], j["quote"], by=j.get("by") or "manual", now=at)
+    elif v == "drop":
+        drop(_by_key(j["target"])["lid"], j["reason"], now=at)
+    else:
+        raise Refused("unknown journal verb %r" % v)
+
+
 # ---------------------------------------------------------------- quiz TUI
 
 def _where(c):
@@ -1152,6 +1407,7 @@ def _where(c):
 def quiz(inp=None, out=None, max_cards=30, now=None, topic=None):
     """Deterministic terminal quiz over due cards; reads one line per answer. Returns the review rows.
     The prompt never names the source; the source quote and where it came from show after grading."""
+    human_only("take a LEARN quiz")
     inp, out = inp or sys.stdin, out or sys.stdout
     done = []
 
@@ -1166,6 +1422,10 @@ def quiz(inp=None, out=None, max_cards=30, now=None, topic=None):
     cards_due = due(now, topic=topic)[:max_cards]
     if not cards_due:
         out.write("nothing due%s. %s\n" % (" on topic %s" % topic if topic else "", _status_line(now)))
+        ld = lessons_due(now, topic=topic) if teach_first() else []
+        if ld:
+            out.write("%d lesson(s) to read first: fleet learn lesson%s\n" % (
+                len(ld), " --topic %s" % topic if topic else ""))
         return done
     out.write("%d card(s) due. Answer, or q to stop.\n" % len(cards_due))
     try:
@@ -1244,6 +1504,9 @@ def main(argv=None):
     if not argv or argv[0] in ("-h", "--help", "help"):
         sys.stdout.write(_help())
         return 0 if argv else 2
+    if argv[0] in ("lesson", "session", "brief", "digest"):
+        import fleet_learn_lesson
+        return fleet_learn_lesson.main(argv)
     if argv[0] == "serve":
         try:
             import fleet_learn_serve
@@ -1298,6 +1561,8 @@ def main(argv=None):
     sp.add_parser("snapshot")
     ex = sp.add_parser("export")
     ex.add_argument("--to")
+    rb = sp.add_parser("rebuild")
+    rb.add_argument("--json", action="store_true")
     args = p.parse_args(argv)
     try:
         if args.cmd == "add":
@@ -1391,12 +1656,25 @@ def main(argv=None):
             print(json.dumps(pf, indent=1, sort_keys=True))
         elif args.cmd == "snapshot":
             print(json.dumps(snapshot(), indent=1, sort_keys=True))
+        elif args.cmd == "rebuild":
+            res = rebuild()
+            if args.json:
+                print(json.dumps(res, indent=1, sort_keys=True))
+            else:
+                print("OK rebuild: %d row(s), %d card(s) from sources; journal %d replayed, %d not; reviews %d kept, "
+                      "%d left out; seen %d kept, %d left out; old files in %s" % (
+                          res["rows"], res["cards"], res["inputsReplayed"], res["inputsNotReplayed"],
+                          res["reviewsKept"], res["reviewsLeftOut"], res["seenKept"], res["seenLeftOut"],
+                          res["archive"]))
         elif args.cmd == "export":
             for w in export(args.to):
                 print("OK wrote %s" % w)
         else:
             sys.stdout.write(_help())
             return 2
+    except RoleRefused as e:
+        sys.stderr.write("FAIL %s\n" % e)
+        return 4
     except Refused as e:
         sys.stderr.write("FAIL %s\n" % e)
         return 1

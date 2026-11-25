@@ -112,8 +112,25 @@ The launcher warns once and launches without the role when the Codex profile, Op
 - `fleet learn quiz` runs recall (self-rated), multiple choice (distractors are other ledger rows, never
   invented) and source check (paste a verbatim line) on FSRS intervals (`"scheduler": "fixed"` in `learn/learn.json` keeps 1/3/7/21 days). Explain back and
   apply cards are graded by an optional `command` grader in `learn.json`, else self-graded.
-- An item is learned only with a recall pass and a checkable pass, the latest at least 24 h after the first
-  review, and no fail since. `fleet learn proof --check` rebuilds proof.json from reviews.jsonl and compares.
+- **Lesson first.** A new item is due as a lesson, and its cards come due only after the human has seen it.
+  `fleet learn lesson [--topic T]` prints terms (the work subject and its definition), then how each is used in
+  context, then why, and heard items under "Not decided yet". Every line carries the verbatim quote and its source;
+  a `what` or `why` not backed by the quote is left out. Enter (or `--yes`) marks it seen. `fleet learn session
+  --topic T` is the lesson, a quiz on only T's cards and a one-line result. `learn.json {"teachFirst": false}`
+  turns the gate off.
+- `fleet learn brief --for "<meeting, person or ticket>"` is meeting prep: the rows that matter for it, as lesson
+  lines. A `briefSelector` command in `learn.json` picks them (JSON on stdin, one row id per line back, bounded by
+  `timeoutSec`); with none, or when it fails, rows on the topic, then rows sharing words, then the most recent.
+  `fleet learn digest --since 24h|7d|ISO|last` teaches the rows new to you since then.
+- Only the human marks a lesson seen or answers a card: `lesson` and `digest` under a `FLEET_ROLE` print a preview,
+  and `session`, `quiz` and `review` exit 4. Take them from a shell with no `FLEET_ROLE`, or on the page.
+- An item is learned only with a recall pass and a checkable pass, the latest at least 24 h after first exposure
+  (the lesson being seen, or the first review if earlier), and no fail since. `fleet learn proof --check` rebuilds
+  proof.json from reviews.jsonl and seen.jsonl and compares.
+- Everything in `learn/` except the human's own record (reviews.jsonl, seen.jsonl) re-derives from sources.
+  `fleet learn rebuild` copies the old files to `learn/archive/<stamp>/`, re-syncs from decisions-log.jsonl, WATCH
+  events and achieved goal files, replays `inputs.jsonl` (the desks' own add, confirm and drop calls), and re-keys
+  reviews and seen lessons onto the new ids by source and quote.
 - `fleet learn snapshot` gives counts per origin, never one blended total. `fleet learn export` writes one
   markdown file per topic.
 
@@ -227,7 +244,9 @@ Config `$FLEET_STATE/decisions-ui.json` (all optional):
 `fleet learn serve` is the web front end on the LEARN desk (phase 7): proof per origin, never blended ("fleet: 2 of 3
 learned", "outside: 0 of 2"), score history per topic (one point per day with reviews: passes over reviews, as a
 sparkline per topic and origin), the heard-only rows that are never taught as decided, the last 20 reviews, and the
-same quiz as `fleet learn quiz`. It reads `fleet_learn.snapshot()` and `reviews()`, and answers through
+same quiz as `fleet learn quiz`. A **Lesson** tab (the default) shows the lessons due, the same lines as
+`fleet learn lesson` with a tree of each topic drawn as an SVG, and "Mark seen and quiz this topic", which calls
+`mark_seen()` like the pane's Enter key (`GET /api/lessons`, `POST /api/seen`). It reads `fleet_learn.snapshot()` and `reviews()`, and answers through
 `fleet_learn.review()`, the verb the terminal quiz calls, so an answer in the page and one in the TUI end in the same
 state (tested: reviews, card schedules, `proof.json` and the snapshot compared, with a control that must differ).
 
@@ -317,6 +336,7 @@ python3 -m unittest test/test_contracts.py   # four-desks contracts (WATCH, prob
 bash test/test_learn.sh       # fleet learn: ledger, sync, quiz, 24 h proof with an injected clock, export
 python3 -m unittest test.test_fsrs test.test_explain   # FSRS against py-fsrs reference values; explain back grader
 python3 -m unittest test/test_learn_serve.py   # LEARN page: token/loopback, page answer == TUI answer, score history per topic
+python3 -m unittest test/test_learn_lesson.py  # lesson first: lesson, session, brief, digest, rebuild, Lesson tab, proof clock, role guard
 python3 -m unittest test/test_watch.py   # WATCH engine: replay counts, scrub, dedupe, filters, quiet hours, literal-credential refusal
 python3 -m unittest test/test_watch_rate.py   # WATCH per-source token bucket: wait, defer, X-RateLimit-Remaining drain (injected clock)
 python3 -m unittest test/test_side.py   # side runs: fleet side start|end|ls|show, refusals, 20 parallel starts, idempotent end

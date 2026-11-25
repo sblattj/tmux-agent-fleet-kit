@@ -11,6 +11,7 @@ import http.client
 import importlib.util
 import json
 import os
+
 import re
 import shutil
 import subprocess
@@ -30,7 +31,7 @@ LATER = "2026-11-21T10:00:00Z"   # 25 h after NOW
 ROWS = [
     ("decision", "fleet", "decisions-log:Q12", "a: cap at 3, jittered", "Retry cap", "widget"),
     ("decision", "fleet", "decisions-log:Q13", "b: ship the docs fix alone", "Docs fix ships alone", "widget"),
-    ("lesson", "fleet", "route-done:lane-a", "done: upload queue drains in order", "Queue order", "widget"),
+    ("shipped", "fleet", "route-done:lane-a", "done: upload queue drains in order", "Queue order", "widget"),
     ("change", "outside", "watch:acme/widget#7", "Merged PROJ-1: widget retries use backoff", "PR 7 merged", "widget"),
     ("doc", "outside", "watch:example.com/docs/3", "Page edit: setup needs Python 3.8", "Setup page", "docs"),
 ]
@@ -39,6 +40,8 @@ ROWS = [
 def scrubbed_env(extra):
     env = {k: v for k, v in os.environ.items()
            if not k.startswith("FLEET_") and not k.startswith("CLAUDE_CODE_") and k != "CLAUDECODE"}
+    # Card and quiz checks from before the lesson-first gate: cards are due at creation here.
+    env["FLEET_LEARN_TEACH_FIRST"] = "0"
     env.update(extra)
     return env
 
