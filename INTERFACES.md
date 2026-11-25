@@ -324,6 +324,12 @@ is never submitted; the pointer stays in their box for them to delete. The kit c
 their keys too. PROVEN on throwaway panes (tmux -L) of Claude Code 2.1.330, kiro-cli 3.5.0 and agy 1.5.13: an empty
 prompt got the wake and the lane answered (190-char pointer wrapped on a 120-column pane, too); a pane holding
 `good morni` or `abc` with the cursor at the start was left exactly as it was.
+Issue #38 live loop (Claude Code 2.1.332, `editorMode: vim` in `~/.claude/settings.json`, throwaway pane on its own
+tmux socket at 160x45, 20 wakes per mode, submits counted from the session transcript): in NORMAL mode v0.5.0 left
+the `sage from ROUTE: ...` fragment 20 of 20 times and submitted none; v0.5.1 submitted all 20 with 0 fragments. In
+INSERT mode and in a wake fired the moment a turn ends (redraw), both versions submitted 20 of 20 with 0 fragments.
+`fleet_mesh.py type <pane> /compact claude` in NORMAL mode ran `/compact`. The long mesh=no pointer (with the inbox
+path) goes through the same paste and is tested on the fake vim box (`test/fixtures/vim_prompt.py`), not live.
 
 ### Side runs: no decisions desk (issue #12)
 

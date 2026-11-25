@@ -401,6 +401,8 @@ class VimNormalWakeTest(unittest.TestCase):
                     "FLEET_NATIVE_GRACE": "120", "CLAUDECODE": "", "FLEET_WAKE_SPAWN": "0"}
         self._saved = {k: os.environ.get(k) for k in self.env}
         os.environ.update(self.env)
+        # one cleanup per server: a failed subTest skips the loop's tearDown and start() replaces self.sock
+        self.addCleanup(subprocess.run, ["tmux", "-L", self.sock, "kill-server"], stderr=subprocess.DEVNULL)
         subprocess.run(["tmux", "-L", self.sock, "-f", "/dev/null", "new-session", "-d", "-s", "w", "-x", "120",
                         "-y", "30", "env LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 FIXTURE_EAT=%d %s %s %s %s"
                         % (eat, sys.executable, VIM_FIXTURE, self.log, mode)], check=True)
