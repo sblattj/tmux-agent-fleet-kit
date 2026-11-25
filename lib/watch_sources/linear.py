@@ -5,7 +5,7 @@ Config: {"name": "tracker", "kind": "linear", "teams": ["ENG"], "auth": {"type":
 
 Poll: one GraphQL query per page, `issues(filter: {team: {key: {in: teams}}, updatedAt: {gt: <cursor>}}, orderBy:
 updatedAt)`, oldest change first, at most maxEventsPerPoll issues and MAX_PAGES pages. Cursor: {"updated": <ISO UTC
-of the last issue processed>}. A first poll with no cursor reads back FIRST_DAYS days. Change types: issue.closed
+of the last issue processed>}. A first poll with no cursor reads back `firstDays` (default FIRST_DAYS) days. Change types: issue.closed
 (state type completed or canceled), issue.started, issue.created (createdAt == updatedAt), else issue.transition.
 fields.links (Q697) carries typed links: part-of the parent issue (else the team), ships-in the project and cycle,
 blocked-by each issue with a "blocks" relation to this one, owner the assignee.
@@ -144,7 +144,7 @@ class LinearSource(Source):
         qchars = self.cfg.get("quoteChars") or DEFAULTS["quoteChars"]
         since = (cursor or {}).get("updated") if isinstance(cursor, dict) else None
         if not since:
-            since = _iso(_dt.datetime.now(UTC) - _dt.timedelta(days=FIRST_DAYS))
+            since = _iso(_dt.datetime.now(UTC) - _dt.timedelta(days=int(self.cfg.get("firstDays") or FIRST_DAYS)))
         events, last, after = [], since, None
         for _ in range(MAX_PAGES):
             page = self._post({"teams": teams, "since": since, "first": min(PAGE_SIZE, cap), "after": after})

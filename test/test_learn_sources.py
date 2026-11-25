@@ -193,6 +193,41 @@ class TestLinksSurviveRebuild(SourcesBase):
         self.assertEqual(self.snap(), before)
         self.assertEqual(self.jsonl("seen.jsonl") != [], "seen.jsonl" in keep)
 
+    def test_a_failing_source_stops_the_rebuild_and_changes_nothing(self):
+        self.sync()
+        self.ok("lesson", "--yes")
+        learn = os.path.join(self.state, "learn")
+        names = ("ledger.jsonl", "cards.jsonl", "seen.jsonl", "entities.jsonl", "cursors.json")
+        before = {}
+        for n in names:
+            with open(os.path.join(learn, n)) as f:
+                before[n] = f.read()
+        p = self.learn("rebuild", "--json", now=LATER)  # FAKE_TRACKER_TOKEN unset: the tracker source fails
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("tracker", p.stderr + p.stdout)
+        for n in names:
+            with open(os.path.join(learn, n)) as f:
+                self.assertEqual(f.read(), before[n], n)
+        self.assertTrue(os.listdir(os.path.join(learn, "archive")))  # the copy is still made
+        # control: with the reference set, the same rebuild runs and keeps every seen row
+        res = json.loads(self.ok("rebuild", "--json", now=LATER, env={"FAKE_TRACKER_TOKEN": FAKE_TOKEN}))
+        self.assertEqual(res["seenLeftOut"], 0)
+
+
+class TestDrain(SourcesBase):
+    def test_more_meetings_than_one_poll_takes_all_come_in_and_survive_a_rebuild(self):
+        for i in range(25):
+            d = os.path.join(self.ws, "2026-04-%02d sync" % (i + 1))
+            os.makedirs(d)
+            shutil.copy(os.path.join(FXW, "decisions-standup.json"), os.path.join(d, "decisions.json"))
+            os.utime(d, (2000 + i, 2000 + i))
+        res = self.sync()
+        self.assertEqual(res["sources"]["polled"]["calls"], 52)  # 26 meetings x 2, over two polls of 20
+        self.ok("lesson", "--yes")
+        seen = len(self.jsonl("seen.jsonl"))
+        out = json.loads(self.ok("rebuild", "--json", now=LATER, env={"FAKE_TRACKER_TOKEN": FAKE_TOKEN}))
+        self.assertEqual((out["seenLeftOut"], out["seenKept"]), (0, seen))
+
 
 if __name__ == "__main__":
     unittest.main()

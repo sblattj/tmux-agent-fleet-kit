@@ -133,6 +133,17 @@ there is no `inputs.jsonl`. A row added by hand (`fleet learn add`, a ROUTE done
 puts back only those two files, rebuilds, and gets the same lessons and cards; another checks a hand-added row is
 gone.
 
+Rebuild fails closed. If any configured source fails or the config does not validate during a rebuild, every file
+is put back from the archive and the command exits non-zero naming the source: a source that did not answer would
+otherwise leave the human's reviews and seen rows with no row to land on. Sync drains each source: it polls again,
+up to 50 rounds, while the last round added or superseded a row, so a source that caps one poll (whosaid takes 20
+meetings at a time) still comes back whole. Tests cover both (`test_a_failing_source_stops_the_rebuild_and_changes_nothing`,
+26 meetings through two polls).
+
+Known limit: a rebuild reads a source only as far back as the source itself goes. Linear's first poll reads
+`firstDays` (default 14) days of updates, so an issue not touched in that window does not come back and its seen
+rows are left out (counted in `seenLeftOut`, kept in the archive). Set `firstDays` on the source to reach further.
+
 ### Q697: the entity layer
 
 Answer: "a". Built:

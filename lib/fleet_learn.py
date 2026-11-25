@@ -745,14 +745,38 @@ def _sync_goals(res, now):
     _write("cursors.json", json.dumps(cur, indent=1, sort_keys=True) + "\n")
 
 
+SOURCE_ROUNDS = 50  # bound on drain rounds per sync
+
+
 def _sync_sources(res, now):
     """The configured sources (sources.json, else watch.json; Q702) through WATCH's adapter registry. A row per
     item ref: a new quote for the same ref supersedes the old row, so the row holds the item's latest state."""
     import fleet_learn_sources as S
     cur = _read_json("cursors.json", {})
     cursors = dict(cur.get("sources") or {})
-    pairs, rep = S.poll_all(cursors)
+    rep, eids = None, {}
+    for _round in range(SOURCE_ROUNDS):  # drain: a source caps each poll, so poll again until nothing is new
+        pairs, r = S.poll_all(cursors)
+        if rep is None:
+            rep = r
+        else:
+            rep["failed"].update(r["failed"])
+            rep["errors"] = sorted(set(rep["errors"]) | set(r["errors"]))
+        for src, evs in pairs:  # polled = distinct events per source over all rounds
+            eids.setdefault(src["name"], set()).update(ev.eid for ev in evs)
+        rep["polled"] = {n: len(v) for n, v in eids.items()}
+        before = len(res["added"]) + len(res["superseded"])
+        _sync_pairs(pairs, res, now)
+        if len(res["added"]) + len(res["superseded"]) == before or r["failed"] or r["errors"]:
+            break
     res["sources"] = rep
+    cur = _read_json("cursors.json", {})
+    cur["sources"] = cursors
+    _write("cursors.json", json.dumps(cur, indent=1, sort_keys=True) + "\n")
+
+
+def _sync_pairs(pairs, res, now):
+    import fleet_learn_sources as S
     for src, evs in pairs:
         for ev in evs:
             kw = S.event_row(src, ev)
@@ -771,9 +795,6 @@ def _sync_sources(res, now):
                            status=kw["status"], links=kw["links"], tags=kw["tags"], topic=kw["topic"], by="sync",
                            now=now)
             res["added"].append(row["lid"])
-    cur = _read_json("cursors.json", {})
-    cur["sources"] = cursors
-    _write("cursors.json", json.dumps(cur, indent=1, sort_keys=True) + "\n")
 
 
 def _relink(lid, links, title):
@@ -1358,6 +1379,18 @@ def rebuild(now=None):
     if os.path.exists(_p("inputs.jsonl")):  # an older branch's journal: archived above, never read (Q703)
         os.remove(_guard(_p("inputs.jsonl")))
     res = sync(now)
+    src = res.get("sources") or {}
+    if src.get("errors") or src.get("failed"):
+        # fail closed: a source that did not answer would leave the human's reviews and seen rows unmatched
+        for name in DERIVED_FILES + HUMAN_FILES + ("inputs.jsonl",):
+            a = os.path.join(arch, name)
+            if os.path.exists(a):
+                shutil.copy2(a, _guard(_p(name)))
+            elif os.path.exists(_p(name)):
+                os.remove(_guard(_p(name)))
+        bad = sorted(src.get("failed") or {}) or ["config"]
+        raise Refused("rebuild stopped, nothing changed (archive %s): source(s) failed: %s"
+                      % (arch, ", ".join(bad)))
     make_cards(now)
     rows = items()
     new_lid = {source_key(r): r["lid"] for r in rows}

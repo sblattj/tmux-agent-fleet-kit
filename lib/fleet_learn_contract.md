@@ -28,7 +28,10 @@ Re-derivable (Q703): everything except reviews.jsonl and seen.jsonl comes back f
 `$FLEET_STATE/decisions-log.jsonl`, `$FLEET_STATE/watch/events.jsonl`, achieved lanes' goal files from the roster,
 and the configured sources below). There is no input journal: a row added by hand (`fleet learn add`, a ROUTE done
 line) does not survive a rebuild; ROUTE done lines reach the ledger from goal files. A row's identity across rebuilds
-is its key (source type, ref, normalized quote).
+is its key (source type, ref, normalized quote). A rebuild fails closed: if a configured source fails or the config
+does not validate, the archived files are put back and `rebuild()` raises Refused (CLI exit non-zero). Sync polls
+each source again (at most 50 rounds) while a round still adds or supersedes rows. A Linear source reads back
+`firstDays` (default 14) days on its first poll, so older untouched issues do not re-derive.
 
 Configured sources (Q702): `$FLEET_STATE/sources.json`, else `watch.json`, in the watch.json shape and checked by
 `fleet_watch_contract.validate_config` (credentials are `env:`, `keychain:` or `cmd:` references; a literal fails and
