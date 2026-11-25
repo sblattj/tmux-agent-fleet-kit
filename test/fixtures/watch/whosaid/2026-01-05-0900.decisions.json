@@ -1,0 +1,7 @@
+{"version": 1, "meeting": "2026-01-05-0900", "engine": "local", "lines": 40, "t": 1800.0,
+ "decisions": [
+  {"id": "d1", "topic": "t1", "topicLabel": "upload retries", "visit": 1, "t": 300.0, "t_str": "05:00", "speaker": "Speaker A",
+   "text": "let's cap upload retries at 3", "turns": [], "related": [], "status": "agreed"},
+  {"id": "d2", "topic": "t2", "topicLabel": "cdn choice", "visit": 1, "t": 900.0, "t_str": "15:00", "speaker": "Speaker B",
+   "text": "maybe we try the second cdn next week", "turns": [], "related": [], "status": "proposed"}
+ ], "topics": []}

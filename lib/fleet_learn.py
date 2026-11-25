@@ -14,6 +14,19 @@ Python 3.8+ stdlib only. Writes only under $FLEET_STATE/learn/ (export --to DIR 
   fleet learn drop <lid> --reason TEXT             retire a row and its cards (e.g. answer not in its quote)
   fleet learn sync [--goal FILE --lane NAME] [--json]   decisions-log.jsonl, WATCH LEARN-ITEMs, achieved goal files,
                                                    then make cards; a missing log or events file is not an error
+  fleet learn lesson [--topic T] [--max N] [--preview] [--json]   teach unseen rows: terms, then each row in context,
+                                                   every line a verbatim quote and its source; records them seen
+                                                   (the human only; --preview records nothing). Teach before test:
+                                                   a card comes due only after its row's lesson was seen
+  fleet learn lessons [--topic T] [--json]         topics with unseen rows waiting for a lesson
+  fleet learn session --topic T                    the lesson for T, a quiz on T's cards only, one result line
+  fleet learn digest [--since ISO|Nd|Nh] [--preview]   lessons for rows newer than the last digest (default 7d)
+  fleet learn brief --for X [--max N] [--json]     read-only brief on X for any role (learn.json brief.selector)
+  fleet learn curate <lid> [--what W] [--why Y] [--part-of E]   LEARN fills what/why (shown only when quote-backed)
+  fleet learn entity list [--json] | entity tree [ROOT]   the entity graph (typed links from the sources)
+  fleet learn rebuild [--json]                     regenerate every derived file from the sources; keeps only
+                                                   reviews.jsonl and seen.jsonl (LEARN or the human)
+  fleet learn sources [--resolve]                  check sources.json (or watch.json) sources, references only
   fleet learn due [--topic T] [--json]             cards due now (--topic: a ticket, PR, release or topic name)
   fleet learn quiz [--topic T] [--max N]           terminal quiz over due cards (reads answers on stdin; q quits)
   fleet learn review <cid> --answer TEXT [--rating again|hard|good|easy]   grade one answer (the quiz's verb)
@@ -23,11 +36,12 @@ Python 3.8+ stdlib only. Writes only under $FLEET_STATE/learn/ (export --to DIR 
   fleet learn serve [--port P] [--bind 127.0.0.1] [--open]   the phase 7 page (lib/fleet_learn_serve.py, when present)
 
 Clock: FLEET_LEARN_NOW=<ISO-8601 UTC> pins "now" (tests). Failure prints "FAIL <reason>" to stderr and exits 1;
-usage errors exit 2.
+usage errors exit 2; a role refused a human-only verb (lesson, session, digest, quiz, review) exits 4.
 """
 import argparse
 import datetime
 import fcntl
+import hashlib
 import json
 import os
 import random
@@ -40,7 +54,7 @@ sys.path.insert(0, HERE)
 import fleet_mesh as mesh  # noqa: E402
 
 ORIGINS = ("fleet", "outside")
-KINDS = ("decision", "change", "closed", "doc", "lesson")
+KINDS = ("decision", "change", "closed", "doc", "done")  # Q694: "done" was "lesson" (a goal done line), no compat
 STATUSES = ("confirmed", "heard", "superseded", "dropped")
 LIVE = ("confirmed", "heard")
 ROUTED_KINDS = ("ask", "task-candidate", "fyi")  # lib/fleet_watch_contract.py KINDS
@@ -56,6 +70,23 @@ CID_RE = re.compile(r"^C[0-9]+$")
 
 class Refused(Exception):
     pass
+
+
+class NotHuman(PermissionError):
+    """A role tried a human-only verb (exit 4). A norm, not a security boundary (Q695): an agent can unset the role."""
+
+
+def human_only(verb):
+    """Seen-marking, the quiz and review() are the human's (Q695). Any FLEET_ROLE is refused."""
+    role = os.environ.get("FLEET_ROLE") or ""
+    if role:
+        raise NotHuman("role %s can't %s: only the human takes LEARN quizzes and lessons" % (role, verb))
+
+
+def learn_or_human(verb):
+    role = os.environ.get("FLEET_ROLE") or ""
+    if role and role != "learn":
+        raise NotHuman("role %s can't %s: only LEARN or the human" % (role, verb))
 
 
 # ---------------------------------------------------------------- clock
@@ -227,6 +258,29 @@ def item(lid):
     raise Refused("no row %s" % lid)
 
 
+def skey(r):
+    """A row's stable source key: TYPE:REF#<8 hex of sha1 of the normalized quote>. Seen, review and input rows
+    carry it, so the human's results re-attach to a rebuilt ledger (Q694). A new answer under the same ref is a
+    new key."""
+    s = r.get("source") or {}
+    h = hashlib.sha1(_norm(r.get("quote")).encode("utf-8")).hexdigest()[:8]
+    return "%s:%s#%s" % (s.get("type"), s.get("ref"), h)
+
+
+def ckey(c, r=None):
+    return "%s/%s" % (c.get("skey") or skey(r or item(c["lid"])), c.get("format"))
+
+
+def _key_map(include_retired=True):
+    """skey -> current lid (a live row wins over a retired one with the same key)."""
+    out = {}
+    for r in items(include_retired=include_retired):
+        k = skey(r)
+        if k not in out or r.get("status") in LIVE:
+            out[k] = r["lid"]
+    return out
+
+
 def history(lid):
     return [r for r in _rows() if r.get("lid") == lid]
 
@@ -254,12 +308,14 @@ def _next_id(prefix, rows, key):
 
 
 def add_item(kind, origin, quote, source, title="", what="", why="", status="confirmed", links=None, tags=None,
-             topic=None, by="manual", supersedes=None, now=None):
+             topic=None, by="manual", supersedes=None, now=None, edges=None):
     """Append a new ledger row and return it. Refuses a row with no quote, no source, or a bad origin/kind/status."""
     _need(quote, "quote (verbatim from the source)")
     _check_source(source)
     if origin not in ORIGINS:
         raise Refused("origin must be fleet or outside, got %r" % (origin,))
+    if kind == "lesson":
+        raise Refused("kind lesson is now done (a goal done line); use --kind done")
     if kind not in KINDS:
         raise Refused("kind must be one of %s, got %r" % ("|".join(KINDS), kind))
     if status not in LIVE:
@@ -271,7 +327,10 @@ def add_item(kind, origin, quote, source, title="", what="", why="", status="con
                "quote": quote, "links": list(links or []), "tags": tags,
                "topic": topic or (tags[0] if tags else str(source.get("ref"))), "supersedes": supersedes,
                "by": by, "confirmedBy": None}
-        return _append("ledger.jsonl", row)
+        if edges:
+            row["edges"] = {k: [str(x) for x in v] for k, v in edges.items() if k in EDGES and isinstance(v, list)}
+        _append("ledger.jsonl", row)
+    return row
 
 
 def confirm(lid, source, quote, by="manual", now=None):
@@ -283,8 +342,9 @@ def confirm(lid, source, quote, by="manual", now=None):
     own = (r.get("source") or {})
     if (str(source.get("type")), str(source.get("ref"))) == (str(own.get("type")), str(own.get("ref"))):
         raise Refused("the confirming source must differ from the row's own heard source")
-    return _append("ledger.jsonl", dict(r, at=_iso(_now(now)), status="confirmed", by=by,
-                                        confirmedBy={"source": source, "quote": quote}))
+    row = _append("ledger.jsonl", dict(r, at=_iso(_now(now)), status="confirmed", by=by,
+                                       confirmedBy={"source": source, "quote": quote}))
+    return row
 
 
 def _retire_cards(lid):
@@ -319,6 +379,30 @@ def drop(lid, reason, now=None):
     row = _append("ledger.jsonl", dict(r, at=_iso(_now(now)), status="dropped", dropReason=reason, by="manual"))
     _retire_cards(lid)
     return row
+
+
+def curate(lid, what=None, why=None, part_of=None, now=None):
+    """LEARN fills a row's what and why (and its topic's part-of edge). A new version of the row. Not kept through a
+    rebuild (Q27 b: only reviews and seen are); lessons show what/why only when verbatim from the quote (Q696)."""
+    r = item(lid)
+    if r.get("status") not in LIVE:
+        raise Refused("%s is %s; only a live row can be curated" % (lid, r.get("status")))
+    if what is None and why is None and not part_of:
+        raise Refused("curate needs --what, --why or --part-of")
+    new = dict(r, at=_iso(_now(now)), by="curate")
+    if what is not None:
+        new["what"] = what
+    if why is not None:
+        new["why"] = why
+    if part_of:
+        new["edges"] = dict(r.get("edges") or {}, **{"part-of": [part_of]})
+    with _Lock():
+        _append("ledger.jsonl", new)
+    refresh_entities()
+    return new
+
+
+DERIVED_BY = ("sync", "watch", "source")
 
 
 def parse_source(text):
@@ -600,8 +684,11 @@ def _min_score():
     return 1
 
 
-def add_learn_item(event, now=None):
-    """One WATCH event (a watch/events.jsonl row) -> an outside ledger row. None for a dupe or an empty quote."""
+def add_learn_item(event, now=None, by="watch"):
+    """One WATCH event (a watch/events.jsonl row, or an event LEARN polled itself through the same adapters) -> an
+    outside ledger row, keyed (watch, eid) either way. None for a dupe or an empty quote. A call decision (whosaid)
+    is heard, not confirmed, and is skipped when a live row already has the same words (the decisions log may have
+    brought it in already). fields.edges become the row's entity links."""
     if not isinstance(event, dict) or not event.get("eid"):
         raise Refused("a LEARN-ITEM needs an event with an eid")
     if not str(event.get("quote") or "").strip():
@@ -609,15 +696,50 @@ def add_learn_item(event, now=None):
     if ("watch", str(event["eid"])) in _by_source():
         return None
     t = str(event.get("type") or "")
-    kind = ("change" if any(w in t for w in ("merged", "release", "transition")) else
+    call = event.get("sourceKind") == "whosaid"
+    if call:
+        q = _norm(event.get("quote"))
+        if any(_norm(r.get("quote")) == q for r in items()):
+            return None
+    kind = ("decision" if call else
+            "change" if any(w in t for w in ("merged", "release", "transition")) else
             "closed" if "closed" in t else "doc" if t.startswith("page") else "change")
     src = {"type": "watch", "ref": str(event["eid"]), "source": event.get("source"),
            "sourceKind": event.get("sourceKind"), "url": event.get("url"), "itemRef": event.get("ref")}
     links = [{"type": event.get("sourceKind") or "watch", "ref": event.get("ref"), "eid": event["eid"],
               "url": event.get("url")}]
-    return add_item(kind, "outside", event["quote"], src, title=event.get("title") or "", links=links,
-                    tags=event.get("tags") or [], topic=str(event.get("ref") or event.get("source") or "watch"),
-                    by="watch", now=now)
+    fields = event.get("fields") if isinstance(event.get("fields"), dict) else {}
+    topic = str((fields.get("topic") if call else None) or event.get("ref") or event.get("source") or "watch")
+    row = add_item(kind, "outside", event["quote"], src, title=event.get("title") or "", links=links,
+                   tags=event.get("tags") or [], topic=topic, by=by, status="heard" if call else "confirmed",
+                   now=now, edges=fields.get("edges"))
+    return row
+
+
+def _sync_sources(res, now, source_events=None):
+    """Events from sources.json (Q702). A rebuild passes the events it polled first; a plain sync polls from the
+    stored cursors. A failing source is reported in res["sources"] and skipped by a sync (a rebuild aborts)."""
+    mod = _sources_mod()
+    if source_events is None:
+        cur = _read_json("cursors.json", {})
+        try:
+            source_events = mod.poll_all(cursors=cur.get("sources") or {})
+        except mod.SourceFailed as e:
+            res["sources"] = {"error": str(e)}
+            return
+        except (OSError, ValueError) as e:
+            res["sources"] = {"error": "config: %s" % e}
+            return
+    for ev in source_events.get("events") or []:
+        row = add_learn_item(ev, now=now, by="source")
+        if row:
+            res["added"].append(row["lid"])
+    res["sources"] = {"polled": source_events.get("sources") or [], "secretDropped":
+                      source_events.get("secretDropped", 0)}
+    if source_events.get("cursors"):
+        cur = _read_json("cursors.json", {})
+        cur.setdefault("sources", {}).update(source_events["cursors"])
+        _write("cursors.json", json.dumps(cur, indent=1, sort_keys=True) + "\n")
 
 
 def _sync_watch(res, now):
@@ -658,7 +780,7 @@ def _goal_text(d):
 
 
 def sync_goal(path, lane, now=None, res=None):
-    """done[] and decisions[] of one finished lane's goal file -> fleet rows (lesson / decision). Returns new lids.
+    """done[] and decisions[] of one finished lane's goal file -> fleet rows (done / decision). Returns new lids.
     Plumbing lanes, process-evidence steps and answerless lines are skipped (into res["skipped"] when given);
     {"learn": "teach"|"skip"} in the goal file, or "learn: teach|skip" in a line, overrides."""
     try:
@@ -670,7 +792,7 @@ def sync_goal(path, lane, now=None, res=None):
     have, out = _by_source(), []
     lane_ov = _goal_override(g)
     gsubj = subjects(g.get("goal") if isinstance(g.get("goal"), str) else "")
-    for field, kind in (("done", "lesson"), ("decisions", "decision")):
+    for field, kind in (("done", "done"), ("decisions", "decision")):
         for i, d in enumerate(g.get(field) or []):
             text = _goal_text(d)
             ref = "%s:%s[%d]" % (lane, field, i)
@@ -706,7 +828,7 @@ def _sync_goals(res, now):
     _write("cursors.json", json.dumps(cur, indent=1, sort_keys=True) + "\n")
 
 
-def sync(now=None):
+def sync(now=None, source_events=None):
     """decisions-log.jsonl (desk answers confirmed, decided-on-call heard; latest answer per id supersedes),
     WATCH LEARN-ITEMs from watch/events.jsonl, goal files of achieved lanes; then the join rule (a heard row
     becomes confirmed when a desk answer quotes it) and make_cards(). Idempotent."""
@@ -714,6 +836,7 @@ def sync(now=None):
     res = {"added": [], "superseded": [], "confirmed": [], "cards": []}
     answers = _sync_decisions(res, now)
     _sync_watch(res, now)
+    _sync_sources(res, now, source_events)
     _sync_goals(res, now)
     for r in items(status="heard"):
         q = _norm(r.get("quote"))
@@ -742,10 +865,10 @@ def _label(r):
 
 
 _ASK = {"decision": "What was decided about %s?", "change": "What changed in %s?", "closed": "Why was %s closed?",
-        "doc": "What changed in the %s doc?", "lesson": "What did we learn from %s?"}
+        "doc": "What changed in the %s doc?", "done": "What did we learn from %s?"}
 _ASK_PLAIN = {"decision": "What was decided here, and why?", "change": "What changed here?",
               "closed": "What was closed here, and why?", "doc": "What changed in this doc?",
-              "lesson": "What did we learn here?"}
+              "done": "What did we learn here?"}
 
 
 def card_prompt(r):
@@ -813,7 +936,11 @@ def same_topic(a, b):
 def on_topic(r, topic):
     """`fleet learn quiz --topic T`: the row's topic is or contains T, or the row names T as a work subject."""
     t = (topic or "").strip().lower()
-    return bool(t) and (t in topic_of(r).lower() or t in _row_subjects(r))
+    if not t:
+        return False
+    if t in topic_of(r).lower() or t in _row_subjects(r):
+        return True
+    return t in [a.lower() for a in ancestors(topic_of(r))]
 
 
 PHASE3_FORMATS = ("recall", "source", "choice")
@@ -832,7 +959,7 @@ def _formats(formats):
 
 
 def _choice_opts(r, pool):
-    rnd = random.Random(r["lid"])
+    rnd = random.Random(skey(r))  # keyed on the source, so a rebuild draws the same options
     opts = rnd.sample(pool, 3) + [r["quote"]]
     rnd.shuffle(opts)
     return opts
@@ -899,7 +1026,8 @@ def make_cards(now=None, formats=None):
             for fmt, opts, answer in specs:
                 if fmt not in formats or (r["lid"], fmt) in have:
                     continue
-                c = {"cid": _next_id("C", cs + new, "cid"), "lid": r["lid"], "format": fmt, "origin": r["origin"],
+                c = {"cid": _next_id("C", cs + new, "cid"), "lid": r["lid"], "skey": skey(r), "format": fmt,
+                     "origin": r["origin"],
                      "prompt": _card_prompt_for(fmt, r), "answer": answer, "grounding": grounding,
                      "sched": dict(sched)}
                 if opts:
@@ -907,7 +1035,8 @@ def make_cards(now=None, formats=None):
                 new.append(c)
         if new or changed:
             _save_cards(cs + new)
-        return new
+    refresh_entities()
+    return new
 
 
 def _card_prompt_for(fmt, r):
@@ -934,9 +1063,11 @@ def _idnum(i):
 
 
 def due(now=None, topic=None):
-    """Cards due now, oldest due first; topic narrows to rows on_topic() (a ticket, PR, release or topic name)."""
+    """Cards due now, oldest due first; topic narrows to rows on_topic() (a ticket, PR, release or topic name, or an
+    entity whose subtree holds the row). Teach-first: a card is due only after its row's lesson was seen."""
     now = _now(now)
-    live = {r["lid"] for r in items(status="confirmed") if topic is None or on_topic(r, topic)}
+    seen_l = seen_lids()
+    live = {r["lid"] for r in items(status="confirmed") if (topic is None or on_topic(r, topic)) and r["lid"] in seen_l}
     out = [c for c in _cards() if not c.get("retired") and c.get("lid") in live
            and (_parse_ts((c.get("sched") or {}).get("due")) or now) <= now]
     out.sort(key=lambda c: ((c.get("sched") or {}).get("due") or "", _idnum(c["cid"])))
@@ -966,6 +1097,7 @@ def _choice_pick(c, answer):
 
 def review(cid, answer, rating=None, now=None, grade=None, gradedBy=None, detail=None, latencyMs=None):
     """Grade one answer, append reviews.jsonl, reschedule the card, refresh proof.json. Returns the review row."""
+    human_only("review a card")
     now = _now(now)
     c = card(cid)
     if c.get("retired"):
@@ -993,7 +1125,8 @@ def review(cid, answer, rating=None, now=None, grade=None, gradedBy=None, detail
     elif rating not in RATINGS:
         raise Refused("rating must be again|hard|good|easy")
     row = {"cid": cid, "lid": c["lid"], "at": _iso(now), "format": fmt, "answer": answer or "", "grade": g,
-           "rating": rating, "gradedBy": by, "latencyMs": latencyMs, "quoteChecked": checked, "origin": c.get("origin")}
+           "rating": rating, "gradedBy": by, "latencyMs": latencyMs, "quoteChecked": checked, "origin": c.get("origin"),
+           "skey": c.get("skey") or skey(r), "ckey": ckey(c, r)}
     if detail is not None:
         row["detail"] = detail
     sched_fn = scheduler()  # resolved before the append: a scheduler error writes nothing
@@ -1008,21 +1141,83 @@ def review(cid, answer, rating=None, now=None, grade=None, gradedBy=None, detail
     return row
 
 
-def reviews(lid=None):
-    """reviews.jsonl rows (the record), oldest first; for score history per topic join on lid -> items()."""
-    out = mesh._parse_lines(_p("reviews.jsonl"))
-    return [r for r in out if lid is None or r.get("lid") == lid]
+def _resolve(rows, keyfield="skey"):
+    """The record keeps the lid and cid it was written with; after a rebuild those ids may name other rows. A row
+    that carries a key resolves through it to the current lid (and cid by ckey); one whose key is gone is an
+    orphan (lid None). Rows with no key (written before keys) keep their ids."""
+    km = _key_map()
+    cm = {}
+    for c in _cards():
+        if c.get("skey"):
+            cm.setdefault("%s/%s" % (c["skey"], c.get("format")), c["cid"])
+    out = []
+    for rv in rows:
+        k = rv.get(keyfield)
+        if k:
+            rv = dict(rv, lid=km.get(k))
+            if "cid" in rv:
+                rv["cid"] = cm.get(rv.get("ckey") or "") if rv["lid"] else None
+        out.append(rv)
+    return out
+
+
+def reviews(lid=None, include_orphans=False):
+    """reviews.jsonl rows (the record), oldest first, with lid/cid resolved by source key (see _resolve)."""
+    out = _resolve(mesh._parse_lines(_p("reviews.jsonl")))
+    return [r for r in out if (include_orphans or r.get("lid")) and (lid is None or r.get("lid") == lid)]
+
+
+# ---------------------------------------------------------------- seen (the lesson half of the tuple, Q695)
+
+def seen_rows(include_orphans=False):
+    out = _resolve([r for r in mesh._parse_lines(_p("seen.jsonl")) if r.get("skey")])
+    return [r for r in out if include_orphans or r.get("lid")]
+
+
+def seen_lids():
+    return {r["lid"] for r in seen_rows()}
+
+
+def mark_seen(lids, via="lesson", now=None):
+    """Record the human saw these rows' lessons: the first exposure, so the 24 h proof clock starts here (Q695).
+    Human only. A digest also writes one marker row (lid null) that is its cursor."""
+    human_only("mark lessons seen")
+    now = _now(now)
+    have = seen_lids()
+    out = []
+    with _Lock():
+        for lid in lids:
+            r = item(lid)
+            if lid in have:
+                continue
+            out.append(_append("seen.jsonl", {"lid": lid, "skey": skey(r), "at": _iso(now), "via": via}))
+            have.add(lid)
+        if via == "digest":
+            _append("seen.jsonl", {"lid": None, "skey": None, "at": _iso(now), "via": "digest-cursor"})
+    write_proof()
+    return out
+
+
+def digest_cursor():
+    ts = [r.get("at") for r in mesh._parse_lines(_p("seen.jsonl")) if r.get("via") == "digest-cursor"]
+    return max(ts) if ts else None
 
 
 def rebuild_proof():
-    """Per lid from reviews.jsonl alone (due comes from cards.jsonl): learned = a generative pass and a checkable
-    pass, the latest pass at least 24 h after first exposure, and no failed review since the last pass."""
-    by = {}
-    for rv in mesh._parse_lines(_p("reviews.jsonl")):
+    """Per lid from reviews.jsonl and seen.jsonl (due comes from cards.jsonl): learned = a generative pass and a
+    checkable pass, the latest pass at least 24 h after first exposure (the earlier of the first seen and the first
+    review, Q695), and no failed review since the last pass."""
+    by, first_seen = {}, {}
+    for rv in reviews():
         lid, at = rv.get("lid"), _parse_ts(rv.get("at"))
         if not lid or not at:
             continue
         by.setdefault(lid, []).append((at, rv))
+    for sr in seen_rows():
+        at = _parse_ts(sr.get("at"))
+        if at and (sr["lid"] not in first_seen or at < first_seen[sr["lid"]]):
+            first_seen[sr["lid"]] = at
+        by.setdefault(sr["lid"], [])
     dues = {}
     for c in _cards():
         if c.get("retired"):
@@ -1033,7 +1228,7 @@ def rebuild_proof():
     out = {}
     for lid in sorted(by, key=lambda k: int(k[1:]) if k[1:].isdigit() else 0):
         revs = sorted(by[lid], key=lambda t: t[0])
-        first = revs[0][0]
+        first = min([t for t in (revs[0][0] if revs else None, first_seen.get(lid)) if t])
         passes = [{"at": _iso(at), "format": rv.get("format"),
                    "kind": "generative" if rv.get("format") in GENERATIVE else "checkable"}
                   for at, rv in revs if rv.get("grade") == "pass"]
@@ -1056,6 +1251,194 @@ def write_proof():
 
 def proof():
     return _read_json("proof.json", {})
+
+
+# ---------------------------------------------------------------- grounding (Q696: verbatim by default)
+
+def _cfg_lesson():
+    cfg = _read_json("learn.json", {})
+    v = cfg.get("lesson") if isinstance(cfg, dict) else None
+    return v if isinstance(v, dict) else {}
+
+
+def ground(text, quote, allow_rewording=None):
+    """(shown text, backing words) when a line is backed by the quote, else None. Default: the line itself must be
+    a normalized substring of the quote (no model rewording, Q696). With learn.json lesson.allowRewording, a line
+    "text | quote: X" is shown as text when X is a normalized substring of the quote."""
+    if allow_rewording is None:
+        allow_rewording = bool(_cfg_lesson().get("allowRewording"))
+    t = (text or "").strip()
+    if not t:
+        return None
+    nq = _norm(quote)
+    body, sep, back = t.partition("| quote:")
+    if sep:
+        body, back = body.strip(), back.strip()
+        if allow_rewording and back and _norm(back) in nq:
+            return body, back
+        if _norm(body) in nq:
+            return body, body
+        return None
+    return (t, t) if _norm(t) in nq else None
+
+
+# ---------------------------------------------------------------- entities (Q697 rec a)
+# Derived from row topics (acme/widget#7 is a pr, part of the repo acme/widget; PROJ-7 a ticket; v1.2.0 a release)
+# plus the typed links each source gives on its rows (row "edges", from the adapters' fields.edges, Q697). Nothing
+# here is kept state: entities.jsonl is regenerated from the ledger, and a rebuild re-derives the ledger (Q703).
+
+EDGES = ("part-of", "ships-in", "blocked-by", "decided-by", "owner")
+ENTITY_TYPES = ("repo", "pr", "ticket", "release", "feature", "goal", "call", "topic")
+_PR_TOPIC_RE = re.compile(r"^([\w.-]+/[\w.-]+)#\d+$")
+_ENT_CACHE = [None, None]
+
+
+def _entity_kind(eid):
+    m = _PR_TOPIC_RE.match(eid or "")
+    if m:
+        return "pr", m.group(1)
+    if _TICKET_RE.fullmatch(eid or ""):
+        return "ticket", None
+    if _RELEASE_RE.fullmatch(eid or ""):
+        return "release", None
+    if re.match(r"^[\w.-]+/[\w.-]+$", eid or ""):
+        return "repo", None
+    return "topic", None
+
+
+def _blank_entity(eid, etype):
+    return {"id": eid, "type": etype, "definition": "", "quote": "", "source": None, "edges": {},
+            "derived": True}
+
+
+def _derive_entities():
+    ents = {}
+    rows = sorted(items(), key=lambda r: (r.get("at") or "", _idnum(r["lid"])))
+    for r in rows:
+        t = topic_of(r)
+        if not t:
+            continue
+        etype, parent = _entity_kind(t)
+        e = ents.setdefault(t, _blank_entity(t, etype))
+        if not e["quote"]:
+            e["quote"], e["source"] = r.get("quote") or "", r.get("source")
+            e["definition"] = e["quote"]
+        if parent:
+            e["edges"].setdefault("part-of", [])
+            if parent not in e["edges"]["part-of"]:
+                e["edges"]["part-of"].append(parent)
+            pe = ents.setdefault(parent, _blank_entity(parent, "repo"))
+            if not pe["quote"]:
+                pe["quote"], pe["source"], pe["definition"] = r.get("quote") or "", r.get("source"), \
+                    r.get("quote") or ""
+    for r in rows:
+        t = topic_of(r)
+        for et, vs in (r.get("edges") or {}).items():
+            if et not in EDGES or not t:
+                continue
+            e = ents.setdefault(t, _blank_entity(t, _entity_kind(t)[0]))
+            cur = e["edges"].setdefault(et, [])
+            for v in vs:
+                if v not in cur:
+                    cur.append(v)
+                if et in ("part-of", "decided-by", "ships-in") and v not in ents:
+                    ne = _blank_entity(v, "call" if v.startswith("call:") else _entity_kind(v)[0])
+                    ne["quote"], ne["source"], ne["definition"] = r.get("quote") or "", r.get("source"), \
+                        r.get("quote") or ""
+                    ents[v] = ne
+    return [ents[k] for k in sorted(ents)]
+
+
+def refresh_entities():
+    es = _derive_entities()
+    _write("entities.jsonl", "".join(json.dumps(e, sort_keys=True) + "\n" for e in es))
+    _ENT_CACHE[0] = None
+    return es
+
+
+def entities():
+    p = _p("entities.jsonl")
+    try:
+        st = os.stat(p)
+        key = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return {}
+    if _ENT_CACHE[0] != key:
+        _ENT_CACHE[0], _ENT_CACHE[1] = key, {e["id"]: e for e in mesh._parse_lines(p) if e.get("id")}
+    return _ENT_CACHE[1]
+
+
+def ancestors(eid):
+    """The part-of chain above an entity, nearest first (cycles stop)."""
+    es, out, cur = entities(), [], eid
+    while cur in es:
+        ps = (es[cur].get("edges") or {}).get("part-of") or []
+        if not ps or ps[0] in out or ps[0] == eid:
+            break
+        out.append(ps[0])
+        cur = ps[0]
+    return out
+
+
+def children(eid):
+    return sorted(k for k, e in entities().items() if eid in ((e.get("edges") or {}).get("part-of") or []))
+
+
+# ---------------------------------------------------------------- rebuild from sources (Q694)
+
+DERIVED_FILES = ("ledger.jsonl", "cards.jsonl", "entities.jsonl", "proof.json", "cursors.json")
+KEPT_FILES = ("reviews.jsonl", "seen.jsonl")  # Q27 (b): the human's own results, nothing else
+
+
+def rebuild(now=None, source_events=None):
+    """Regenerate every derived LEARN file from the sources: the decisions log, WATCH events, achieved goal files
+    and the configured sources (sources.json, Q702). Keeps only the human's own results (reviews.jsonl,
+    seen.jsonl, Q27 b), which re-attach by source key; card schedules are restored by replaying the reviews through
+    the scheduler. Sources are polled into memory first, so a failing source aborts with the old state intact. The
+    old derived files move to learn/rebuild-prev/. LEARN or the human only."""
+    learn_or_human("rebuild LEARN state")
+    now = _now(now)
+    if source_events is None:
+        source_events = _sources_mod().poll_all(full=True)  # raises SourceFailed before anything moves
+    sched_fn = scheduler()
+    prev = os.path.join(learn_dir(), "rebuild-prev")
+    with _Lock():
+        os.makedirs(_guard(prev), exist_ok=True)
+        for f in DERIVED_FILES:
+            if os.path.exists(_p(f)):
+                os.replace(_guard(_p(f)), _guard(os.path.join(prev, f)))
+            elif os.path.exists(os.path.join(prev, f)):
+                os.remove(_guard(os.path.join(prev, f)))
+    res = {"added": [], "superseded": [], "confirmed": [], "cards": []}
+    sres = sync(now, source_events=source_events)
+    for k in ("added", "superseded", "confirmed", "decisionsLog", "watchEvents", "sources", "skipped", "folded"):
+        if k in sres:
+            res[k] = sres[k]
+    make_cards(now)
+    orphan_reviews = 0
+    with _Lock():
+        cs = _cards()
+        by_ck = {"%s/%s" % (c["skey"], c.get("format")): c for c in cs if c.get("skey") and not c.get("retired")}
+        for rv in mesh._parse_lines(_p("reviews.jsonl")):
+            c = by_ck.get(rv.get("ckey") or "")
+            at = _parse_ts(rv.get("at"))
+            if c is None or at is None or rv.get("rating") not in RATINGS:
+                orphan_reviews += 1
+                continue
+            c["sched"] = sched_fn(c.get("sched") or {}, rv["rating"], at)
+        _save_cards(cs)
+    write_proof()
+    res["counts"] = {"rows": len(items()), "cards": len([c for c in _cards() if not c.get("retired")]),
+                     "entities": len(entities()), "reviews": len(reviews()), "seen": len(seen_rows()),
+                     "orphanedReviews": orphan_reviews,
+                     "orphanedSeen": len([r for r in seen_rows(include_orphans=True) if not r.get("lid")])}
+    res["prev"] = prev
+    return res
+
+
+def _sources_mod():
+    import fleet_learn_sources
+    return fleet_learn_sources
 
 
 # ---------------------------------------------------------------- snapshot and export
@@ -1084,7 +1467,7 @@ def snapshot(now=None):
         t["pct"] = int(round(100.0 * t["learned"] / t["items"])) if t["items"] else 0
     recent = [{"cid": rv.get("cid"), "lid": rv.get("lid"), "at": rv.get("at"), "grade": rv.get("grade"),
                "format": rv.get("format"), "origin": rv.get("origin")}
-              for rv in mesh._parse_lines(_p("reviews.jsonl"))[-20:]]
+              for rv in reviews()[-20:]]
     return {"at": _iso(now), "dir": learn_dir(), "byOrigin": by_origin, "topics": tl,
             "due": [{"cid": c["cid"], "lid": c["lid"], "format": c["format"], "prompt": c["prompt"],
                      "origin": c.get("origin")} for c in ds],
@@ -1152,6 +1535,7 @@ def _where(c):
 def quiz(inp=None, out=None, max_cards=30, now=None, topic=None):
     """Deterministic terminal quiz over due cards; reads one line per answer. Returns the review rows.
     The prompt never names the source; the source quote and where it came from show after grading."""
+    human_only("take the quiz")
     inp, out = inp or sys.stdin, out or sys.stdout
     done = []
 
@@ -1298,7 +1682,40 @@ def main(argv=None):
     sp.add_parser("snapshot")
     ex = sp.add_parser("export")
     ex.add_argument("--to")
+    le = sp.add_parser("lesson")
+    le.add_argument("--topic")
+    le.add_argument("--max", type=int, default=8)
+    le.add_argument("--preview", action="store_true")
+    le.add_argument("--json", action="store_true")
+    lz = sp.add_parser("lessons")
+    lz.add_argument("--topic")
+    lz.add_argument("--json", action="store_true")
+    se = sp.add_parser("session")
+    se.add_argument("--topic", required=True)
+    se.add_argument("--max", type=int, default=8)
+    dg = sp.add_parser("digest")
+    dg.add_argument("--since")
+    dg.add_argument("--preview", action="store_true")
+    bf = sp.add_parser("brief")
+    bf.add_argument("--for", dest="for_", required=True)
+    bf.add_argument("--max", type=int, default=10)
+    bf.add_argument("--json", action="store_true")
+    cu = sp.add_parser("curate")
+    cu.add_argument("lid")
+    cu.add_argument("--what")
+    cu.add_argument("--why")
+    cu.add_argument("--part-of", dest="part_of")
+    en = sp.add_parser("entity")
+    en.add_argument("action", choices=("list", "tree"))
+    en.add_argument("root", nargs="?")
+    en.add_argument("--json", action="store_true")
+    rb = sp.add_parser("rebuild")
+    rb.add_argument("--json", action="store_true")
+    so = sp.add_parser("sources")
+    so.add_argument("--resolve", action="store_true")
     args = p.parse_args(argv)
+    if args.cmd in ("lesson", "lessons", "session", "digest", "brief", "entity"):
+        import fleet_learn_lesson as les
     try:
         if args.cmd == "add":
             if args.status not in LIVE:
@@ -1394,9 +1811,71 @@ def main(argv=None):
         elif args.cmd == "export":
             for w in export(args.to):
                 print("OK wrote %s" % w)
+        elif args.cmd == "lesson":
+            if args.json:
+                import io
+                buf = io.StringIO()
+                m = les.lesson(args.topic, max_rows=args.max, preview=args.preview, out=buf)
+                print(json.dumps(m, indent=1, sort_keys=True))
+            else:
+                les.lesson(args.topic, max_rows=args.max, preview=args.preview)
+        elif args.cmd == "lessons":
+            ls = les.lessons(args.topic)
+            if args.json:
+                print(json.dumps(ls, indent=1, sort_keys=True))
+            else:
+                for d in ls:
+                    print("%-30s %d row(s)%s" % (d["topic"], d["rows"], ", %d heard" % d["heard"] if d["heard"]
+                                                else ""))
+                print("%d topic(s) waiting for a lesson" % len(ls))
+        elif args.cmd == "session":
+            les.session(args.topic, max_rows=args.max)
+        elif args.cmd == "digest":
+            les.digest(args.since, preview=args.preview)
+        elif args.cmd == "brief":
+            les.brief(args.for_, max_rows=args.max, as_json=args.json)
+        elif args.cmd == "curate":
+            curate(args.lid, what=args.what, why=args.why, part_of=args.part_of)
+            print("OK curated %s" % args.lid)
+        elif args.cmd == "entity":
+            if args.action == "list":
+                es = entities()
+                if args.json:
+                    print(json.dumps(list(es.values()), indent=1, sort_keys=True))
+                else:
+                    for k in sorted(es):
+                        ed = es[k].get("edges") or {}
+                        print("%-30s %-8s %s" % (k, es[k].get("type"), "; ".join(
+                            "%s %s" % (t, ",".join(v)) for t, v in sorted(ed.items()) if v)))
+                    print("%d entities" % len(es))
+            else:
+                for ln in les.tree_lines(args.root):
+                    print(ln)
+        elif args.cmd == "rebuild":
+            try:
+                res = rebuild()
+            except _sources_mod().SourceFailed as e:
+                raise Refused("%s; nothing changed" % e)
+            if args.json:
+                print(json.dumps(res, indent=1, sort_keys=True))
+            else:
+                c = res["counts"]
+                print("OK rebuild: %d rows, %d cards, %d entities; kept %d review(s), %d seen; orphaned %d review(s),"
+                      " %d seen; previous files in %s" % (c["rows"], c["cards"], c["entities"], c["reviews"],
+                                                          c["seen"], c["orphanedReviews"], c["orphanedSeen"],
+                                                          res["prev"]))
+        elif args.cmd == "sources":
+            rows = _sources_mod().check(resolve=args.resolve)
+            bad = [r for r in rows if not r[1]]
+            for where, ok, note in rows:
+                print("%s %s: %s" % ("OK" if ok else "FAIL", where, note))
+            return 1 if bad else 0
         else:
             sys.stdout.write(_help())
             return 2
+    except NotHuman as e:
+        sys.stderr.write("FAIL %s\n" % e)
+        return 4
     except Refused as e:
         sys.stderr.write("FAIL %s\n" % e)
         return 1
@@ -1407,4 +1886,5 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
+    sys.modules.setdefault("fleet_learn", sys.modules[__name__])  # helpers import fleet_learn: one module, one Refused
     sys.exit(main())

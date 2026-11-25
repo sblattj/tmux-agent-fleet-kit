@@ -26,13 +26,16 @@ nlines() { if [ -f "$1" ]; then wc -l < "$1" | tr -d ' '; else echo 0; fi; }
 pin_fixed() { [ -e "$1/learn/learn.json" ] || { mkdir -p "$1/learn" && printf '%s\n' '{"scheduler":"fixed"}' > "$1/learn/learn.json"; }; }
 fl() { pin_fixed "$FLEET_STATE"; "$FL" "$@"; }
 jqs() { local st=$1; shift; pin_fixed "$st"; FLEET_STATE=$st "$FL" "$@"; }
+# Teach before test: a card comes due only once its row's lesson was seen. seen_all shows every waiting lesson.
+seen_all() { local st=$1 i o; pin_fixed "$st"; for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+  o=$(FLEET_STATE=$st "$FL" lesson 2>&1); contains "$o" "no new lessons" && return 0; done; return 1; }
 
 case $FLEET_STATE in "$tmp"/*) ;; *) echo "FAIL refusing to run outside a temp FLEET_STATE"; exit 1 ;; esac
 
 # ================================================================ help and wiring
 out=$(fl -h 2>&1); rc=$?
 rc_is "fleet-learn -h exits 0" $rc 0
-for v in add list show confirm drop sync due quiz review proof snapshot export serve; do has "-h lists fleet learn $v" "$out" "fleet learn $v"; done
+for v in add list show confirm drop sync lesson lessons session digest brief curate entity rebuild sources due quiz review proof snapshot export serve; do has "-h lists fleet learn $v" "$out" "fleet learn $v"; done
 fl >/dev/null 2>&1; rc=$?
 rc_is "bare fleet-learn is a usage error (exit 2)" $rc 2
 mkdir -p "$tmp/prefix/bin" && ln -s "$FL" "$tmp/prefix/bin/fleet-learn"
@@ -129,7 +132,7 @@ EOF
 out=$(jqs "$S2" sync --goal "$tmp/lane-x.goal.json" --lane lane-x 2>&1)
 has "a finished lane's goal file adds its work done[] and decisions[] (2)" "$out" "added 2,"
 has "  its process steps and step names are skipped (2)" "$out" "skipped: plumbing 2"
-expect "goal rows are lessons/decisions with origin fleet and topic = the work subject" bash -c 'FLEET_STATE=$2 "$1" list --json | jq -e "[.[]|select(.source.type==\"goal\")] | length==2 and all(.origin==\"fleet\" and .topic==\"PROJ-1\") and (map(.kind)|sort)==[\"decision\",\"lesson\"]"' _ "$FL" "$S2"
+expect "goal rows are lessons/decisions with origin fleet and topic = the work subject" bash -c 'FLEET_STATE=$2 "$1" list --json | jq -e "[.[]|select(.source.type==\"goal\")] | length==2 and all(.origin==\"fleet\" and .topic==\"PROJ-1\") and (map(.kind)|sort)==[\"decision\",\"done\"]"' _ "$FL" "$S2"
 out=$(jqs "$S2" sync --goal "$tmp/lane-x.goal.json" --lane lane-x 2>&1)
 has "  control: the same goal file again adds 0" "$out" "added 0,"
 python3 -I -c 'import json,sys; json.dump({"lane-y":{"name":"lane-y","goalState":"achieved"},"lane-z":{"name":"lane-z","goalState":"active"}}, open(sys.argv[1],"w"))' "$S2/roster.json"
@@ -219,6 +222,7 @@ expect "  rebuild from reviews.jsonl alone restores the same proof" bash -c 'dif
 # ================================================================ quiz TUI (stdin-driven)
 S7=$tmp/s7
 for q in "alpha fact one" "beta fact two" "gamma fact three" "delta fact four"; do jqs "$S7" add --kind decision --origin fleet --source manual:x --quote "$q" >/dev/null; done
+seen_all "$S7"
 c1=$(jq -r 'select(.lid=="L1" and .format=="recall")|.cid' "$S7/learn/cards.jsonl")
 out=$(printf '\ng\nq\n' | FLEET_STATE=$S7 "$FL" quiz 2>&1); rc=$?
 rc_is "quiz exits 0" $rc 0
@@ -247,7 +251,7 @@ rc_is "control: a ledger symlinked outside learn/ is refused" $rc 1
 has "control: the refusal says write outside" "$out" "write outside"
 [ "$(cat "$tmp/outside.jsonl")" = "outside" ] && pass "control: the outside file is unchanged" || fail "control: the outside file is unchanged"
 before=$(cd "$S2" && find . -type f -not -path './learn/*' | LC_ALL=C sort | xargs cat | cksum)
-jqs "$S2" sync >/dev/null; jqs "$S2" add --kind lesson --origin fleet --source manual:y --quote "zz top" >/dev/null
+jqs "$S2" sync >/dev/null; jqs "$S2" add --kind done --origin fleet --source manual:y --quote "zz top" >/dev/null
 after=$(cd "$S2" && find . -type f -not -path './learn/*' | LC_ALL=C sort | xargs cat | cksum)
 [ "$before" = "$after" ] && pass "sync and add change nothing in FLEET_STATE outside learn/" || fail "sync and add change nothing in FLEET_STATE outside learn/"
 
@@ -283,6 +287,7 @@ fl.use_scheduler(fl.fixed_schedule)
 t0 = datetime.datetime(2026, 4, 1, 9, tzinfo=datetime.timezone.utc)
 r = fl.add_item(kind="decision", origin="fleet", quote="cap at 3", what="retries stop at three", why="a 4th never worked",
                 source={"type": "manual", "ref": "x"}, now=t0)
+fl.mark_seen([r["lid"]], now=t0)
 assert [c for c in fl.make_cards(now=t0) if c["format"] in ("explain", "apply")] == [], "phase 3 default made explain"
 new = {c["format"]: c for c in fl.make_cards(now=t0, formats=["explain", "apply"])}
 assert set(new) == {"explain", "apply"} and new["explain"]["answer"] == "retries stop at three", new
@@ -304,7 +309,7 @@ rm -f "$SL/lib/fleet_learn_explain.py" "$SL/lib/fleet_fsrs.py"
 S11=$tmp/s11; pin_fixed "$S11"
 python3 -I -c 'import sys, os; sys.path.insert(0, sys.argv[1]); os.environ["FLEET_STATE"]=sys.argv[2]; import fleet_learn as f
 f.add_item(kind="decision", origin="fleet", quote="cap at 3", what="retries stop at three", source={"type": "manual", "ref": "x"})
-f.make_cards(formats=["explain"])' "$SL/lib" "$S11"
+f.make_cards(formats=["explain"]); f.mark_seen(["L1"])' "$SL/lib" "$S11"
 out=$(printf 'q\n' | FLEET_STATE=$S11 "$SL/bin/fleet-learn" quiz 2>&1)
 has "  control: without lib/fleet_learn_explain.py the quiz skips explain cards" "$out" "skipped: explain cards need"
 cat > "$SL/lib/fleet_learn_explain.py" <<'PY'
@@ -353,6 +358,7 @@ t = datetime.datetime(2026, 5, 1, 9, tzinfo=datetime.timezone.utc)
 for i in range(6):
     fl.add_item(kind="decision", origin="fleet", quote="row number %d here" % i, source={"type": "manual", "ref": "x"}, now=t)
 fl.make_cards(now=t)
+fl.mark_seen([r["lid"] for r in fl.items()], now=t)
 ids = [c["cid"] for c in fl.due(now=t)]
 assert len(ids) >= 11 and "C10" in ids, ids
 assert ids == sorted(ids, key=lambda i: int(i[1:])), ids
@@ -452,14 +458,14 @@ has "#24 {\"learn\": \"skip\"} in a goal file skips the whole lane" "$out" "adde
 
 # ---- route-done adds: plumbing refused unless taught
 S23=$tmp/s23
-out=$(jqs "$S23" add --kind lesson --origin fleet --source route-done:kit-pane-slots --quote "route-done: kit-pane-slots parked (goal met). desk panes pinned to slots 0 and 1" 2>&1); rc=$?
+out=$(jqs "$S23" add --kind done --origin fleet --source route-done:kit-pane-slots --quote "route-done: kit-pane-slots parked (goal met). desk panes pinned to slots 0 and 1" 2>&1); rc=$?
 rc_is "#23 a plumbing route-done add exits 0" $rc 0
 has "#23 a plumbing route-done add says SKIP" "$out" "SKIP route-done:kit-pane-slots"
 [ ! -s "$S23/learn/ledger.jsonl" ] && pass "#23 the skipped route-done add wrote no row" || fail "#23 the skipped route-done add wrote no row"
-out=$(jqs "$S23" add --kind lesson --origin fleet --source route-done:kit-pane-slots --title "kit-pane-slots done" --quote "route-done: kit-pane-slots parked (goal met). desk panes pinned to slots 0 and 1" 2>&1)
+out=$(jqs "$S23" add --kind done --origin fleet --source route-done:kit-pane-slots --title "kit-pane-slots done" --quote "route-done: kit-pane-slots parked (goal met). desk panes pinned to slots 0 and 1" 2>&1)
 has "#24 a title that is not a question does not exempt a plumbing row" "$out" "SKIP route-done:kit-pane-slots"
-expect "#23 --teach keeps it" jqs "$S23" add --kind lesson --origin fleet --source route-done:kit-pane-slots --quote "route-done: kit-pane-slots parked (goal met). desk panes pinned to slots 0 and 1" --teach
-out=$(jqs "$S23" add --kind lesson --origin fleet --source route-done:widget-retry-lane --quote "route-done: widget-retry-lane parked (goal met). acme/widget#9 caps PROJ-7 upload retries at 3" 2>&1)
+expect "#23 --teach keeps it" jqs "$S23" add --kind done --origin fleet --source route-done:kit-pane-slots --quote "route-done: kit-pane-slots parked (goal met). desk panes pinned to slots 0 and 1" --teach
+out=$(jqs "$S23" add --kind done --origin fleet --source route-done:widget-retry-lane --quote "route-done: widget-retry-lane parked (goal met). acme/widget#9 caps PROJ-7 upload retries at 3" 2>&1)
 has "#24 a work route-done add is added, topic = its subject" "$out" "OK added"
 expect "#24 that row's topic is PROJ-7" bash -c 'FLEET_STATE=$2 "$1" list --json | jq -e "[.[]|select(.source.ref==\"widget-retry-lane\")][0].topic==\"PROJ-7\""' _ "$FL" "$S23"
 
@@ -479,6 +485,7 @@ assert ch and all(rows[c["lid"]]["topic"] == "PROJ-1" for c in ch), [rows[c["lid
 for c in ch:
     assert all(o.startswith("PROJ-1") for o in c["options"]), c["options"]
 PY
+seen_all "$S24"
 out=$(jqs "$S24" due --topic PROJ-2 2>&1)
 has "#24 due --topic PROJ-2 lists only PROJ-2 cards (3 rows x recall+source)" "$out" "6 due"
 out=$(printf '\ng\nq\n' | FLEET_STATE=$S24 "$FL" quiz --topic proj-2 2>&1); rc=$?

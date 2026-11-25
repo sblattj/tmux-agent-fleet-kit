@@ -64,7 +64,7 @@ def sample_event(**kw):
 class WatchContract(unittest.TestCase):
     def test_registry_names(self):
         self.assertEqual(set(W.SOURCES), {"call", "command", "github", "jira", "confluence", "ado", "bitbucket",
-                                          "gitlab", "webhook"})
+                                          "gitlab", "webhook", "whosaid", "linear"})
         self.assertTrue(all(v.startswith("watch_sources.") for v in W.SOURCES.values()))
         self.assertTrue(os.path.isdir(os.path.join(ROOT, "lib", "watch_sources")))
         for k in W.SOURCES:

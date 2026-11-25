@@ -30,7 +30,7 @@ LATER = "2026-11-21T10:00:00Z"   # 25 h after NOW
 ROWS = [
     ("decision", "fleet", "decisions-log:Q12", "a: cap at 3, jittered", "Retry cap", "widget"),
     ("decision", "fleet", "decisions-log:Q13", "b: ship the docs fix alone", "Docs fix ships alone", "widget"),
-    ("lesson", "fleet", "route-done:lane-a", "done: upload queue drains in order", "Queue order", "widget"),
+    ("done", "fleet", "route-done:lane-a", "done: upload queue drains in order", "Queue order", "widget"),
     ("change", "outside", "watch:acme/widget#7", "Merged PROJ-1: widget retries use backoff", "PR 7 merged", "widget"),
     ("doc", "outside", "watch:example.com/docs/3", "Page edit: setup needs Python 3.8", "Setup page", "docs"),
 ]
@@ -73,6 +73,16 @@ class Base(unittest.TestCase):
             p = self.learn("add", "--kind", kind, "--origin", origin, "--source", src, "--quote", quote,
                            "--title", title, "--topic", topic, state=state)
             self.assertEqual(p.returncode, 0, p.stderr)
+        self.see_all(state)
+
+    def see_all(self, state=None):
+        """Teach before test: show every waiting lesson so the fixture's cards come due."""
+        for _ in range(20):
+            p = self.learn("lesson", state=state)
+            self.assertEqual(p.returncode, 0, p.stderr)
+            if "no new lessons" in p.stdout:
+                return
+        self.fail("lessons never ran out")
 
     def learn_dir(self, state=None):
         return os.path.join(state or self.state, "learn")

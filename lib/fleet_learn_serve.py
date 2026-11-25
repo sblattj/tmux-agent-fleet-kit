@@ -42,9 +42,32 @@ class NotDue(Exception):
 
 
 def human_only(verb):
-    role = os.environ.get("FLEET_ROLE") or ""
-    if role:
-        raise PermissionError("role %s can't %s: only the human takes LEARN quizzes" % (role, verb))
+    """One guard for the page and the CLI (fleet_learn.human_only, Q695): any FLEET_ROLE is refused."""
+    fl.human_only(verb)
+
+
+def lessons_state(now=None):
+    """GET /api/lessons: the topics waiting, and the first one as a preview model (nothing recorded)."""
+    import fleet_learn_lesson as les
+    ls = les.lessons()
+    first = None
+    if ls:
+        rows = [fl.item(l) for l in ls[0]["lids"]][:les.MAX_ROWS]
+        first = les.lesson_model(rows)
+        first["topic"] = ls[0]["topic"]
+    return {"waiting": ls, "lesson": first}
+
+
+def seen(lids):
+    """POST /api/seen {lids}: record the lesson the page showed as seen (the 24 h clock starts here)."""
+    human_only("mark lessons seen")
+    if not isinstance(lids, list) or not lids or not all(isinstance(x, str) for x in lids):
+        raise fl.Refused("lids must be a non-empty list of row ids")
+    live = {r["lid"] for r in fl.items()}
+    bad = [x for x in lids if x not in live]
+    if bad:
+        raise fl.Refused("no row %s" % ", ".join(bad))
+    return {"marked": [r["lid"] for r in fl.mark_seen(lids, via="page")]}
 
 
 # ---------------------------------------------------------------- read side
@@ -167,6 +190,8 @@ def make_handler(token, allowed_hosts):
                     return self._send(200, page, "text/html")
                 if path == "/api/state":
                     return self._send(200, state())
+                if path == "/api/lessons":
+                    return self._send(200, lessons_state())
             except Exception as e:
                 mesh.log("learn-ui %s error: %s" % (path, e))
                 return self._send(500, {"error": str(e)})
@@ -191,10 +216,14 @@ def make_handler(token, allowed_hosts):
                                  latency_ms=body.get("latencyMs"))
                 elif path == "/api/reveal":
                     res = reveal(body.get("cid"))
+                elif path == "/api/seen":
+                    res = seen(body.get("lids"))
                 else:
                     return self._send(404, {"error": "not found"})
             except NotDue as e:
                 return self._send(409, {"error": str(e)})
+            except PermissionError as e:
+                return self._send(403, {"error": str(e)})
             except fl.Refused as e:
                 return self._send(404 if str(e).startswith("no card") else 400, {"error": str(e)})
             except Exception as e:

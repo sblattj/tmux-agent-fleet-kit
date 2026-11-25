@@ -46,6 +46,8 @@
   .pass { color:var(--ok); font-weight:700; } .fail { color:var(--bad); font-weight:700; }
   .empty { color:var(--dim); padding:14px 0; }
   .err { color:var(--bad); }
+  .heardtag { color:var(--dim); font-style:italic; }
+  .src { color:var(--dim); font-size:12px; }
   @media (max-width:700px) { .grid { grid-template-columns:1fr; } }
 </style>
 </head>
@@ -58,6 +60,9 @@
 </header>
 <main>
   <div class="grid" id="origins"></div>
+
+  <h2>Lesson</h2>
+  <div id="lesson"></div>
 
   <h2>Quiz</h2>
   <div id="quiz"></div>
@@ -234,12 +239,86 @@ function renderQuiz() {
   box.appendChild(card);
 }
 
+// The term map: one box per term, laid out left to right in the order the server sends them, a part-of arrow
+// from each term to its parent. Same model in, same SVG out (no randomness, no layout engine).
+function termMap(terms) {
+  const ns = "http://www.w3.org/2000/svg", BW = 150, BH = 34, GAP = 40, H = BH + 20;
+  const W = Math.max(1, terms.length) * (BW + GAP);
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("class", "termmap"); svg.setAttribute("width", W); svg.setAttribute("height", H);
+  svg.setAttribute("viewBox", "0 0 " + W + " " + H);
+  const pos = {};
+  terms.forEach((t, i) => { pos[t.id] = 10 + i * (BW + GAP); });
+  terms.forEach(t => {
+    for (const p of (t.edges["part-of"] || [])) {
+      if (pos[p] === undefined) continue;
+      const a = pos[t.id] + BW, b = pos[p];
+      const ln = document.createElementNS(ns, "line");
+      const x1 = a < b ? a : pos[t.id], x2 = a < b ? b : pos[p] + BW;
+      ln.setAttribute("x1", x1); ln.setAttribute("y1", 10 + BH / 2); ln.setAttribute("x2", x2); ln.setAttribute("y2", 10 + BH / 2);
+      ln.setAttribute("stroke", "#3fb68b"); ln.setAttribute("stroke-width", "1.5");
+      const tt = document.createElementNS(ns, "title"); tt.textContent = t.id + " part of " + p; ln.appendChild(tt);
+      svg.appendChild(ln);
+    }
+  });
+  terms.forEach(t => {
+    const x = pos[t.id];
+    const r = document.createElementNS(ns, "rect");
+    r.setAttribute("x", x); r.setAttribute("y", 10); r.setAttribute("width", BW); r.setAttribute("height", BH);
+    r.setAttribute("rx", 6); r.setAttribute("fill", "#0f1418"); r.setAttribute("stroke", "#e6edf3");
+    const tx = document.createElementNS(ns, "text");
+    tx.setAttribute("x", x + 8); tx.setAttribute("y", 10 + BH / 2 + 4); tx.setAttribute("fill", "#e6edf3");
+    tx.setAttribute("font-size", "12"); tx.textContent = (t.id.length > 20 ? t.id.slice(0, 19) + "..." : t.id);
+    const tt = document.createElementNS(ns, "title"); tt.textContent = t.id + " (" + t.type + ")";
+    r.appendChild(tt); svg.appendChild(r); svg.appendChild(tx);
+  });
+  return svg;
+}
+
+async function loadLesson() {
+  const box = document.getElementById("lesson"); clear(box);
+  let L;
+  try { L = await api("/api/lessons"); } catch (e) { box.appendChild(el("div", { class: "err", text: e.message })); return; }
+  const m = L.lesson;
+  if (!m) { box.appendChild(el("div", { class: "empty", text: "No new lessons. Cards come due only after their lesson." })); return; }
+  const card = el("div", { class: "card", id: "lesson-card" },
+    el("div", { class: "top" }, el("span", { class: "id", text: m.topic }),
+      el("span", { text: L.waiting.length + " topic(s) waiting" })));
+  card.appendChild(el("div", { class: "q", text: "Terms" }));
+  if (m.terms.length) card.appendChild(termMap(m.terms));
+  for (const t of m.terms) {
+    card.appendChild(el("div", {}, el("b", { text: t.id + " (" + t.type + "): " }),
+      el("span", { class: "quote", text: "\"" + t.definition + "\"" }), el("span", { class: "src", text: " [" + t.source + "]" })));
+  }
+  card.appendChild(el("div", { class: "q", text: "In context" }));
+  for (const c of m.context) {
+    const row = el("div", { class: "ctx", "data-lid": c.lid },
+      el("span", { class: "id", text: c.lid + " " }),
+      c.heard ? el("span", { class: "heardtag", text: "heard, not decided yet " }) : el("span", { text: c.kind + " " }),
+      el("span", { class: "quote", text: "\"" + c.quote + "\"" }), el("span", { class: "src", text: " [" + c.source + "]" }));
+    for (const ln of c.lines) {
+      row.appendChild(el("div", { class: "dim", text: ln.field + ": " + ln.text + " \"" + ln.quote + "\" [" + c.source + "]" }));
+    }
+    card.appendChild(row);
+  }
+  if (m.dropped) card.appendChild(el("div", { class: "dim", text: m.dropped + " line(s) dropped (not backed by a quote)" }));
+  const out = el("div", { class: "status" });
+  const go = el("button", { text: "Seen: start the clock" });
+  go.addEventListener("click", () => {
+    go.disabled = true;
+    api("/api/seen", { lids: m.lids }).then(() => load()).catch(e => { go.disabled = false; out.appendChild(el("div", { class: "err", text: e.message })); });
+  });
+  card.appendChild(el("div", { class: "row" }, go)); card.appendChild(out);
+  box.appendChild(card);
+}
+
 async function load() {
   try {
     STATE = await api("/api/state");
     document.getElementById("meta").textContent = "as of " + STATE.snapshot.at;
     renderOrigins(STATE.snapshot); renderTopics(STATE); renderHeard(STATE.snapshot); renderRecent(STATE.snapshot);
     renderQuiz();
+    await loadLesson();
   } catch (e) {
     document.getElementById("meta").textContent = "error: " + e.message;
   }

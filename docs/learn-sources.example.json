@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "sources": [
+    {"name": "code", "kind": "github", "repos": ["example-org/example-repo"],
+     "auth": {"type": "pat", "token": "env:GITHUB_TOKEN"}},
+    {"name": "tracker", "kind": "linear", "teams": ["ENG"],
+     "auth": {"type": "pat", "token": "keychain:linear-api-key"}},
+    {"name": "calls", "kind": "whosaid", "workspace": "~/meetings"}
+  ]
+}
