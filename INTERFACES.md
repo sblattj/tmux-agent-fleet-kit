@@ -310,6 +310,25 @@ fleet-goal check <goal.json>     first line `OK` or `FAIL <path>: <why>`; exit 0
 `check` accepts `goal` as a string or an object with `title`/`objective`, phases with only an `id`, and the open-calls list as `openCalls` or the legacy `openForHuman` (one per file).
 Desk helper `skills/running-the-decisions-desk/desk.sh` uses `fleet-goal check` and field `openCalls`; on a file that already has `openForHuman` it reads and writes that key instead (never migrated in place, so readers that know only the legacy name keep working). `lib/fleet_decisions.py` reads the same way.
 
+## bin/fleet-remote (`fleet remote ...`, issue #22)
+
+```
+fleet remote setup [--pubkey KEY|FILE] [--ip ADDR] [--dry-run]   idempotent; exit 0, or 1 with `ERROR: ...` on stderr
+fleet remote status [--ip ADDR]                                 read-only; never prompts (sudo -n for sshd -T)
+fleet remote qr [--read-only] [--ip ADDR]                        line 1: `mosh [--server=P] USER@IP -- TMUX [-L SOCK] attach -t SESSION [-r]`
+fleet remote off [--dry-run] [--keep-sshd]
+```
+- Drop-in: `/etc/ssh/sshd_config.d/010-fleet-remote-keyonly.conf` (PubkeyAuthentication yes, PasswordAuthentication no,
+  KbdInteractiveAuthentication no, PermitRootLogin no). Written before sshd is switched on, validated with `sshd -t` and
+  `sshd -T` (passwordauthentication no), restored or removed on failure.
+- State: `$FLEET_STATE/remote.json` `{"sshd_was_on_before_setup": bool, "dropin": path}`, written by the first setup
+  and removed by `off`. `off` turns sshd off only when that field is `false` and `--keep-sshd` is absent.
+- Env: `FLEET_REMOTE_IP` (overlay address), `FLEET_REMOTE_OS` (default `uname -s`), `FLEET_REMOTE_SSH_PORT` (22),
+  `FLEET_TMUX_SOCKET` / `FLEET_TMUX_SESSION` (the attach target and the window-size server).
+- `FLEET_REMOTE_SANDBOX=DIR` (tests): sshd files live under `DIR/etc/ssh`, and every system tool (sudo, sshd, systemsetup,
+  socketfilterfw, launchctl, systemctl, nc, ssh-keygen -A, ifconfig/ip, tailscale, pmset, osascript) must be
+  `DIR/bin/<name>`. A missing tool is an error, never a fall-through to the real one.
+
 ## v2 addendum (roles, lifecycle, routing)
 
 ### Roles

@@ -22,6 +22,7 @@
 #                                                       LEARN engine: ledger, quizzes, proof of learning (bin/fleet-learn)
 #   fleet probe <verb>|stats|nuked|resume ...           DECIDE read-only probes (bin/fleet-probe)
 #   fleet side start|end|ls|show|adopt-ach ...          side runs: a lane's child runs outside tmux (lib/fleet_side.py)
+#   fleet remote setup|status|qr|off ...                attach from a phone over ssh+mosh on ZeroTier/Tailscale (bin/fleet-remote)
 #
 # launch opts:
 #   --cli claude|codex|opencode|kiro|agy  which CLI (default claude; agy = Antigravity CLI)
@@ -998,6 +999,7 @@ case $sub in
   watch|learn|probe) # four-desks engines (docs/design/four-desks.md sections 2.5, 3, 4)
     [ -f "$BINDIR/fleet-$sub" ] || die "fleet-$sub missing"
     exec bash "$BINDIR/fleet-$sub" "$@" ;;
+  remote) exec bash "$BINDIR/fleet-remote" "$@" ;;  # phone/tablet attach over ssh+mosh on a private overlay
   side) exec python3 "$ROOT/lib/fleet_side.py" "$@" ;;  # side runs: start|end|ls|show (+ later subcommands)
   tick|park|reopen|cleanup|handoff|forget)
     case $sub in

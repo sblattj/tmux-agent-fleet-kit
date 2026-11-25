@@ -251,12 +251,43 @@ fleet side run --host codex --model gpt-x --bound 30m -- codex exec "fix the fla
 fleet side ls          # S3 running ... then done/failed with exit and tokens
 ```
 
+## Remote attach (phone or tablet)
+
+`fleet remote` lets you follow a run, answer DECIDE or read a lane from a phone or tablet (Blink Shell, Termius) over ssh + mosh on a private overlay network: ZeroTier, Tailscale, or any VPN that gives this host a private address. It never opens anything to the public internet itself.
+
+```bash
+fleet remote setup --pubkey ~/phone.pub --dry-run   # print every step, change nothing
+fleet remote setup --pubkey ~/phone.pub             # idempotent; run it again after upgrading mosh
+fleet remote status                                 # read-only checks
+fleet remote qr [--read-only]                       # the attach command (and a QR code with qrencode installed)
+fleet remote off [--keep-sshd]                      # remove the drop-in; sshd off unless it was on before setup
+```
+
+`setup`, in order:
+1. Appends the key to `~/.ssh/authorized_keys` once (dir 700, file 600).
+2. Generates the sshd host keys if missing (macOS has none until Remote Login has run once).
+3. Writes the key-only drop-in `sshd_config.d/010-fleet-remote-keyonly.conf`, before sshd is switched on, so passwords are never open. It checks `sshd -t`, plus `sshd -T` for `passwordauthentication no`; if either fails, it rolls the drop-in back and leaves sshd alone.
+4. Turns sshd on: macOS Remote Login, or systemd on Linux.
+5. Allows the resolved `mosh-server` binary in the macOS application firewall. A package upgrade moves that path, so rerun setup afterwards.
+6. Sets `window-size latest` on the fleet tmux server.
+
+Root steps go through sudo, with an askpass dialog when there is no TTY. The overlay address comes from `tailscale ip -4`, then from a ZeroTier interface (`zt*`, `feth*`), then from an address in 100.64.0.0/10. `--ip` or `FLEET_REMOTE_IP` overrides it. When `mosh-server` is outside a non-login ssh PATH (for example Homebrew), the attach command adds `--server=<path>` and the full tmux path.
+
+**Never expose the tmux socket over raw TCP** (socat, ncat, port forwards). Anyone who reaches that port runs commands as you, with no authentication. Use ssh/mosh only.
+
+Notes:
+- sshd listens on every interface, not just the overlay. Key-only auth is the guard, and `status` says so.
+- A sleeping host drops the session. Use `caffeinate -dims` (macOS) or `systemd-inhibit` (Linux).
+- On Linux, `setup` leaves the host firewall alone. If one is on, allow UDP 60000-61000 on the overlay interface.
+- The Linux sshd step is not covered by tests.
+
 ## Tests
 
 ```bash
 python3 -m unittest test/test_listen.py # WATCH UI: parsing, routing, secrets, classifier contract, sources, page
 bash test/test_listen.sh      # WATCH UI in a real tmux pane on a private socket: layout, live filter, page, quit
 python3 -m unittest test/test_mesh.py   # fleet-mesh delivery, reopen, decisions log
+bash test/test_remote.sh     # fleet remote: sandboxed sshd/firewall stubs, tripwire sudo, private tmux socket; never touches this host
 python3 -m unittest test/test_decisions.py   # DECISIONS UI: cards, pick relay, badges, refresh A/B, server auth, tmux fallback
 python3 -m unittest test/test_side_guard.py   # side runs: decision calls refused, peer_send only to the parent as <parent>/<id>
 python3 -m unittest test/test_watch_serve.py   # WATCH page: loopback + token (403 without), page action = pane key, same state

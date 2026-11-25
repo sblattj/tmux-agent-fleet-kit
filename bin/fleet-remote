@@ -1,0 +1,414 @@
+#!/usr/bin/env bash
+# fleet remote: reach the fleet tmux session from a phone or tablet over a private overlay (ZeroTier, Tailscale,
+# any VPN that gives this host a private address), with ssh + mosh. It never opens anything to the public internet.
+#
+#   fleet remote setup [--pubkey KEY|FILE] [--ip ADDR] [--dry-run]
+#       idempotent: authorized_keys (dir 700, file 600), a key-only sshd drop-in validated with sshd -t before sshd
+#       is switched on (rolled back on failure), sshd on (macOS Remote Login, systemd on Linux), the real mosh-server
+#       binary allowed in the macOS firewall, window-size latest on the fleet tmux server. Root steps go through sudo
+#       (an askpass dialog when there is no TTY); --dry-run prints them and changes nothing.
+#   fleet remote status [--ip ADDR]   read-only: sshd, key-only auth, mosh-server PATH, firewall, overlay IP, window-size, sleep
+#   fleet remote qr [--read-only] [--ip ADDR]   the attach command for Blink Shell / Termius, plus a QR code (qrencode)
+#   fleet remote off [--dry-run] [--keep-sshd]  remove the drop-in; turn sshd off unless it was on before setup
+#
+# NEVER expose the tmux socket over raw TCP (socat, ncat, port forwards): anyone who reaches that port runs commands
+# as you, with no authentication. Use ssh/mosh only; they run tmux as you after key auth.
+#
+# env: FLEET_REMOTE_IP (overlay address), FLEET_TMUX_SOCKET / FLEET_TMUX_SESSION (attach target), FLEET_STATE.
+# FLEET_REMOTE_SANDBOX=DIR (tests): every system path resolves under DIR (DIR/etc/ssh, DIR/bin/<tool>), and a tool
+# missing from DIR/bin is an error, never a fall-through to the real one.
+set -u
+
+die()  { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+say()  { printf '==> %s\n' "$*"; }
+ok()   { printf '    ok: %s\n' "$*"; }
+warn() { printf '    warn: %s\n' "$*"; }
+plan() { printf '    [dry-run] would: %s\n' "$*"; }
+usage() { sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+
+SB=${FLEET_REMOTE_SANDBOX:-}
+OS=${FLEET_REMOTE_OS:-$(uname -s)}
+STATE=${FLEET_STATE:-$HOME/.local/state/fleet}
+SESSION=${FLEET_TMUX_SESSION:-fleet}
+SOCKET=${FLEET_TMUX_SOCKET:-}
+
+if [ -n "$SB" ]; then
+  [ -d "$SB/bin" ] || die "FLEET_REMOTE_SANDBOX=$SB has no bin/"
+  SSHDIR=$SB/etc/ssh
+else
+  SSHDIR=/etc/ssh
+fi
+DROPIN=$SSHDIR/sshd_config.d/010-fleet-remote-keyonly.conf
+DROPIN_BODY='# Managed by `fleet remote` (tmux-agent-fleet-kit): key-only ssh for attaching to the fleet session.
+# Sorts before most distro drop-ins; sshd keeps the first value it reads.
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin no'
+
+tool() { # tool <name>: the absolute path to a system tool (sandbox: DIR/bin/<name> or an error)
+  local n=$1 p
+  if [ -n "$SB" ]; then
+    [ -x "$SB/bin/$n" ] || die "sandbox has no bin/$n"
+    printf '%s\n' "$SB/bin/$n"; return
+  fi
+  case $n in
+    sshd) p=/usr/sbin/sshd ;;
+    systemsetup) p=/usr/sbin/systemsetup ;;
+    socketfilterfw) p=/usr/libexec/ApplicationFirewall/socketfilterfw ;;
+    launchctl) p=/bin/launchctl ;;
+    osascript) p=/usr/bin/osascript ;;
+    *) p=$(command -v "$n" 2>/dev/null) || p= ;;
+  esac
+  [ -n "$p" ] || die "$n not found"
+  printf '%s\n' "$p"
+}
+have() { if [ -n "$SB" ]; then [ -x "$SB/bin/$1" ]; else command -v "$1" >/dev/null 2>&1; fi; }
+tm() { if [ -n "$SOCKET" ]; then tmux -L "$SOCKET" "$@"; else tmux "$@"; fi; }
+
+DRY=0
+SUDO_READY=0
+SUDO=()
+ASKPASS=
+cleanup() { [ -z "$ASKPASS" ] || rm -f "$ASKPASS"; }
+trap cleanup EXIT
+
+ensure_sudo() { # once, on the first root step: sudo, or sudo -A with an askpass dialog when there is no TTY
+  [ $SUDO_READY = 1 ] && return 0
+  local s; s=$(tool sudo) || exit 1
+  SUDO=("$s")
+  if ! "$s" -n true 2>/dev/null && [ ! -t 0 ] && [ "$OS" = Darwin ]; then
+    local osa; osa=$(tool osascript) || exit 1
+    ASKPASS=$(mktemp "${TMPDIR:-/tmp}/fleet-askpass.XXXXXX")
+    printf '#!/bin/sh\n%s -e %s -e %s 2>/dev/null\n' "$osa" \
+      "'display dialog \"sudo password for fleet remote setup:\" default answer \"\" with hidden answer with title \"fleet remote\"'" \
+      "'text returned of result'" > "$ASKPASS"
+    chmod 700 "$ASKPASS"
+    export SUDO_ASKPASS=$ASKPASS
+    SUDO=("$s" -A)
+  fi
+  "${SUDO[@]}" -v || die "sudo failed"
+  SUDO_READY=1
+}
+run_root() { # run_root <description> <cmd...>: printed under --dry-run, else run through sudo
+  local desc=$1; shift
+  [ -n "${1:-}" ] || exit 1  # a tool lookup already printed why
+  if [ $DRY = 1 ]; then plan "$desc: sudo $*"; return 0; fi
+  ensure_sudo
+  "${SUDO[@]}" "$@"
+}
+write_root() { # write_root <file> <mode>: stdin to a root-owned file
+  local f=$1 mode=$2
+  if [ $DRY = 1 ]; then plan "write $f (mode $mode):"; sed 's/^/        /'; return 0; fi
+  ensure_sudo
+  "${SUDO[@]}" mkdir -p "$(dirname "$f")" && "${SUDO[@]}" tee "$f" >/dev/null && "${SUDO[@]}" chmod "$mode" "$f"
+}
+
+realpath_of() { python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "$1"; }
+
+overlay_ip() { # prints "IP KIND" for the first overlay address found, else nothing
+  if [ -n "${IP_ARG:-}" ]; then printf '%s given\n' "$IP_ARG"; return; fi
+  if [ -n "${FLEET_REMOTE_IP:-}" ]; then printf '%s FLEET_REMOTE_IP\n' "$FLEET_REMOTE_IP"; return; fi
+  local ip
+  if have tailscale; then
+    ip=$("$(tool tailscale)" ip -4 2>/dev/null | head -1)
+    [ -n "$ip" ] && { printf '%s tailscale\n' "$ip"; return; }
+  fi
+  # interface scan: zt*/feth* carry ZeroTier, an address in 100.64.0.0/10 is Tailscale's CGNAT range
+  local lines=
+  if have ifconfig; then
+    lines=$("$(tool ifconfig)" 2>/dev/null | awk '/^[a-z0-9]+:/{i=$1; sub(":","",i)} /^[ \t]+inet /{print i, $2}')
+  elif have ip; then
+    lines=$("$(tool ip)" -o -4 addr show 2>/dev/null | awk '{split($4,a,"/"); print $2, a[1]}')
+  fi
+  printf '%s\n' "$lines" | awk '
+    $1 ~ /^(zt|feth)/ { print $2, "zerotier"; exit }
+    { split($2, o, "."); if (o[1] == 100 && o[2] >= 64 && o[2] <= 127) { print $2, "tailscale"; exit } }'
+}
+
+sshd_listening() { "$(tool nc)" -z -w 2 127.0.0.1 "${FLEET_REMOTE_SSH_PORT:-22}" >/dev/null 2>&1; }
+
+mosh_paths() { # sets MOSH_LINK, MOSH_REAL, MOSH_ON_DEFAULT_PATH (1 when a non-login ssh shell finds it)
+  MOSH_LINK=$(command -v mosh-server 2>/dev/null) || MOSH_LINK=
+  MOSH_REAL=
+  MOSH_ON_DEFAULT_PATH=0
+  [ -n "$MOSH_LINK" ] || return 1
+  MOSH_REAL=$(realpath_of "$MOSH_LINK")
+  case $(dirname "$MOSH_LINK") in /usr/bin|/bin|/usr/sbin|/sbin) MOSH_ON_DEFAULT_PATH=1 ;; esac
+  return 0
+}
+
+state_file() { printf '%s\n' "$STATE/remote.json"; }
+
+attach_cmd() { # attach_cmd <ip> <readonly 0|1>
+  local ip=$1 ro=$2 user tmuxbin server='' tmx
+  user=$(id -un)
+  tmuxbin=$(command -v tmux 2>/dev/null || echo tmux)
+  mosh_paths || true
+  [ "$MOSH_ON_DEFAULT_PATH" = 1 ] || [ -z "$MOSH_LINK" ] || server="--server=$MOSH_LINK "
+  case $(dirname "$tmuxbin") in /usr/bin|/bin) tmx=tmux ;; *) tmx=$tmuxbin ;; esac
+  [ -z "$SOCKET" ] || tmx="$tmx -L $SOCKET"
+  local ro_flag=; [ "$ro" = 1 ] && ro_flag=" -r"
+  printf 'mosh %s%s@%s -- %s attach -t %s%s\n' "$server" "$user" "$ip" "$tmx" "$SESSION" "$ro_flag"
+}
+
+raw_tcp_warning() {
+  printf '    never expose the tmux socket over raw TCP (socat, ncat, port forwards): anyone who reaches it runs commands as you\n'
+}
+
+# ---------------------------------------------------------------- setup
+cmd_setup() {
+  local PUBKEY_ARG=
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --pubkey) [ $# -ge 2 ] || die "--pubkey needs KEY or FILE"; PUBKEY_ARG=$2; shift 2 ;;
+      --ip) [ $# -ge 2 ] || die "--ip needs ADDR"; IP_ARG=$2; shift 2 ;;
+      --dry-run|-n) DRY=1; shift ;;
+      -h|--help) usage ;;
+      *) die "setup: unknown arg $1" ;;
+    esac
+  done
+
+  say "preflight"
+  mosh_paths || die "mosh-server not found on PATH; install mosh (brew install mosh / apt install mosh)"
+  ok "mosh-server: $MOSH_LINK -> $MOSH_REAL"
+  command -v tmux >/dev/null 2>&1 || die "tmux not found"
+  local oi; oi=$(overlay_ip)
+  if [ -n "$oi" ]; then ok "overlay address: ${oi% *} (${oi##* })"; else warn "no overlay address found (ZeroTier or Tailscale joined?); --ip ADDR sets one"; fi
+  case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
+    *UTF-8*|*utf8*|*UTF8*|*utf-8*) ok "UTF-8 locale" ;;
+    *) warn "mosh-server needs a UTF-8 locale on this host (e.g. LANG=en_US.UTF-8)" ;;
+  esac
+
+  say "authorized_keys"
+  local ssh_dir=$HOME/.ssh ak=$HOME/.ssh/authorized_keys
+  if [ -n "$PUBKEY_ARG" ]; then
+    local key
+    if [ -f "$PUBKEY_ARG" ]; then key=$(head -1 "$PUBKEY_ARG"); else key=$PUBKEY_ARG; fi
+    key=$(printf '%s' "$key" | tr -d '\r\n')
+    local fp; fp=$(printf '%s\n' "$key" | ssh-keygen -l -f - 2>/dev/null | awk '{print $2}')
+    [ -n "$fp" ] || die "not a valid ssh public key"
+    local blob; blob=$(printf '%s\n' "$key" | awk '{print $1" "$2}')
+    if [ -f "$ak" ] && awk '{print $1" "$2}' "$ak" | grep -qxF -- "$blob"; then
+      ok "key $fp already present"
+    elif [ $DRY = 1 ]; then
+      plan "append key $fp to ~/.ssh/authorized_keys"
+    else
+      mkdir -p "$ssh_dir" && chmod 700 "$ssh_dir"
+      touch "$ak" && chmod 600 "$ak"
+      if [ -s "$ak" ] && [ -n "$(tail -c1 "$ak")" ]; then printf '\n' >> "$ak"; fi
+      printf '%s\n' "$key" >> "$ak"
+      ok "appended key $fp"
+    fi
+  else
+    ok "no --pubkey; authorized_keys untouched"
+  fi
+  if [ $DRY = 0 ] && [ -d "$ssh_dir" ]; then chmod 700 "$ssh_dir"; [ ! -f "$ak" ] || chmod 600 "$ak"; fi
+
+  # record whether sshd was on before the first setup, so `off` can leave it as it found it
+  local was_on=false; sshd_listening && was_on=true
+  if [ $DRY = 0 ] && [ ! -f "$(state_file)" ]; then
+    mkdir -p "$STATE"
+    printf '{"sshd_was_on_before_setup": %s, "dropin": "%s"}\n' "$was_on" "$DROPIN" > "$(state_file)"
+  fi
+
+  say "sshd host keys"
+  if ls "$SSHDIR"/ssh_host_*_key.pub >/dev/null 2>&1; then
+    ok "host keys present"
+  else
+    run_root "generate sshd host keys (needed before sshd -t)" "$(tool ssh-keygen)" -A || die "ssh-keygen -A failed"
+    [ $DRY = 1 ] || ok "host keys generated"
+  fi
+
+  say "sshd drop-in $DROPIN (before sshd is switched on, so passwords are never open)"
+  local sshd; sshd=$(tool sshd) || exit 1
+  if [ -f "$DROPIN" ] && [ "$(cat "$DROPIN")" = "$DROPIN_BODY" ]; then
+    ok "drop-in already in place"
+  elif [ $DRY = 1 ]; then
+    write_root "$DROPIN" 644 <<<"$DROPIN_BODY"
+    plan "validate: sudo $sshd -t, and roll the drop-in back if it fails"
+  else
+    local backup=
+    if [ -f "$DROPIN" ]; then backup=$(mktemp "${TMPDIR:-/tmp}/fleet-dropin.XXXXXX"); cp "$DROPIN" "$backup"; fi
+    write_root "$DROPIN" 644 <<<"$DROPIN_BODY" || die "could not write $DROPIN"
+    local eff
+    if run_root "validate sshd config" "$sshd" -t \
+       && eff=$(run_root "effective sshd config" "$sshd" -T 2>/dev/null) \
+       && printf '%s\n' "$eff" | grep -qix 'passwordauthentication no'; then
+      ok "drop-in installed; sshd -t passed; effective passwordauthentication no"
+      [ -z "$backup" ] || rm -f "$backup"
+    else
+      if [ -n "$backup" ]; then run_root "restore drop-in" cp "$backup" "$DROPIN"; rm -f "$backup"
+      else run_root "remove drop-in" rm -f "$DROPIN"; fi
+      die "sshd -t failed or password auth is still on (does sshd_config Include sshd_config.d/*.conf?); drop-in rolled back, sshd left as it was"
+    fi
+  fi
+
+  say "sshd"
+  if sshd_listening; then
+    ok "sshd already listening"
+  elif [ "$OS" = Darwin ]; then
+    run_root "turn on Remote Login" "$(tool systemsetup)" -setremotelogin on || true
+    if [ $DRY = 0 ] && ! sshd_listening; then
+      warn "systemsetup did not take (it often needs Full Disk Access); trying launchctl"
+      run_root "enable sshd" "$(tool launchctl)" enable system/com.openssh.sshd
+      run_root "start sshd" "$(tool launchctl)" bootstrap system /System/Library/LaunchDaemons/ssh.plist || true
+    fi
+    [ $DRY = 1 ] || sshd_listening || die "sshd still off: System Settings > General > Sharing > Remote Login, then rerun"
+    [ $DRY = 1 ] || ok "sshd listening"
+  else
+    run_root "enable and start sshd" "$(tool systemctl)" enable --now ssh 2>/dev/null \
+      || run_root "enable and start sshd" "$(tool systemctl)" enable --now sshd
+    [ $DRY = 1 ] || sshd_listening || die "sshd still off"
+    [ $DRY = 1 ] || ok "sshd listening"
+  fi
+
+  if [ "$OS" = Darwin ]; then
+    say "application firewall: mosh-server"
+    local fw; fw=$(tool socketfilterfw) || exit 1
+    if "$fw" --listapps 2>/dev/null | grep -qF -- "$MOSH_REAL" \
+       && "$fw" --getappblocked "$MOSH_REAL" 2>/dev/null | grep -qi 'permitted'; then
+      ok "mosh-server allowed ($MOSH_REAL)"
+    else
+      run_root "add mosh-server to the firewall" "$fw" --add "$MOSH_REAL"
+      run_root "unblock mosh-server" "$fw" --unblockapp "$MOSH_REAL"
+    fi
+    warn "the firewall allows this exact path; a package upgrade moves it (e.g. a new Homebrew Cellar version), so rerun setup after upgrading mosh"
+  else
+    say "firewall"
+    ok "not changed on $OS; allow UDP 60000-61000 on the overlay interface if a host firewall is on"
+  fi
+
+  say "tmux window-size"
+  local ws; ws=$(tm show -gv window-size 2>/dev/null) || ws=
+  if [ -z "$ws" ]; then
+    warn "no tmux server on this socket yet; run setup again once the fleet is up"
+  elif [ "$ws" = latest ]; then
+    ok "window-size latest"
+  elif [ $DRY = 1 ]; then
+    plan "tmux set -g window-size latest (now $ws)"
+  else
+    tm set -g window-size latest && ok "window-size latest (was $ws)"
+  fi
+
+  say "attach"
+  local ip=${oi% *}; [ -n "$ip" ] || ip='<overlay-ip>'
+  printf '    %s\n' "$(attach_cmd "$ip" 0)"
+  printf '    keep the host awake while away (macOS: caffeinate -dims; Linux: systemd-inhibit)\n'
+  raw_tcp_warning
+  if [ $DRY = 1 ]; then say "dry run: nothing changed"; else say "done"; fi
+}
+
+# ---------------------------------------------------------------- status
+cmd_status() {
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --ip) [ $# -ge 2 ] || die "--ip needs ADDR"; IP_ARG=$2; shift 2 ;;
+      -h|--help) usage ;;
+      *) die "status: unknown arg $1" ;;
+    esac
+  done
+  if sshd_listening; then echo "sshd: listening"; else echo "sshd: off"; fi
+  if [ -f "$DROPIN" ]; then echo "drop-in: $DROPIN"; else echo "drop-in: none"; fi
+  local eff
+  if eff=$("$(tool sudo)" -n "$(tool sshd)" -T 2>/dev/null) && [ -n "$eff" ]; then
+    if printf '%s\n' "$eff" | grep -qix 'passwordauthentication no' \
+       && printf '%s\n' "$eff" | grep -qix 'kbdinteractiveauthentication no'; then
+      echo "auth: key-only (sshd -T)"
+    else
+      echo "auth: PASSWORDS ALLOWED (sshd -T); run fleet remote setup"
+    fi
+  else
+    echo "auth: unknown (sshd -T needs sudo without a prompt)"
+  fi
+  echo "note: sshd listens on every interface, not just the overlay; key-only auth is the guard"
+  if mosh_paths; then
+    if [ "$MOSH_ON_DEFAULT_PATH" = 1 ]; then echo "mosh-server: $MOSH_LINK (on the non-login ssh PATH)"
+    else echo "mosh-server: $MOSH_LINK, not on a non-login ssh PATH; attach with --server=$MOSH_LINK (fleet remote qr does)"; fi
+  else
+    echo "mosh-server: not found"
+  fi
+  if [ "$OS" = Darwin ]; then
+    local fw; fw=$(tool socketfilterfw) || exit 1
+    echo "firewall: $("$fw" --getglobalstate 2>/dev/null | head -1)"
+    if [ -n "$MOSH_REAL" ]; then
+      if "$fw" --getappblocked "$MOSH_REAL" 2>/dev/null | grep -qi permitted; then echo "firewall mosh-server: allowed"
+      else echo "firewall mosh-server: not allowed ($MOSH_REAL)"; fi
+    fi
+  fi
+  local oi; oi=$(overlay_ip)
+  if [ -n "$oi" ]; then echo "overlay: ${oi% *} (${oi##* })"; else echo "overlay: none found"; fi
+  local ws; ws=$(tm show -gv window-size 2>/dev/null) || ws=
+  echo "window-size: ${ws:-no tmux server}"
+  if [ "$OS" = Darwin ] && have pmset; then
+    local sl; sl=$("$(tool pmset)" -g 2>/dev/null | awk '$1=="sleep"{print $2; exit}')
+    if [ "${sl:-0}" = 0 ]; then echo "sleep: off"; else echo "sleep: after $sl min; the session drops while asleep (caffeinate -dims)"; fi
+  fi
+}
+
+# ---------------------------------------------------------------- qr
+cmd_qr() {
+  local ro=0
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --read-only|-r) ro=1; shift ;;
+      --ip) [ $# -ge 2 ] || die "--ip needs ADDR"; IP_ARG=$2; shift 2 ;;
+      -h|--help) usage ;;
+      *) die "qr: unknown arg $1" ;;
+    esac
+  done
+  local oi ip; oi=$(overlay_ip); ip=${oi% *}
+  [ -n "$ip" ] || { warn "no overlay address found; pass --ip ADDR"; ip='<overlay-ip>'; }
+  local cmd; cmd=$(attach_cmd "$ip" "$ro")
+  echo "$cmd"
+  if command -v qrencode >/dev/null 2>&1; then qrencode -t ANSIUTF8 -- "$cmd"
+  else echo "(install qrencode for a scannable QR code of this command)"; fi
+  echo "Blink Shell: paste it at the blink> prompt. Termius: new host, Use Mosh on, startup command after the --."
+  [ "$ro" = 1 ] || echo "read-only attach: fleet remote qr --read-only"
+}
+
+# ---------------------------------------------------------------- off
+cmd_off() {
+  local keep=0
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --dry-run|-n) DRY=1; shift ;;
+      --keep-sshd) keep=1; shift ;;
+      -h|--help) usage ;;
+      *) die "off: unknown arg $1" ;;
+    esac
+  done
+  local sf; sf=$(state_file)
+  local was_on=unknown
+  [ ! -f "$sf" ] || was_on=$(python3 -c 'import json,sys;print(str(json.load(open(sys.argv[1])).get("sshd_was_on_before_setup")).lower())' "$sf" 2>/dev/null || echo unknown)
+  say "sshd"
+  if [ $keep = 1 ] || [ "$was_on" != false ]; then
+    if [ "$was_on" = true ]; then ok "sshd was on before setup; leaving it on"
+    elif [ $keep = 1 ]; then ok "--keep-sshd: leaving sshd on"
+    else ok "no setup record; leaving sshd as it is (turn it off in System Settings or systemctl)"; fi
+  elif sshd_listening || [ $DRY = 1 ]; then
+    if [ "$OS" = Darwin ]; then run_root "turn off Remote Login" "$(tool systemsetup)" -f -setremotelogin off
+    else run_root "stop sshd" "$(tool systemctl)" disable --now ssh 2>/dev/null || run_root "stop sshd" "$(tool systemctl)" disable --now sshd; fi
+  else
+    ok "sshd already off"
+  fi
+  say "drop-in"
+  if [ -f "$DROPIN" ]; then
+    run_root "remove $DROPIN" rm -f "$DROPIN"
+    if sshd_listening; then warn "sshd is still on without the key-only drop-in; check PasswordAuthentication"; fi
+  else
+    ok "no drop-in"
+  fi
+  if [ $DRY = 0 ]; then rm -f "$sf"; say "done"; else say "dry run: nothing changed"; fi
+}
+
+[ $# -ge 1 ] || usage 1
+sub=$1; shift
+case $sub in
+  setup) cmd_setup "$@" ;;
+  status) cmd_status "$@" ;;
+  qr) cmd_qr "$@" ;;
+  off) cmd_off "$@" ;;
+  -h|--help|help) usage ;;
+  *) usage 1 ;;
+esac
