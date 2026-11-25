@@ -31,7 +31,12 @@ SOURCES = {
     "bitbucket": "watch_sources.bitbucket",
     "gitlab": "watch_sources.gitlab",  # GitLab and Gitea
     "webhook": "watch_sources.webhook",  # phase 6 loopback receiver
+    "linear": "watch_sources.linear",  # Linear issues over GraphQL (read-only)
+    "whosaid": "watch_sources.whosaid",  # local meeting decisions, no network
 }
+
+# typed links an Event may carry in fields["links"] as {"rel", "type", "ref"} (Q697); LEARN keeps them on its rows
+LINK_RELS = ("part-of", "ships-in", "blocked-by", "decided-by", "owner")
 
 # --- routing ---------------------------------------------------------------------------------------------------------
 KIND_ASK = "ask"
@@ -345,6 +350,8 @@ SOURCE_REQUIRED = {
     "command": ("argv",),
     "call": (),
     "webhook": ("auth",),  # the receiver refuses a route without a secret reference
+    "linear": ("teams",),
+    "whosaid": ("workspace",),
 }
 FILTER_DROP_KEYS = ("actor", "type", "actorMatches")
 FILTER_WHEN_KEYS = ("tags", "type", "branchOwner", "any", "actorMatches", "source")

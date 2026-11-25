@@ -349,41 +349,79 @@ class TestRebuild(Base):
         return sorted((r["source"]["type"], r["source"]["ref"], r["quote"], r["status"])
                       for r in json.loads(self.ok("list", "--all", "--json")))
 
+    def lessons_and_cards(self):
+        cards = sorted((c["lid"], c["format"], json.dumps(c.get("sched"), sort_keys=True), bool(c.get("retired")))
+                       for c in self.cards().values())
+        topics = sorted({r["topic"] for r in json.loads(self.ok("list", "--json"))})
+        lessons = [json.loads(self.ok("lesson", "--topic", t, "--json", inp=""))["lessons"] for t in topics]
+        self.assertTrue(any(ls for ls in lessons))
+        return lessons, cards, self.due(now=LATER)
+
     def test_rebuild_rederives_rows_and_keeps_the_humans_record(self):
         self.write_dlog(DLOG)
         self.ok("sync")
-        self.add("manual:standup", "we keep the old port for the queue", title="Old port kept", topic="queue")
-        heard = self.add("call:c9", "maybe drop the beta flag", topic="flags", status="heard")
-        self.ok("confirm", heard, "--source", "decisions-log:Q77", "--quote", "drop the beta flag, agreed")
-        gone = self.add("manual:oops", "a row that was wrong", title="Wrong row", topic="misc")
-        self.ok("drop", gone, "--reason", "answer not in its quote")
         self.ok("lesson", "--yes")
         for c in self.due():
             self.answer(self.cards()[c["cid"]], NOW)
         before_rows = self.snapshot_rows()
         before_revs = self.jsonl("reviews.jsonl")
         before_proof = self.proof()
-        live_inputs = self.jsonl("inputs.jsonl")
-        self.assertEqual([j["verb"] for j in live_inputs], ["add", "add", "confirm", "add", "drop"])
+        self.assertFalse(os.path.exists(os.path.join(self.state, "learn", "inputs.jsonl")), "no inputs journal")
 
         res = json.loads(self.ok("rebuild", "--json", now=LATER))
         arch = res["archive"]
         self.assertTrue(arch.startswith(os.path.join(self.state, "learn", "archive")))
-        for name in ("ledger.jsonl", "cards.jsonl", "reviews.jsonl", "seen.jsonl", "inputs.jsonl", "proof.json"):
+        for name in ("ledger.jsonl", "cards.jsonl", "reviews.jsonl", "seen.jsonl", "proof.json"):
             self.assertTrue(os.path.exists(os.path.join(arch, name)), name)
         self.assertEqual(self.snapshot_rows(), before_rows)
         self.assertEqual((res["reviewsKept"], res["reviewsLeftOut"]), (len(before_revs), 0))
         self.assertEqual(res["seenLeftOut"], 0)
-        self.assertEqual(self.jsonl("inputs.jsonl"), live_inputs, "replay does not journal again")
         after = self.proof()
         key = lambda p: sorted((v["firstSeen"], v["learned"], v["passes"]) for v in p.values())
         self.assertEqual(key(after), key(before_proof))
         self.ok("proof", "--check")
         self.assertEqual(self.due(now=NOW), [])  # every card was answered; the replayed schedules hold
-        # a second rebuild is stable
-        res2 = json.loads(self.ok("rebuild", "--json", now=LATER))
+        res2 = json.loads(self.ok("rebuild", "--json", now=LATER))  # a second rebuild is stable
         self.assertNotEqual(res2["archive"], arch)
         self.assertEqual(self.snapshot_rows(), before_rows)
+
+    def test_empty_state_plus_reviews_and_seen_gives_the_same_lessons_and_cards(self):
+        """Q703: reviews.jsonl and seen.jsonl are the only kept files; the rest comes back from the sources."""
+        import shutil
+        self.write_dlog(DLOG)
+        self.ok("sync")
+        self.ok("lesson", "--yes")
+        for c in self.due():
+            self.answer(self.cards()[c["cid"]], NOW)
+        before = self.lessons_and_cards()
+        learn = os.path.join(self.state, "learn")
+        keep = {}
+        for n in ("reviews.jsonl", "seen.jsonl"):
+            with open(os.path.join(learn, n)) as f:
+                keep[n] = f.read()
+        shutil.rmtree(learn)
+        os.makedirs(learn)
+        self.cfg({"scheduler": "fixed"})  # learn.json is settings, not data
+        for n, text in keep.items():
+            with open(os.path.join(learn, n), "w") as f:
+                f.write(text)
+        res = json.loads(self.ok("rebuild", "--json", now=LATER))
+        self.assertEqual((res["reviewsLeftOut"], res["seenLeftOut"]), (0, 0))
+        self.assertEqual(self.lessons_and_cards(), before)
+        self.ok("proof", "--check")
+
+    def test_a_hand_added_row_does_not_survive_a_rebuild(self):
+        """Q703: no inputs journal, so a row with no source outside learn/ (a route-done line) is not re-derived."""
+        self.write_dlog(DLOG)
+        self.ok("sync")
+        self.add("route-done:lane-x", "lane-x shipped PROJ-7: upload retries cap at 3, learn: teach",
+                 title="Retry cap shipped", topic="retries", kind="shipped")
+        n = len(self.snapshot_rows())
+        self.ok("rebuild", "--json", now=LATER)
+        rows = self.snapshot_rows()
+        self.assertEqual(len(rows), n - 1)
+        self.assertNotIn("route-done", [r[0] for r in rows])
+        self.assertFalse(os.path.exists(os.path.join(self.state, "learn", "inputs.jsonl")))
 
     def test_a_review_of_a_superseded_answer_is_left_out(self):
         self.write_dlog(DLOG)

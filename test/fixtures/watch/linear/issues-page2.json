@@ -1,0 +1,6 @@
+{"data": {"issues": {"nodes": [
+  {"id": "u2", "identifier": "PROJ-2", "title": "Move the queue to the new port", "url": "https://linear.example/acme/issue/PROJ-2",
+   "createdAt": "2026-11-22T08:00:00.000Z", "updatedAt": "2026-11-22T08:00:00.000Z", "completedAt": null, "canceledAt": null,
+   "state": {"name": "Todo", "type": "unstarted"}, "assignee": null, "creator": {"name": "Dev Two"}, "team": {"key": "PROJ"},
+   "parent": null, "project": null, "cycle": null, "inverseRelations": {"nodes": []}}
+ ], "pageInfo": {"hasNextPage": false, "endCursor": "c2"}}}}

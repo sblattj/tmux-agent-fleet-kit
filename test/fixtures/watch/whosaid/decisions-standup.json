@@ -1,0 +1,10 @@
+{"version": 1, "meeting": "2026-11-24 standup", "engine": "local", "lines": 40, "t": 0.2,
+ "decisions": [
+  {"id": "D1", "topic": "t1", "topicLabel": "upload retries", "visit": 1, "t": 61.0, "t_str": "00:01:01",
+   "speaker": "Dev One", "text": "we cap upload retries at 3, jittered", "turns": [], "related": [], "status": "agreed"},
+  {"id": "D2", "topic": "t2", "topicLabel": "queue port", "visit": 1, "t": 300.0, "t_str": "00:05:00",
+   "speaker": "Dev Two", "text": "maybe move the queue to the new port", "turns": [], "related": [], "status": "proposed"},
+  {"id": "D3", "topic": "t3", "topicLabel": "empty", "visit": 1, "t": 310.0, "t_str": "00:05:10",
+   "speaker": "Dev Two", "text": "   ", "turns": [], "related": [], "status": "agreed"}
+ ],
+ "topics": []}

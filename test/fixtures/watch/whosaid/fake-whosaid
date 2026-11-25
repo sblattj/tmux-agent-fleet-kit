@@ -1,0 +1,9 @@
+#!/bin/sh
+# Fake whosaid for tests: `fake-whosaid decisions <ws> <meeting> --json --engine local` prints <ws>/<meeting>/decisions.json.
+# Refuses anything but the local engine, so a test proves the adapter never asks for a model.
+[ "$1" = decisions ] || exit 2
+case "$*" in *"--engine local"*) ;; *) exit 3 ;; esac
+f="$2/$3/decisions.json"
+[ -f "$f" ] || exit 1
+[ -n "$FAKE_WHOSAID_SLEEP" ] && sleep "$FAKE_WHOSAID_SLEEP"
+cat "$f"

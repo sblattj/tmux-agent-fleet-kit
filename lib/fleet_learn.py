@@ -29,7 +29,7 @@ Python 3.8+ stdlib only. Writes only under $FLEET_STATE/learn/ (export --to DIR 
   fleet learn brief --for TEXT [--max N] [--json]  meeting prep: rows for TEXT, picked by learn.json briefSelector
                                                    (a command) or the built-in fallback; marks nothing seen
   fleet learn digest [--since ISO|24h|7d|last] [--all] [--json]   lessons for rows new to you since then
-  fleet learn rebuild [--json]                     re-derive ledger and cards from sources plus inputs.jsonl; old files
+  fleet learn rebuild [--json]                     re-derive ledger and cards from sources only; old files
                                                    go to learn/archive/<stamp>/; reviews and seen are kept, re-keyed
 
 Teach first: a new row is due as a lesson; its cards come due only after its lesson is seen (learn.json
@@ -275,29 +275,15 @@ def _next_id(prefix, rows, key):
     return "%s%d" % (prefix, n + 1)
 
 
-# ---------------------------------------------------------------- inputs journal (Q694: re-derivable from sources)
-# Sync rows come from sources outside learn/ (decisions-log.jsonl, watch/events.jsonl, goal files) and are rebuilt
-# from them. A desk's own input (fleet learn add / confirm / drop, DECIDE "learn this", ROUTE "done" lines) has no
-# other source, so each call is journaled to inputs.jsonl as it is made, keyed by the row's source and quote (never
-# by lid, which a rebuild re-allocates). rebuild() replays it after the sync.
-
-DERIVED_BY = ("sync", "watch")
-_REPLAY = [False]
+# ---------------------------------------------------------------- row identity across rebuilds (Q694, Q703)
+# Every row is derived from a source outside learn/ (decisions-log.jsonl, watch/events.jsonl, goal files, the
+# configured sources), so a rebuild re-derives it. Only the human's own record (reviews.jsonl, seen.jsonl) is kept,
+# re-keyed onto the new lids by this key (never by lid, which a rebuild re-allocates). There is no inputs journal.
 
 
 def source_key(r):
     s = r.get("source") or {}
     return "%s|%s|%s" % (s.get("type"), s.get("ref"), _norm(r.get("quote")))
-
-
-def _journal(verb, row):
-    if _REPLAY[0]:
-        return
-    _append("inputs.jsonl", dict(row, verb=verb))
-
-
-def inputs():
-    return mesh._parse_lines(_p("inputs.jsonl"))
 
 
 def add_item(kind, origin, quote, source, title="", what="", why="", status="confirmed", links=None, tags=None,
@@ -319,10 +305,6 @@ def add_item(kind, origin, quote, source, title="", what="", why="", status="con
                "topic": topic or (tags[0] if tags else str(source.get("ref"))), "supersedes": supersedes,
                "by": by, "confirmedBy": None}
         _append("ledger.jsonl", row)
-    if by not in DERIVED_BY and supersedes is None:
-        _journal("add", {"at": row["at"], "kind": kind, "origin": origin, "quote": quote, "source": source,
-                         "title": row["title"], "what": row["what"], "why": row["why"], "status": status,
-                         "links": row["links"], "tags": tags, "topic": topic, "by": by})
     return row
 
 
@@ -335,9 +317,6 @@ def confirm(lid, source, quote, by="manual", now=None):
     own = (r.get("source") or {})
     if (str(source.get("type")), str(source.get("ref"))) == (str(own.get("type")), str(own.get("ref"))):
         raise Refused("the confirming source must differ from the row's own heard source")
-    if by not in DERIVED_BY:
-        _journal("confirm", {"at": _iso(_now(now)), "target": source_key(r), "source": source, "quote": quote,
-                             "by": by})
     return _append("ledger.jsonl", dict(r, at=_iso(_now(now)), status="confirmed", by=by,
                                         confirmedBy={"source": source, "quote": quote}))
 
@@ -372,7 +351,6 @@ def drop(lid, reason, now=None):
     if r.get("status") not in LIVE:
         raise Refused("%s is already %s" % (lid, r.get("status")))
     row = _append("ledger.jsonl", dict(r, at=_iso(_now(now)), status="dropped", dropReason=reason, by="manual"))
-    _journal("drop", {"at": row["at"], "target": source_key(r), "reason": reason})
     _retire_cards(lid)
     return row
 
@@ -615,7 +593,10 @@ def _sync_decisions(res, now):
         if verdict == "skip":
             _skip(res, "plumbing", did, why)
             continue
-        links = [{"type": "decisions-log", "ref": d} for d, into in sorted(folded.items()) if into == did]
+        links = [{"rel": "decided-by", "type": "desk", "ref": "DECIDE"}]
+        if asker:
+            links.append({"rel": "part-of", "type": "lane", "ref": asker})
+        links += [{"type": "decisions-log", "ref": d} for d, into in sorted(folded.items()) if into == did]
         subj = subjects(q + " " + v)
         old = have.get(("decisions-log", did))
         if old is None:
@@ -741,7 +722,9 @@ def sync_goal(path, lane, now=None, res=None):
                 continue
             subj = subjects(text) or gsubj
             row = add_item(kind, "fleet", text, {"type": "goal", "ref": ref, "path": path, "lane": lane},
-                           title="", topic=subj[0] if subj else lane, by="sync", now=now)
+                           title="", topic=subj[0] if subj else lane, by="sync", now=now,
+                           links=[{"rel": "ships-in" if kind == "shipped" else "part-of", "type": "lane",
+                                   "ref": lane}])
             out.append(row["lid"])
     return out
 
@@ -762,15 +745,75 @@ def _sync_goals(res, now):
     _write("cursors.json", json.dumps(cur, indent=1, sort_keys=True) + "\n")
 
 
+def _sync_sources(res, now):
+    """The configured sources (sources.json, else watch.json; Q702) through WATCH's adapter registry. A row per
+    item ref: a new quote for the same ref supersedes the old row, so the row holds the item's latest state."""
+    import fleet_learn_sources as S
+    cur = _read_json("cursors.json", {})
+    cursors = dict(cur.get("sources") or {})
+    pairs, rep = S.poll_all(cursors)
+    res["sources"] = rep
+    for src, evs in pairs:
+        for ev in evs:
+            kw = S.event_row(src, ev)
+            if kw is None:
+                continue
+            old = _by_source().get((kw["source"]["type"], str(kw["source"]["ref"])))
+            if old is not None and old.get("status") in LIVE:
+                if _norm(old.get("quote")) != _norm(kw["quote"]):
+                    row = supersede(old["lid"], kw["quote"], kw["source"], now=now)
+                    _relink(row["lid"], kw["links"], kw["title"])
+                    res["superseded"].append([old["lid"], row["lid"]])
+                continue
+            if old is not None:
+                continue  # dropped or superseded by hand-free sync history: not re-added
+            row = add_item(kw["kind"], kw["origin"], kw["quote"], kw["source"], title=kw["title"],
+                           status=kw["status"], links=kw["links"], tags=kw["tags"], topic=kw["topic"], by="sync",
+                           now=now)
+            res["added"].append(row["lid"])
+    cur = _read_json("cursors.json", {})
+    cur["sources"] = cursors
+    _write("cursors.json", json.dumps(cur, indent=1, sort_keys=True) + "\n")
+
+
+def _relink(lid, links, title):
+    r = item(lid)
+    _append("ledger.jsonl", dict(r, links=list(links or []), title=title or r.get("title") or ""))
+
+
+# ---------------------------------------------------------------- entities (Q697): derived from row links
+
+def entities():
+    """Every link target of the live rows, one entity per (type, ref): {key, type, ref, rows: [{lid, rel}]}.
+    Rebuilt from the ledger on every sync, never kept state (Q703); entities.jsonl is its file form."""
+    out = {}
+    for r in items():
+        for ln in r.get("links") or []:
+            if not isinstance(ln, dict) or not ln.get("type") or not ln.get("ref"):
+                continue
+            key = "%s:%s" % (ln["type"], ln["ref"])
+            e = out.setdefault(key, {"key": key, "type": str(ln["type"]), "ref": str(ln["ref"]), "rows": []})
+            e["rows"].append({"lid": r["lid"], "rel": ln.get("rel") or ""})
+    return [out[k] for k in sorted(out)]
+
+
+def write_entities():
+    es = entities()
+    _write("entities.jsonl", "".join(json.dumps(e, sort_keys=True) + "\n" for e in es))
+    return es
+
+
 def sync(now=None):
     """decisions-log.jsonl (desk answers confirmed, decided-on-call heard; latest answer per id supersedes),
-    WATCH LEARN-ITEMs from watch/events.jsonl, goal files of achieved lanes; then the join rule (a heard row
-    becomes confirmed when a desk answer quotes it) and make_cards(). Idempotent."""
+    WATCH LEARN-ITEMs from watch/events.jsonl, goal files of achieved lanes, the configured sources (Q702); then
+    the join rule (a heard row becomes confirmed when a desk answer quotes it), make_cards() and entities.jsonl.
+    Idempotent."""
     now = _now(now)
     res = {"added": [], "superseded": [], "confirmed": [], "cards": []}
     answers = _sync_decisions(res, now)
     _sync_watch(res, now)
     _sync_goals(res, now)
+    _sync_sources(res, now)
     for r in items(status="heard"):
         q = _norm(r.get("quote"))
         for did, n, a in answers:
@@ -779,6 +822,7 @@ def sync(now=None):
                 res["confirmed"].append(r["lid"])
                 break
     res["cards"] = [c["cid"] for c in make_cards(now)]
+    res["entities"] = len(write_entities())
     return res
 
 
@@ -1272,15 +1316,16 @@ def export(to=None):
 
 # ---------------------------------------------------------------- rebuild from sources (Q694)
 
-DERIVED_FILES = ("ledger.jsonl", "cards.jsonl", "proof.json", "cursors.json")
+DERIVED_FILES = ("ledger.jsonl", "cards.jsonl", "proof.json", "cursors.json", "entities.jsonl")
 HUMAN_FILES = ("reviews.jsonl", "seen.jsonl")
 
 
 def rebuild(now=None):
     """Re-derive everything LEARN holds from its sources: decisions-log.jsonl, WATCH events, achieved lanes' goal
-    files, then the inputs journal (desk add / confirm / drop). The old files are copied to archive/<stamp>/ first,
-    never deleted. The human's own record (reviews.jsonl, seen.jsonl) is kept and re-keyed onto the new ids by each
-    row's source and quote; a review or seen row whose row no longer derives is left out of the live file (it stays
+    files and the configured sources (Q703: nothing else; there is no inputs journal, so a hand-added row such as a
+    route-done line does not survive). The old files are copied to archive/<stamp>/ first, never deleted. The
+    human's own record (reviews.jsonl, seen.jsonl) is kept and re-keyed onto the new ids by each row's source and
+    quote; a review or seen row whose row no longer derives is left out of the live file (it stays
     in the archive) and counted. Card schedules are replayed from the kept reviews. Returns a report."""
     now = _now(now)
     import shutil
@@ -1310,18 +1355,9 @@ def rebuild(now=None):
             os.remove(_guard(_p(name)))
     if isinstance(keep, dict) and keep.get("digest"):
         _write("cursors.json", json.dumps({"digest": keep["digest"]}, indent=1, sort_keys=True) + "\n")
+    if os.path.exists(_p("inputs.jsonl")):  # an older branch's journal: archived above, never read (Q703)
+        os.remove(_guard(_p("inputs.jsonl")))
     res = sync(now)
-    _REPLAY[0] = True
-    replayed, unplayed = 0, 0
-    try:
-        for j in inputs():
-            try:
-                _replay(j, now)
-                replayed += 1
-            except Refused:
-                unplayed += 1
-    finally:
-        _REPLAY[0] = False
     make_cards(now)
     rows = items()
     new_lid = {source_key(r): r["lid"] for r in rows}
@@ -1360,37 +1396,9 @@ def rebuild(now=None):
             _save_cards(cs)
     write_proof()
     return {"archive": arch, "rows": len(rows), "cards": len([c for c in _cards() if not c.get("retired")]),
-            "synced": len(res.get("added") or []), "inputsReplayed": replayed, "inputsNotReplayed": unplayed,
+            "synced": len(res.get("added") or []),
             "reviewsKept": len(kept_rv), "reviewsLeftOut": lost_rv, "seenKept": len(kept_seen),
             "seenLeftOut": lost_seen}
-
-
-def _by_key(key):
-    for r in items():
-        if source_key(r) == key:
-            return r
-    raise Refused("no live row for %s" % key)
-
-
-def _replay(j, now):
-    at = _parse_ts(j.get("at")) or now
-    v = j.get("verb")
-    if v == "add":
-        try:
-            _by_key("%s|%s|%s" % ((j.get("source") or {}).get("type"), (j.get("source") or {}).get("ref"),
-                                  _norm(j.get("quote"))))
-            return  # already derived (a sync row with the same source and quote)
-        except Refused:
-            pass
-        add_item(j["kind"], j["origin"], j["quote"], j["source"], title=j.get("title"), what=j.get("what"),
-                 why=j.get("why"), status=j.get("status") or "confirmed", links=j.get("links"), tags=j.get("tags"),
-                 topic=j.get("topic"), by=j.get("by") or "manual", now=at)
-    elif v == "confirm":
-        confirm(_by_key(j["target"])["lid"], j["source"], j["quote"], by=j.get("by") or "manual", now=at)
-    elif v == "drop":
-        drop(_by_key(j["target"])["lid"], j["reason"], now=at)
-    else:
-        raise Refused("unknown journal verb %r" % v)
 
 
 # ---------------------------------------------------------------- quiz TUI
@@ -1661,9 +1669,9 @@ def main(argv=None):
             if args.json:
                 print(json.dumps(res, indent=1, sort_keys=True))
             else:
-                print("OK rebuild: %d row(s), %d card(s) from sources; journal %d replayed, %d not; reviews %d kept, "
+                print("OK rebuild: %d row(s), %d card(s) from sources; reviews %d kept, "
                       "%d left out; seen %d kept, %d left out; old files in %s" % (
-                          res["rows"], res["cards"], res["inputsReplayed"], res["inputsNotReplayed"],
+                          res["rows"], res["cards"],
                           res["reviewsKept"], res["reviewsLeftOut"], res["seenKept"], res["seenLeftOut"],
                           res["archive"]))
         elif args.cmd == "export":

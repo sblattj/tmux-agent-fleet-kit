@@ -14,19 +14,35 @@ $FLEET_STATE/learn/
   reviews.jsonl   append-only review results: the human's record (kept by rebuild, re-keyed onto new ids)
   seen.jsonl      append-only {"lid", "at", "status", "via": "lesson|session|digest|page", "topic", "key"}: the
                   human saw that row's lesson while it had that status; also the human's record, kept by rebuild
-  inputs.jsonl    append-only journal of desk input with no other source: {"verb": "add|confirm|drop", ...}, keyed
-                  by "key" / "target" = "<source type>|<source ref>|<normalized quote>", never by lid. Sync rows
-                  (by sync or watch) are not journaled; they re-derive from their sources
+  entities.jsonl  derived: one {"key": "<type>:<ref>", "type", "ref", "rows": [{"lid", "rel"}]} per link target of
+                  the live rows (Q697), rewritten by every sync; never kept state
   archive/<stamp>/  copies of the files above, made by rebuild() before it re-derives; never deleted by the kit
   proof.json      derived cache per lid; rebuildable from reviews.jsonl + seen.jsonl (rebuild_proof())
-  cursors.json    sync cursors {"watch-events": <lines read>, "goals": {lane: "achieved"}}; decisions-log.jsonl is
+  cursors.json    sync cursors {"watch-events": <lines read>, "goals": {lane: "achieved"}, "sources": {name: cursor},
+                  "digest": ISO}; decisions-log.jsonl is
                   re-read whole each sync (small; idempotent by source ref, so the latest answer per id wins)
   learn.json      optional config {"scheduler": "fsrs"|"fixed" (default fsrs), "cardFormats": [...], "learn": {"minScore": 1}, "fsrs": {...},
                   "teachFirst": true|false (default true), "briefSelector": {"kind": "command", "run": CMD, "timeoutSec": 20}}
 
-Re-derivable: everything except reviews.jsonl and seen.jsonl comes back from `rebuild()` (sources:
+Re-derivable (Q703): everything except reviews.jsonl and seen.jsonl comes back from `rebuild()` (sources:
 `$FLEET_STATE/decisions-log.jsonl`, `$FLEET_STATE/watch/events.jsonl`, achieved lanes' goal files from the roster,
-then inputs.jsonl). A row's identity across rebuilds is its key (source type, ref, normalized quote).
+and the configured sources below). There is no input journal: a row added by hand (`fleet learn add`, a ROUTE done
+line) does not survive a rebuild; ROUTE done lines reach the ledger from goal files. A row's identity across rebuilds
+is its key (source type, ref, normalized quote).
+
+Configured sources (Q702): `$FLEET_STATE/sources.json`, else `watch.json`, in the watch.json shape and checked by
+`fleet_watch_contract.validate_config` (credentials are `env:`, `keychain:` or `cmd:` references; a literal fails and
+nothing is polled). WATCH reads sources.json too when it has no watch.json. `lib/fleet_learn_sources.py` polls each
+pull source through the WATCH registry (`load_source(kind)`; `webhook` and `call` are push sources and are skipped)
+with LEARN's own cursors, drops events with a secret or matching a `drop` filter, and makes one row per item ref,
+source `{"type": <kind>, "ref": <item ref>, "source": <name>, "url", "eid"}`, origin outside; a new quote for the same
+ref supersedes the row. whosaid `decision.proposed|contested` rows are heard, everything else confirmed.
+
+Typed links (Q697): a link is `{"rel", "type", "ref"}` with rel one of `fleet_watch_contract.LINK_RELS`
+(`part-of`, `ships-in`, `blocked-by`, `decided-by`, `owner`); an untyped `{"type", "ref"}` link (the item itself, a
+folded answer) has no rel. Adapters put typed links in `Event.fields["links"]`; sync keeps the known rels. Decision
+rows link `decided-by desk:DECIDE` and `part-of lane:<asker>`; goal rows link `ships-in` (shipped) or `part-of` the
+lane.
   export/         default target of export(): one markdown file per topic
   .lock           flock for id allocation and rewrites
 ```
@@ -162,9 +178,10 @@ teach_first() -> bool           # learn.json teachFirst (default True); FLEET_LE
 exposed() -> set                # lids seen as confirmed
 lessons_due(now=None, topic=None) -> list   # live teachable rows whose lesson is due, oldest first
 mark_seen(lids, via="lesson", topic=None, now=None) -> list   # human only; appends seen.jsonl; newly seen lids
-rebuild(now=None) -> dict       # archive, re-derive from sources + inputs.jsonl, re-key reviews and seen, replay
-                                # card schedules; {"archive", "rows", "cards", "inputsReplayed", "reviewsKept",
-                                # "reviewsLeftOut", "seenKept", "seenLeftOut", ...}
+rebuild(now=None) -> dict       # archive, re-derive from sources only, re-key reviews and seen, replay card
+                                # schedules; {"archive", "rows", "cards", "synced", "reviewsKept",
+                                # "reviewsLeftOut", "seenKept", "seenLeftOut"}
+entities() -> list              # derived link targets [{key, type, ref, rows: [{lid, rel}]}]; write_entities()
 source_key(row) -> str          # "<type>|<ref>|<normalized quote>": a row's identity across rebuilds
 snapshot(now=None) -> dict      # below; read-only, for the phase 7 page and status lines
 export(to=None) -> list[str]

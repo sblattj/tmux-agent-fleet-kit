@@ -129,8 +129,13 @@ The launcher warns once and launches without the role when the Codex profile, Op
   proof.json from reviews.jsonl and seen.jsonl and compares.
 - Everything in `learn/` except the human's own record (reviews.jsonl, seen.jsonl) re-derives from sources.
   `fleet learn rebuild` copies the old files to `learn/archive/<stamp>/`, re-syncs from decisions-log.jsonl, WATCH
-  events and achieved goal files, replays `inputs.jsonl` (the desks' own add, confirm and drop calls), and re-keys
-  reviews and seen lessons onto the new ids by source and quote.
+  events, achieved goal files and the configured sources, and re-keys reviews and seen lessons onto the new ids by
+  source and quote. Nothing else is kept: a row added by hand does not survive.
+- LEARN reads the real sources through WATCH's adapters: `$FLEET_STATE/sources.json` (else `watch.json`; WATCH reads
+  sources.json too when it has no watch.json) names the repos, trackers and meeting workspaces, with credentials as
+  references only (`docs/examples/sources.example.json`). New adapters: `linear` (GraphQL, read-only) and `whosaid`
+  (meeting decisions through the local CLI, `--engine local`, no network). Rows carry typed links (part-of,
+  ships-in, blocked-by, decided-by, owner) and `learn/entities.jsonl` lists every link target; both are derived.
 - `fleet learn snapshot` gives counts per origin, never one blended total. `fleet learn export` writes one
   markdown file per topic.
 
@@ -337,6 +342,8 @@ bash test/test_learn.sh       # fleet learn: ledger, sync, quiz, 24 h proof with
 python3 -m unittest test.test_fsrs test.test_explain   # FSRS against py-fsrs reference values; explain back grader
 python3 -m unittest test/test_learn_serve.py   # LEARN page: token/loopback, page answer == TUI answer, score history per topic
 python3 -m unittest test/test_learn_lesson.py  # lesson first: lesson, session, brief, digest, rebuild, Lesson tab, proof clock, role guard
+python3 -m unittest test/test_learn_sources.py # LEARN sync from configured sources, typed links, entities, links after rebuild
+python3 -m unittest test/test_watch_linear.py  # linear and whosaid adapters on fixtures (fake HTTP, fake whosaid CLI)
 python3 -m unittest test/test_watch.py   # WATCH engine: replay counts, scrub, dedupe, filters, quiet hours, literal-credential refusal
 python3 -m unittest test/test_watch_rate.py   # WATCH per-source token bucket: wait, defer, X-RateLimit-Remaining drain (injected clock)
 python3 -m unittest test/test_side.py   # side runs: fleet side start|end|ls|show, refusals, 20 parallel starts, idempotent end
@@ -359,7 +366,7 @@ python3 -m unittest test/test_watch_webhook.py   # WATCH webhook receiver: signa
 - Waking an idle Claude lane from a non-Claude peer relies on typed input into the pane (see above).
 - Kiro: the role deny misses `sh -c "fleet park X"` (PROVEN it ran), so a Kiro role is not a hard fence. `KIRO_API_KEY` is passed through as-is; behaviour when it is set is UNVERIFIED. Whether Kiro's own auto-compaction writes the same `tombstone` marker is UNVERIFIED. A goal that stops at max iterations being read as `stopped` is UNVERIFIED. Live Kiro lanes on Linux are UNVERIFIED.
 - agy: the role deny's reach beyond the named shell commands (edit tools, artifacts, `sh -c` wrappers) is UNVERIFIED, so an agy role is not a hard fence. agy has no config-dir override, so lanes share the user's `~/.gemini` sign-in and conversations. Whether agy's own auto-compaction writes the same `CHECKPOINT` marker is UNVERIFIED. Live agy lanes on Linux are UNVERIFIED.
-- Nothing is pushed or sent anywhere by the kit; the only network calls are the two plugin `git clone`s in `install/opencode.sh` and the WATCH sources you list in `watch.json`.
+- Nothing is pushed or sent anywhere by the kit; the only network calls are the two plugin `git clone`s in `install/opencode.sh` and the WATCH sources you list in `watch.json` or `sources.json`.
 
 ## WATCH: the engine
 

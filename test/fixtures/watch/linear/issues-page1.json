@@ -1,0 +1,8 @@
+{"data": {"issues": {"nodes": [
+  {"id": "u1", "identifier": "PROJ-1", "title": "Cap upload retries at 3", "url": "https://linear.example/acme/issue/PROJ-1",
+   "createdAt": "2026-11-20T09:00:00.000Z", "updatedAt": "2026-11-21T10:02:11.123Z", "completedAt": "2026-11-21T10:02:11.123Z",
+   "canceledAt": null, "state": {"name": "Done", "type": "completed"}, "assignee": {"name": "Dev One"},
+   "creator": {"name": "Dev Two"}, "team": {"key": "PROJ"}, "parent": {"identifier": "PROJ-0"},
+   "project": {"name": "Uploads v2"}, "cycle": {"number": 7},
+   "inverseRelations": {"nodes": [{"type": "blocks", "issue": {"identifier": "PROJ-9"}}, {"type": "related", "issue": {"identifier": "PROJ-8"}}]}}
+ ], "pageInfo": {"hasNextPage": true, "endCursor": "c1"}}}}

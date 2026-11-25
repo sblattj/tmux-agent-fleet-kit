@@ -1,0 +1,21 @@
+// $FLEET_STATE/sources.json: the sources WATCH and LEARN both read (Q702). Same shape as watch.json.
+// Credentials are references only: env:NAME, keychain:SERVICE or cmd:<program>. A literal value fails validation.
+// Check it with: fleet watch check --config $FLEET_STATE/sources.json
+{
+  "me": {"names": ["your-handle"], "ids": {"code": "your-handle"}},
+  "sources": [
+    {"name": "code", "kind": "github", "repos": ["acme/widget"],
+     "auth": {"type": "bearer", "token": "env:GITHUB_TOKEN"}},
+    {"name": "self-hosted", "kind": "gitlab", "base": "https://git.example.com", "repos": ["acme/widget"],
+     "auth": {"type": "bearer", "token": "keychain:fleet-gitlab"}},
+    {"name": "tracker", "kind": "linear", "teams": ["PROJ"],
+     "auth": {"type": "pat", "token": "env:LINEAR_API_KEY"}},
+    {"name": "jira", "kind": "jira", "base": "https://acme.example.net", "query": "project = PROJ",
+     "auth": {"type": "basic", "user": "env:JIRA_USER", "token": "env:JIRA_TOKEN"}},
+    {"name": "calls", "kind": "whosaid", "workspace": "~/meetings"}
+  ],
+  "filters": [
+    {"drop": {"actor": ["ci-bot"]}},
+    {"kind": "fyi", "when": {"type": "*"}}
+  ]
+}

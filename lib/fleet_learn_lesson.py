@@ -90,7 +90,8 @@ def lesson_row(r, exposed):
             "source": _src(r), "origin": r.get("origin"), "status": r.get("status"), "kind": r.get("kind"),
             "topic": fl.topic_of(r) or "topic", "new": r["lid"] not in exposed,
             "decided": not heard, "label": "not decided yet" if heard else "decided",
-            "links": [{"type": str(x.get("type")), "ref": str(x.get("ref"))} for x in (r.get("links") or [])
+            "links": [{"rel": str(x.get("rel") or ""), "type": str(x.get("type")), "ref": str(x.get("ref"))}
+                      for x in (r.get("links") or [])
                       if isinstance(x, dict) and x.get("ref")],
             "dropped": dropped}
 
@@ -119,7 +120,8 @@ def tree(topic, ls):
     """The lesson's shape as nested nodes: topic -> rows -> their typed links (the entity-layer seam, Q697)."""
     return {"label": topic, "children": [
         {"label": "%s %s" % (x["lid"], x["term"]), "lid": x["lid"], "status": x["status"], "new": x["new"],
-         "children": [{"label": "%s %s" % (ln["type"], ln["ref"])} for ln in x["links"]]} for x in ls]}
+         "children": [{"label": ("%s %s %s" % (ln["rel"], ln["type"], ln["ref"])).strip()}
+                      for ln in x["links"]]} for x in ls]}
 
 
 def _tree_lines(node, prefix="", last=True, root=True):
