@@ -301,6 +301,60 @@ fleet side run --host codex --model gpt-x --bound 30m -- codex exec "fix the fla
 fleet side ls          # S3 running ... then done/failed with exit and tokens
 ```
 
+## New computer
+
+One command sets up everything that needs no root, then writes the root steps to a script for you to run yourself:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sblattj/tmux-agent-fleet-kit/main/bootstrap.sh | bash
+curl -fsSL https://raw.githubusercontent.com/sblattj/tmux-agent-fleet-kit/main/bootstrap.sh | bash -s -- --dry-run   # print every step, change nothing
+```
+
+Piped from curl, it clones the kit to `~/.local/share/tmux-agent-fleet-kit` (`FLEET_KIT_DIR` overrides it; an existing clone is reused, never pulled), then runs that clone's `bootstrap.sh`. The whole script is one function called on its last line, so a cut-off download runs nothing. From a checkout, `fleet bootstrap` runs the same steps with the same flags: `--dry-run`, `--verify`, `--no-desks`, `--cli C`, `--pubkey KEY|FILE`. It is idempotent and prints every step.
+
+**The no-sudo half**, in order:
+1. `brew install` whichever of `tmux`, `mosh` and `jq` are missing. No Docker: if you want containers, use OrbStack.
+2. Each agent CLI it finds (`claude`, `codex`, `opencode`, `kiro-cli`, `agy`) gets its `install/<cli>.sh --no-desks`. A CLI with no installer (gemini) is listed and skipped.
+3. Puts Homebrew's bin dir on the non-interactive ssh PATH (what a phone's `ssh host cmd` and mosh's server start get). It appends one marked block to `~/.zshenv`:
+   ```bash
+   # >>> fleet bootstrap: brew bin on the non-interactive ssh PATH (tmux-agent-fleet-kit) >>>
+   export PATH="/opt/homebrew/bin:$PATH"
+   # <<< fleet bootstrap <<<
+   ```
+   A second run finds the block and adds nothing. If `~/.zshenv` is a symlink, or looks managed by a dotfiles tool (chezmoi, yadm, stow, home-manager, nix-darwin, "managed by", "do not edit"), it prints the line for you to add and leaves the file alone. With a non-zsh login shell it prints the line too.
+4. With `--pubkey`, appends the phone's key to `~/.ssh/authorized_keys` (`fleet remote add-key`).
+5. Brings the desks up once, the same way every installer ends: `fleet desks up --cli <first CLI found>` (`--no-desks` or `FLEET_NO_DESKS=1` skips it).
+
+**The sudo half** never runs here. Bootstrap writes `~/.local/state/fleet/bootstrap-root.sh` (`fleet remote root-script FILE`) and prints the line to run it:
+
+```bash
+! sudo bash ~/.local/state/fleet/bootstrap-root.sh
+fleet bootstrap --verify
+```
+
+The script does what `fleet remote setup` does as root, in the same safe order: host keys if missing; the key-only sshd drop-in, checked with `sshd -t` and `sshd -T` and rolled back on failure, before sshd is switched on; Remote Login on (systemsetup, then launchctl); and the application-firewall allow for the resolved `mosh-server` binary, which is what lets mosh's UDP 60000-61000 in on macOS. On Linux it enables ssh with systemd and opens UDP 60000-61000 in ufw or firewalld when one is active. Rerun it after upgrading mosh.
+
+`fleet bootstrap --verify` (same as `fleet remote verify`) checks the effect without privileges and exits non-zero on any failure: sshd listening, the drop-in present, a bare `ssh localhost tmux -V` with your own key (skipped when no `~/.ssh/id_*` key is in `authorized_keys`), `mosh-server` on the non-interactive ssh PATH, and on macOS the firewall allow.
+
+**Blink Shell (iOS) host.** In Blink, `config` > Hosts > New:
+
+| Field | Value |
+|---|---|
+| Alias | a short name, for example `fleet` |
+| Hostname | the host's ZeroTier or Tailscale IP (`fleet remote status` prints it) |
+| Port | `22` |
+| User | your login on the host (`id -un`) |
+| Key | a key generated in Blink (Keys > New); copy its public half to the host and run `fleet bootstrap --pubkey '<key>'` |
+| Mosh Server | the full `mosh-server` path, for example `/opt/homebrew/bin/mosh-server` (`fleet remote attach-line` shows it) |
+
+Then `mosh fleet` from Blink, and attach with the line bootstrap prints last (`fleet remote attach-line`):
+
+```bash
+tmux attach -t fleet
+```
+
+With `window-size latest` (setup sets it), the window follows whichever device typed last, so the laptop can stay attached while you type on the phone. Tip: to keep a phone from resizing the window for everyone else, attach it with `tmux attach -f ignore-size -t fleet` instead.
+
 ## Remote attach (phone or tablet)
 
 `fleet remote` lets you follow a run, answer DECIDE or read a lane from a phone or tablet (Blink Shell, Termius) over ssh + mosh on a private overlay network: ZeroTier, Tailscale, or any VPN that gives this host a private address. It never opens anything to the public internet itself.
@@ -320,6 +374,8 @@ fleet remote off [--keep-sshd]                      # remove the drop-in; sshd o
 4. Turns sshd on: macOS Remote Login, or systemd on Linux.
 5. Allows the resolved `mosh-server` binary in the macOS application firewall. A package upgrade moves that path, so rerun setup afterwards.
 6. Sets `window-size latest` on the fleet tmux server.
+
+`fleet remote root-script FILE`, `verify`, `ssh-path [--check|--brew-bin]`, `add-key KEY` and `attach-line` are the pieces `fleet bootstrap` uses (see New computer); they never run sudo.
 
 Root steps go through sudo, with an askpass dialog when there is no TTY. The overlay address comes from `tailscale ip -4`, then from a ZeroTier interface (`zt*`, `feth*`), then from an address in 100.64.0.0/10. `--ip` or `FLEET_REMOTE_IP` overrides it. When `mosh-server` is outside a non-login ssh PATH (for example Homebrew), the attach command adds `--server=<path>` and the full tmux path. The phone attach line is the last line `setup` prints.
 
@@ -351,6 +407,7 @@ bash test/test_listen.sh      # WATCH UI in a real tmux pane on a private socket
 python3 -m unittest test/test_mesh.py   # fleet-mesh delivery, reopen, decisions log
 python3 -m unittest test/test_wake_splice.py   # typed wakes: input-box guard, and a vim NORMAL-mode fake Claude box gets the whole pointer (#38)
 bash test/test_remote.sh     # fleet remote: sandboxed sshd/firewall stubs, tripwire sudo, private tmux socket; never touches this host
+bash test/test_bootstrap.sh  # fleet bootstrap / curl|bash: throwaway HOME, stub brew and CLIs, tripwire sudo, root script run in a sandbox
 python3 -m unittest test/test_mesh_stale.py   # stale mesh servers: re-exec in place keeps the stdio session, refuse typed wakes, tick lists them
 python3 -m unittest test/test_decisions.py   # DECISIONS UI: cards, pick relay, badges, refresh A/B, server auth, tmux fallback
 python3 -m unittest test/test_side_guard.py   # side runs: decision calls refused, peer_send only to the parent as <parent>/<id>

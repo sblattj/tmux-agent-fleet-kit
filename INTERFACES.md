@@ -360,6 +360,11 @@ fleet remote setup [--pubkey KEY|FILE] [--ip ADDR] [--dry-run]   idempotent; exi
 fleet remote status [--ip ADDR]                                 read-only; never prompts (sudo -n for sshd -T)
 fleet remote qr [--read-only] [--ip ADDR]                        line 1: `mosh [--server=P] USER@IP -- TMUX [-L SOCK] attach -t SESSION [-r]`
 fleet remote off [--dry-run] [--keep-sshd]
+fleet remote root-script FILE|-                                  write the root steps as a script (mode 700); `-` = stdout; never runs sudo
+fleet remote verify                                              unprivileged; one `ok:`/`FAIL`/`skipped:` line per check; exit 1 on any FAIL
+fleet remote ssh-path [--check|--brew-bin]                       --check: `ok: T on the non-interactive ssh PATH: P` or `missing: T ...`, exit 1 if any missing
+fleet remote add-key KEY|FILE [--dry-run]                        append once to ~/.ssh/authorized_keys (dir 700, file 600)
+fleet remote attach-line [--read-only] [--ip ADDR]               exactly one line, the attach command
 ```
 - Drop-in: `/etc/ssh/sshd_config.d/010-fleet-remote-keyonly.conf` (PubkeyAuthentication yes, PasswordAuthentication no,
   KbdInteractiveAuthentication no, PermitRootLogin no). Written before sshd is switched on, validated with `sshd -t` and
@@ -935,3 +940,20 @@ Registers `ach` runs as side runs with no change to ach, from its run registry: 
   `source=ach` (the record exists from the start and sits unchanged while the run works); an ach pid gone with the
   record still `running` ends `failed`. `fleet side adopt-ach --apply` goes through `fleet_side.start`, so each
   adopted run gets its watcher.
+
+## bootstrap.sh (`fleet bootstrap ...`, issue #40)
+
+```
+bootstrap.sh [--dry-run|-n] [--verify] [--no-desks] [--cli C] [--pubkey KEY|FILE]    also: curl -fsSL .../bootstrap.sh | bash [-s -- FLAGS]
+fleet bootstrap ...                                                                 same flags; role-guarded like lane lifecycle
+```
+- curl|bash: body is one function, `fleet_bootstrap "$@"` is the last line. Piped (no `BASH_SOURCE` file), it clones
+  `FLEET_KIT_REPO` (default the public repo) to `FLEET_KIT_DIR` (default `~/.local/share/tmux-agent-fleet-kit`), reuses an
+  existing clone without pulling, and execs the clone's `bootstrap.sh`. `--dry-run` piped prints `would clone` and stops.
+- Steps: `1/5 packages`, `2/5 agent CLIs`, `3/5 ssh PATH`, `4/5 phone key`, `5/5 desks`, then `root steps (sudo half)` and
+  `attach from the phone`. The attach line is the last line printed.
+- `~/.zshenv` block markers: `# >>> fleet bootstrap: ... >>>` / `# <<< fleet bootstrap <<<`. Not edited when the file is a
+  symlink or matches `dotfiles|chezmoi|yadm|home-manager|nix-darwin|stow|managed by|do not edit` (case-insensitive).
+- Root script: `$FLEET_STATE/bootstrap-root.sh` (default state `~/.local/state/fleet`); bootstrap prints
+  `! sudo bash <path>` and `fleet bootstrap --verify`. `--verify` execs `fleet remote verify`.
+- Env: `FLEET_BIN` (the fleet binary to call), `FLEET_NO_DESKS`, `FLEET_KIRO_BIN`, `FLEET_AGY_BIN`, `FLEET_BOOTSTRAP_OS`.

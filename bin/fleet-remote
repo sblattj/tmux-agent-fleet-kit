@@ -10,6 +10,11 @@
 #   fleet remote status [--ip ADDR]   read-only: sshd, key-only auth, mosh-server PATH, firewall, overlay IP, window-size, sleep
 #   fleet remote qr [--read-only] [--ip ADDR]   the attach command for Blink Shell / Termius, plus a QR code (qrencode)
 #   fleet remote off [--dry-run] [--keep-sshd]  remove the drop-in; turn sshd off unless it was on before setup
+#   fleet remote root-script FILE|-   write setup's root steps to a script for the human to run with sudo (never runs sudo)
+#   fleet remote verify               unprivileged: sshd listening, the drop-in, ssh localhost tmux -V, mosh-server, firewall
+#   fleet remote ssh-path [--check|--brew-bin]   tmux and mosh-server on the non-interactive ssh PATH; the dir to add
+#   fleet remote add-key KEY|FILE [--dry-run]    append a phone key to ~/.ssh/authorized_keys (no sudo)
+#   fleet remote attach-line [--read-only] [--ip ADDR]   just the attach command
 #
 # NEVER expose the tmux socket over raw TCP (socat, ncat, port forwards): anyone who reaches that port runs commands
 # as you, with no authentication. Use ssh/mosh only; they run tmux as you after key auth.
@@ -24,7 +29,7 @@ say()  { printf '==> %s\n' "$*"; }
 ok()   { printf '    ok: %s\n' "$*"; }
 warn() { printf '    warn: %s\n' "$*"; }
 plan() { printf '    [dry-run] would: %s\n' "$*"; }
-usage() { sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 SB=${FLEET_REMOTE_SANDBOX:-}
 OS=${FLEET_REMOTE_OS:-$(uname -s)}
@@ -182,6 +187,32 @@ attach_cmd() { # attach_cmd <ip> <readonly 0|1>
   printf 'mosh %s%s@%s -- %s attach -t %s%s\n' "$server" "$user" "$ip" "$tmx" "$SESSION" "$ro_flag"
 }
 
+add_key() { # add_key <KEY|FILE|empty>: append an ssh public key to ~/.ssh/authorized_keys once (dir 700, file 600)
+  local arg=$1 ssh_dir=$HOME/.ssh ak=$HOME/.ssh/authorized_keys
+  if [ -n "$arg" ]; then
+    local key
+    if [ -f "$arg" ]; then key=$(head -1 "$arg"); else key=$arg; fi
+    key=$(printf '%s' "$key" | tr -d '\r\n')
+    local fp; fp=$(printf '%s\n' "$key" | ssh-keygen -l -f - 2>/dev/null | awk '{print $2}')
+    [ -n "$fp" ] || die "not a valid ssh public key"
+    local blob; blob=$(printf '%s\n' "$key" | awk '{print $1" "$2}')
+    if [ -f "$ak" ] && awk '{print $1" "$2}' "$ak" | grep -qxF -- "$blob"; then
+      ok "key $fp already present"
+    elif [ $DRY = 1 ]; then
+      plan "append key $fp to ~/.ssh/authorized_keys"
+    else
+      mkdir -p "$ssh_dir" && chmod 700 "$ssh_dir"
+      touch "$ak" && chmod 600 "$ak"
+      if [ -s "$ak" ] && [ -n "$(tail -c1 "$ak")" ]; then printf '\n' >> "$ak"; fi
+      printf '%s\n' "$key" >> "$ak"
+      ok "appended key $fp"
+    fi
+  else
+    ok "no --pubkey; authorized_keys untouched"
+  fi
+  if [ $DRY = 0 ] && [ -d "$ssh_dir" ]; then chmod 700 "$ssh_dir"; [ ! -f "$ak" ] || chmod 600 "$ak"; fi
+}
+
 raw_tcp_warning() {
   printf '    never expose the tmux socket over raw TCP (socat, ncat, port forwards): anyone who reaches it runs commands as you\n'
 }
@@ -212,29 +243,7 @@ cmd_setup() {
   esac
 
   say "authorized_keys"
-  local ssh_dir=$HOME/.ssh ak=$HOME/.ssh/authorized_keys
-  if [ -n "$PUBKEY_ARG" ]; then
-    local key
-    if [ -f "$PUBKEY_ARG" ]; then key=$(head -1 "$PUBKEY_ARG"); else key=$PUBKEY_ARG; fi
-    key=$(printf '%s' "$key" | tr -d '\r\n')
-    local fp; fp=$(printf '%s\n' "$key" | ssh-keygen -l -f - 2>/dev/null | awk '{print $2}')
-    [ -n "$fp" ] || die "not a valid ssh public key"
-    local blob; blob=$(printf '%s\n' "$key" | awk '{print $1" "$2}')
-    if [ -f "$ak" ] && awk '{print $1" "$2}' "$ak" | grep -qxF -- "$blob"; then
-      ok "key $fp already present"
-    elif [ $DRY = 1 ]; then
-      plan "append key $fp to ~/.ssh/authorized_keys"
-    else
-      mkdir -p "$ssh_dir" && chmod 700 "$ssh_dir"
-      touch "$ak" && chmod 600 "$ak"
-      if [ -s "$ak" ] && [ -n "$(tail -c1 "$ak")" ]; then printf '\n' >> "$ak"; fi
-      printf '%s\n' "$key" >> "$ak"
-      ok "appended key $fp"
-    fi
-  else
-    ok "no --pubkey; authorized_keys untouched"
-  fi
-  if [ $DRY = 0 ] && [ -d "$ssh_dir" ]; then chmod 700 "$ssh_dir"; [ ! -f "$ak" ] || chmod 600 "$ak"; fi
+  add_key "$PUBKEY_ARG"
 
   # record whether sshd was on before the first setup, so `off` can leave it as it found it
   local was_on=false; sshd_listening && was_on=true
@@ -310,6 +319,7 @@ cmd_setup() {
     ok "not changed on $OS; allow UDP 60000-61000 on the overlay interface if a host firewall is on"
   fi
 
+
   say "tmux window-size"
   local ws; ws=$(tm show -gv window-size 2>/dev/null) || ws=
   if [ -z "$ws" ]; then
@@ -321,6 +331,7 @@ cmd_setup() {
   else
     tm set -g window-size latest && ok "window-size latest (was $ws)"
   fi
+
 
   local ip=${oi% *}; [ -n "$ip" ] || ip='<overlay-ip>'
   say "check from the phone (or any ssh client) before the first attach"
@@ -440,6 +451,177 @@ cmd_off() {
   if [ $DRY = 0 ]; then rm -f "$sf"; say "done"; else say "dry run: nothing changed"; fi
 }
 
+# ---------------------------------------------------------------- ssh-path / add-key / attach-line (fleet bootstrap)
+cmd_ssh_path() { # --check: one line per tool, exit 1 if one is missing; --brew-bin: the dir to put on the ssh PATH
+  case ${1:---check} in
+    --brew-bin) brew_bin ;;
+    --check) local n f rc=0
+      for n in tmux mosh-server; do
+        if f=$(ssh_path_find "$n"); then echo "ok: $n on the non-interactive ssh PATH: $f"
+        else echo "missing: $n is not on the non-interactive ssh PATH"; rc=1; fi
+      done; return $rc ;;
+    -h|--help) usage ;;
+    *) die "ssh-path: unknown arg $1 (--check or --brew-bin)" ;;
+  esac
+}
+cmd_add_key() {
+  local k=
+  while [ $# -gt 0 ]; do
+    case $1 in --dry-run|-n) DRY=1; shift ;; -h|--help) usage ;; *) [ -z "$k" ] || die "add-key: one KEY or FILE"; k=$1; shift ;; esac
+  done
+  [ -n "$k" ] || die "add-key needs KEY or FILE"
+  add_key "$k"
+}
+cmd_attach_line() {
+  local ro=0
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --read-only|-r) ro=1; shift ;;
+      --ip) [ $# -ge 2 ] || die "--ip needs ADDR"; IP_ARG=$2; shift 2 ;;
+      -h|--help) usage ;;
+      *) die "attach-line: unknown arg $1" ;;
+    esac
+  done
+  local oi ip; oi=$(overlay_ip); ip=${oi% *}; [ -n "$ip" ] || ip='<overlay-ip>'
+  attach_cmd "$ip" "$ro"
+}
+
+# ---------------------------------------------------------------- root-script (fleet bootstrap's sudo half)
+# Writes the same root steps setup runs through sudo, as one script for the human to run with sudo: host keys, the
+# key-only drop-in checked with sshd -t / sshd -T (rolled back on failure) BEFORE sshd is switched on, sshd on, and
+# the mosh-server firewall allow (that per-binary allow is what lets mosh's UDP 60000-61000 in on macOS). Tool paths
+# are resolved now (sandbox paths under FLEET_REMOTE_SANDBOX). This command never runs sudo. FILE "-" = stdout.
+cmd_root_script() {
+  local out=${1:-} q
+  [ -n "$out" ] || die "root-script needs FILE (or - for stdout)"
+  if ! mosh_paths; then # a dry-run preview before brew installs mosh shows the path it will have; a real write needs it
+    [ "$out" = - ] || die "mosh-server not found on PATH; install mosh first (brew install mosh)"
+    MOSH_REAL="$(brew_bin || echo /opt/homebrew/bin)/mosh-server"
+  fi
+  q() { printf '%q' "$1"; }
+  local body
+  body=$(
+    echo '#!/bin/bash'
+    echo "# Root steps for tmux-agent-fleet-kit remote attach, written by \`fleet remote root-script\` on $(date -u +%Y-%m-%dT%H:%MZ)."
+    echo '# Run it yourself: sudo bash <this file>. Then check without sudo: fleet bootstrap --verify'
+    echo '# Idempotent. Rerun it after upgrading mosh: the firewall allow names the exact mosh-server binary.'
+    echo 'set -u'
+    if [ -z "$SB" ]; then
+      echo '[ "$(id -u)" = 0 ] || { echo "run me as root: sudo bash $0" >&2; exit 1; }'
+    else
+      echo '# sandbox (tests): FLEET_REMOTE_SANDBOX paths, no root check'
+    fi
+    echo 'say() { printf "==> %s\n" "$*"; }; ok() { printf "    ok: %s\n" "$*"; }; fail() { printf "FAIL %s\n" "$*" >&2; exit 1; }'
+    echo "DROPIN=$(q "$DROPIN")"
+    echo "SSHDIR=$(q "$SSHDIR")"
+    echo "NC=$(q "$(tool nc)") SSHD=$(q "$(tool sshd)") KEYGEN=$(q "$(tool ssh-keygen)")"
+    echo "PORT=$(q "${FLEET_REMOTE_SSH_PORT:-22}")"
+    echo 'listening() { "$NC" -z -w 2 127.0.0.1 "$PORT" >/dev/null 2>&1; }'
+    cat <<'EOS'
+
+say "sshd host keys"
+if ls "$SSHDIR"/ssh_host_*_key.pub >/dev/null 2>&1; then ok "host keys present"
+else "$KEYGEN" -A || fail "ssh-keygen -A failed"; ok "host keys generated"; fi
+
+say "key-only sshd drop-in $DROPIN (before sshd is switched on, so passwords are never open)"
+EOS
+    printf "BODY=\$(cat <<'DROPIN_EOF'\n%s\nDROPIN_EOF\n)\n" "$DROPIN_BODY"
+    cat <<'EOS'
+if [ -f "$DROPIN" ] && [ "$(cat "$DROPIN")" = "$BODY" ]; then
+  ok "drop-in already in place"
+else
+  backup=
+  if [ -f "$DROPIN" ]; then backup=$(mktemp); cp "$DROPIN" "$backup"; fi
+  mkdir -p "$(dirname "$DROPIN")" && printf '%s\n' "$BODY" > "$DROPIN" && chmod 644 "$DROPIN" || fail "could not write $DROPIN"
+  if "$SSHD" -t && "$SSHD" -T 2>/dev/null | grep -qix 'passwordauthentication no'; then
+    ok "drop-in installed; sshd -t passed; effective passwordauthentication no"
+    [ -z "$backup" ] || rm -f "$backup"
+  else
+    if [ -n "$backup" ]; then cp "$backup" "$DROPIN"; rm -f "$backup"; else rm -f "$DROPIN"; fi
+    fail "sshd -t failed or password auth is still on (does sshd_config Include sshd_config.d/*.conf?); drop-in rolled back, sshd left as it was"
+  fi
+fi
+
+say "sshd"
+if listening; then ok "sshd already listening"
+EOS
+    if [ "$OS" = Darwin ]; then
+      echo "else"
+      echo "  $(q "$(tool systemsetup)") -setremotelogin on || true"
+      echo "  if ! listening; then"
+      echo "    echo '    systemsetup did not take (it often needs Full Disk Access); trying launchctl'"
+      echo "    $(q "$(tool launchctl)") enable system/com.openssh.sshd"
+      echo "    $(q "$(tool launchctl)") bootstrap system /System/Library/LaunchDaemons/ssh.plist || true"
+      echo "  fi"
+      echo '  listening || fail "sshd still off: System Settings > General > Sharing > Remote Login, then rerun"'
+      echo '  ok "sshd listening (Remote Login on)"'
+      echo "fi"
+      echo
+      echo 'say "application firewall: mosh-server (this per-binary allow is what lets mosh UDP 60000-61000 in)"'
+      echo "FW=$(q "$(tool socketfilterfw)") MOSH=$(q "$MOSH_REAL")"
+      echo '"$FW" --add "$MOSH" && "$FW" --unblockapp "$MOSH" || fail "firewall allow for $MOSH failed"'
+      echo 'ok "mosh-server allowed ($MOSH)"'
+    else
+      echo "else"
+      echo "  $(q "$(tool systemctl)") enable --now ssh 2>/dev/null || $(q "$(tool systemctl)") enable --now sshd"
+      echo '  listening || fail "sshd still off"; ok "sshd listening"'
+      echo "fi"
+      echo
+      echo 'say "firewall: mosh UDP 60000-61000"'
+      echo 'if command -v ufw >/dev/null 2>&1 && ufw status | grep -q "Status: active"; then ufw allow 60000:61000/udp && ok "ufw allows UDP 60000-61000"'
+      echo 'elif command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then firewall-cmd --permanent --add-port=60000-61000/udp && firewall-cmd --reload && ok "firewalld allows UDP 60000-61000"'
+      echo 'else ok "no ufw/firewalld active; nothing to open"; fi'
+    fi
+    echo
+    echo 'say "done; now check it unprivileged: fleet bootstrap --verify"'
+  )
+  if [ "$out" = - ]; then printf '%s\n' "$body"; return 0; fi
+  mkdir -p "$(dirname "$out")"
+  printf '%s\n' "$body" > "$out" && chmod 700 "$out"
+  # record whether sshd was on before the first root run, so `fleet remote off` can leave it as it found it
+  if [ ! -f "$(state_file)" ]; then
+    local was_on=false; sshd_listening && was_on=true
+    mkdir -p "$STATE"
+    printf '{"sshd_was_on_before_setup": %s, "dropin": "%s"}\n' "$was_on" "$DROPIN" > "$(state_file)"
+  fi
+}
+
+# ---------------------------------------------------------------- verify (no privileges, ever)
+cmd_verify() {
+  [ "${1:-}" != -h ] && [ "${1:-}" != --help ] || usage
+  local bad=0
+  if sshd_listening; then echo "ok: sshd: listening"; else echo "FAIL sshd: not listening (run the root script)"; bad=1; fi
+  if [ -f "$DROPIN" ] && [ "$(cat "$DROPIN")" = "$DROPIN_BODY" ]; then echo "ok: drop-in: present ($DROPIN)"
+  elif [ -f "$DROPIN" ]; then echo "FAIL drop-in: $DROPIN differs from the kit's; rerun the root script"; bad=1
+  else echo "FAIL drop-in: missing ($DROPIN)"; bad=1; fi
+  # a bare `ssh localhost tmux -V` with the user's own key, when one is authorized: BatchMode (never a prompt), no known_hosts write
+  local ak=$HOME/.ssh/authorized_keys pub key= blob
+  for pub in "$HOME"/.ssh/id_*.pub; do
+    [ -f "$pub" ] && [ -f "${pub%.pub}" ] && [ -f "$ak" ] || continue
+    blob=$(awk '{print $1" "$2}' "$pub")
+    if awk '{print $1" "$2}' "$ak" | grep -qxF -- "$blob"; then key=${pub%.pub}; break; fi
+  done
+  if [ -z "$key" ]; then
+    echo "skipped: ssh localhost tmux -V (no ~/.ssh/id_* key is in authorized_keys; the phone's key is checked from the phone)"
+  else
+    local v
+    if v=$("$(tool ssh)" -n -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 \
+          -o LogLevel=ERROR -i "$key" -p "${FLEET_REMOTE_SSH_PORT:-22}" localhost tmux -V 2>&1) && [ -n "$v" ]; then
+      echo "ok: ssh localhost tmux -V: $v"
+    else
+      echo "FAIL ssh localhost tmux -V: ${v:-no output} (a bare ssh command can't find tmux, or key auth failed)"; bad=1
+    fi
+  fi
+  local f
+  if f=$(ssh_path_find mosh-server); then echo "ok: mosh-server on the non-interactive ssh PATH: $f"
+  else echo "FAIL mosh-server is not on the non-interactive ssh PATH (fleet bootstrap adds it via ~/.zshenv)"; bad=1; fi
+  if [ "$OS" = Darwin ] && mosh_paths; then
+    if "$(tool socketfilterfw)" --getappblocked "$MOSH_REAL" 2>/dev/null | grep -qi permitted; then echo "ok: firewall: mosh-server allowed"
+    else echo "FAIL firewall: mosh-server not allowed ($MOSH_REAL; rerun the root script after a mosh upgrade)"; bad=1; fi
+  fi
+  return $bad
+}
+
 [ $# -ge 1 ] || usage 1
 sub=$1; shift
 case $sub in
@@ -447,6 +629,11 @@ case $sub in
   status) cmd_status "$@" ;;
   qr) cmd_qr "$@" ;;
   off) cmd_off "$@" ;;
+  ssh-path) cmd_ssh_path "$@" ;;
+  add-key) cmd_add_key "$@" ;;
+  attach-line) cmd_attach_line "$@" ;;
+  root-script) cmd_root_script "$@" ;;
+  verify) cmd_verify "$@" ;;
   -h|--help|help) usage ;;
   *) usage 1 ;;
 esac

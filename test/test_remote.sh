@@ -209,6 +209,8 @@ t "qr without qrencode says how to get a QR code" has "$out" "install qrencode"
 t "qr names Blink and Termius" bash -c 'printf "%s" "$1" | grep -q Blink && printf "%s" "$1" | grep -q Termius' _ "$out"
 out=$(R qr --read-only)
 t "qr --read-only adds -r to the attach" bash -c 'printf "%s\n" "$1" | head -1 | grep -q "attach -t $2 -r$"' _ "$out" "$FLEET_TMUX_SESSION"
+out=$(R attach-line)
+t "attach-line prints only the attach command" test "$(printf "%s\n" "$out" | wc -l | tr -d " ")" = 1
 printf '#!/bin/sh\necho "QR[$*]"\n' > "$T/path/qrencode"; chmod +x "$T/path/qrencode"
 out=$(R qr)
 t "qr pipes the command to qrencode when present" has "$out" "QR[-t ANSIUTF8 -- mosh "
