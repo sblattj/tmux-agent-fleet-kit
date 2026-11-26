@@ -9,6 +9,9 @@
 #   fleet attach                                        tmux attach to the fleet session
 #   fleet decisions serve|tui|pick|ask|find|report|refresh   DECISIONS UI (lib/fleet_decisions.py; `fleet decisions -h`)
 #   fleet layout                                        print the tmux window/pane map
+#   fleet status-label [FORMAT|--reset]                 the fleet session's status-left: save FORMAT to $FLEET_STATE/status-label and apply it
+#                                                       (session scope, length auto-sized); --reset unsets it; no argument shows saved and live;
+#                                                       FLEET_STATUS_LABEL overrides the file
 #   fleet stop <name> [--keep-sides]                    kill that lane's pane; its running side runs are killed first
 #                                                       (or kept as status=orphan with --keep-sides)
 #   fleet send <to> <text>                              message a lane (reopens it if parked), sender is $FLEET_NAME
@@ -558,6 +561,7 @@ EOF
   if ! tm has-session -t "=$SESSION" 2>/dev/null; then
     tm new-session -d -s "$SESSION" -n home -c "$dir" || die "could not create tmux session $SESSION"
   fi
+  status_label_apply || true  # saved or env label (issue #44); no label means no tmux option call
   local pane
   if [ -n "$split" ]; then
     pane=$(tm split-window -d $splitflags -P -F '#{pane_id}' -t "$splitpane" -c "$dir" "bash $q_sh") || die "tmux split-window failed"
@@ -992,6 +996,58 @@ cmd_stop() {
   echo "OK stopped $name pane=$pane"
 }
 
+# ---- status label (issue #44): the fleet session's status-left, session scoped, never -g
+status_label_value() { # prints the label to apply (env wins over the file, trailing space kept); rc 1 when none
+  if [ -n "${FLEET_STATUS_LABEL:-}" ]; then printf '%s' "$FLEET_STATUS_LABEL"; return 0; fi
+  if [ -f "$STATE/status-label" ]; then
+    local v; v=$(cat "$STATE/status-label"; printf x); v=${v%x}
+    [ -n "$v" ] || return 1
+    printf '%s' "$v"; return 0
+  fi
+  return 1
+}
+status_label_apply() { # [label] : set status-left and a sized status-left-length on the session; zero tmux calls with no label
+  local label rendered w
+  if [ $# -ge 1 ]; then label=$1; else label=$(status_label_value; printf x) || true; label=${label%x}; fi
+  [ -n "$label" ] || return 0
+  tm has-session -t "=$SESSION" 2>/dev/null || return 2
+  tm set-option -t "=$SESSION:" status-left "$label" || return 1
+  rendered=$(tm display-message -p -t "=$SESSION:" "$label"; printf x) || rendered=x
+  rendered=${rendered%x}; rendered=${rendered%$'\n'}
+  w=$(printf '%s' "$rendered" | python3 -c 'import sys;print(len(sys.stdin.buffer.read().decode("utf-8","replace")))')
+  w=$((w + 1)); [ "$w" -ge 10 ] || w=10
+  tm set-option -t "=$SESSION:" status-left-length "$w" || return 1
+}
+cmd_status_label() {
+  need tmux
+  case ${1:-} in
+    "")
+      local saved live
+      if [ -f "$STATE/status-label" ]; then saved=$(cat "$STATE/status-label"; printf x); saved=${saved%x}; else saved=none; fi
+      [ -n "${FLEET_STATUS_LABEL:-}" ] && printf 'env: %s\n' "$FLEET_STATUS_LABEL"
+      printf 'saved: %s\n' "$saved"
+      if tm has-session -t "=$SESSION" 2>/dev/null; then live=$(tm show-options -v -t "=$SESSION:" status-left 2>/dev/null; printf x); live=${live%x}; live=${live%$'\n'}; else live="(no session $SESSION)"; fi
+      printf 'live: %s\n' "$live" ;;
+    --reset)
+      [ $# -eq 1 ] || usage
+      rm -f "$STATE/status-label"
+      if tm has-session -t "=$SESSION" 2>/dev/null; then
+        tm set-option -u -t "=$SESSION:" status-left; tm set-option -u -t "=$SESSION:" status-left-length
+      fi
+      echo "OK status label reset" ;;
+    -*) usage ;;
+    *)
+      [ $# -eq 1 ] || usage
+      mkdir -p "$STATE"; printf '%s' "$1" > "$STATE/status-label" || die "could not write $STATE/status-label"
+      local rc=0; status_label_apply "$1" || rc=$?
+      case $rc in
+        0) echo "OK status label saved and applied to $SESSION" ;;
+        2) echo "OK status label saved; no tmux session $SESSION yet, it applies on the next launch" ;;
+        *) die "could not apply the status label to $SESSION" ;;
+      esac ;;
+  esac
+}
+
 [ $# -ge 1 ] || usage
 sub=$1; shift
 # `fleet decisions|learn|watch serve` are aliases of the hub (Q700): the hub URL for that tab, or start the hub.
@@ -1003,6 +1059,7 @@ case $sub in
   ls) cmd_ls ;;
   attach) cmd_attach ;;
   layout) cmd_layout ;;
+  status-label) cmd_status_label "$@" ;;
   stop) cmd_stop "$@" ;;
   decisions) exec python3 "$ROOT/lib/fleet_decisions.py" "$@" ;;  # DECISIONS UI: serve|tui|pick|ask|find|report|refresh
   app) exec python3 "$ROOT/lib/fleet_app.py" "$@" ;;

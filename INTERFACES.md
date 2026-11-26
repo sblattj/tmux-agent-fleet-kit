@@ -14,6 +14,7 @@ and `$FLEET_ROUTE` (default `ROUTE`). There is no alias layer: a message goes to
 | FLEET_TMUX_SESSION | `fleet` | tmux session every window is created in (created detached if missing) |
 | FLEET_TMUX_SOCKET | empty | if set, every tmux call gets `-L $FLEET_TMUX_SOCKET` (tests use a private server) |
 | FLEET_STATE | `${XDG_STATE_HOME:-$HOME/.local/state}/fleet` | roster, inboxes, launch scripts |
+| FLEET_STATUS_LABEL | empty | tmux format for the fleet session's `status-left`; overrides `$FLEET_STATE/status-label` (issue #44); empty means use the file, and with no file the kit sets no status option |
 | FLEET_DIR | `$PWD` | working dir for a launched lane (`--dir` overrides) |
 | FLEET_HUMAN | `the human` | who answers DECIDE calls |
 | FLEET_DECIDE / FLEET_ROUTE | `DECIDE` / `ROUTE` | desk lane names; a send to the retired `DECISIONS` / `ORCHESTRATOR` goes to `DECIDE` / `ROUTE` when the roster has the new desk and no lane under the old name |
@@ -48,6 +49,7 @@ inbox/<name>.native    ids of "native":"pending" lines whose SendMessage the mir
 wake/<name>.woken      inbox line count covered by the last typed pointer (the deferred waker never types twice for them)
 wake/<name>.lock       flock held by the one deferred waker of a lane (`fleet_mesh.py wake-later <name>`)
 wake/pane-<id>.lock    flock held while one wake (or park's /compact) checks, types, verifies and sends Enter
+status-label           the saved `status-left` format of the fleet session, verbatim, no added newline (`fleet status-label FORMAT`; `--reset` deletes it)
 inbox/<name>.cursor    integer: number of lines already returned by peer_inbox
 decisions.jsonl        {"id":"Q<n>","at","from","question","options":[...],"status":"open|answered","answer","answeredAt"}
 launch/<name>.sh       the window script ; launch/<name>.txt the first prompt ; launch/<name>.launch.json

@@ -192,9 +192,21 @@ fleet-mesh types one line into the Claude (or Kiro, or agy) pane: `[fleet] messa
 
 ## Environment
 
-All variables are optional. The full table (`FLEET_TMUX_SESSION`, `FLEET_TMUX_SOCKET`, `FLEET_STATE`, `FLEET_DIR`, `FLEET_HUMAN`, `FLEET_DECIDE`, `FLEET_ROUTE`, `FLEET_NAME`, `FLEET_CLAUDE_BIN`, `FLEET_CODEX_BIN`, `FLEET_OPENCODE_BIN`, `FLEET_KIRO_BIN`, `KIRO_HOME`, `FLEET_KIRO_GOAL_MAX`, `FLEET_AGY_BIN`, `FLEET_AGY_HOME`, `FLEET_GFX`, `FLEET_CHAFA_BIN`, `FLEET_DESK_PASSTHROUGH`) and the state layout are in [INTERFACES.md](INTERFACES.md).
+All variables are optional. The full table (`FLEET_TMUX_SESSION`, `FLEET_TMUX_SOCKET`, `FLEET_STATE`, `FLEET_DIR`, `FLEET_HUMAN`, `FLEET_DECIDE`, `FLEET_ROUTE`, `FLEET_NAME`, `FLEET_CLAUDE_BIN`, `FLEET_CODEX_BIN`, `FLEET_OPENCODE_BIN`, `FLEET_KIRO_BIN`, `KIRO_HOME`, `FLEET_KIRO_GOAL_MAX`, `FLEET_AGY_BIN`, `FLEET_AGY_HOME`, `FLEET_GFX`, `FLEET_CHAFA_BIN`, `FLEET_DESK_PASSTHROUGH`, `FLEET_STATUS_LABEL`) and the state layout are in [INTERFACES.md](INTERFACES.md).
 
 Installer-only: `FLEET_OC_GOAL_PLUGIN_URL`, `FLEET_OC_GOAL_PLUGIN_REF`, `FLEET_OC_CONFIG_DIR`, `FLEET_PREFIX`, `FLEET_ROLES_DIR` (default `<repo>/roles`), `CODEX_HOME` (default `~/.codex`). Kiro: `FLEET_KIRO_BIN` (default `kiro-cli`), `KIRO_HOME` (default `~/.kiro`; passed to kiro lanes and read by the installer and lifecycle when set), `FLEET_KIRO_GOAL_MAX` (default 20, the `--max` of `/goal`). agy: `FLEET_AGY_BIN` (default `agy`), `FLEET_AGY_HOME` (default `~/.gemini`; where the installer writes and where launcher and lifecycle read transcripts; agy itself always uses `$HOME/.gemini`). Runtime: `FLEET_BIN` (the `fleet` script fleet-mesh runs to reopen a parked lane; default `<repo>/bin/fleet`).
+
+## Status label
+
+The fleet session shows tmux's own `status-left` unless you set one. `fleet status-label` changes it for the fleet session only (`set-option -t`, never `-g`):
+
+```bash
+fleet status-label '[#{session_name}:#{window_index}] '   # save to $FLEET_STATE/status-label and apply now
+fleet status-label                                        # print "saved: ..." and "live: ..."
+fleet status-label --reset                                # delete the file, unset both options on the session
+```
+
+The format is saved verbatim (a trailing space stays). `status-left-length` is set to the rendered width plus 1 (counted in characters, never below 10), so a long label is not cut off. `FLEET_STATUS_LABEL` overrides the file. Every `fleet launch` re-applies the label right after the session exists, so it survives reattach and a tmux server restart. With no file and no env the kit makes no status option call, so the default is unchanged. With no session yet, the label is saved and applies on the next launch. Test: `bash test/test_status_label.sh`.
 
 ## Goal files
 
@@ -452,6 +464,7 @@ python3 -m unittest test/test_side_roster.py  # side runs under the parent in pe
 python3 -m unittest test/test_side_ach.py     # side runs: adopt-ach registers running ach runs by process ancestry, once
 bash test/test_probe_stall_park.sh            # a probe silent 15 min is parked as stalled by fleet cleanup --apply
 bash test/test_forget.sh                      # fleet forget archives one row; a live lane is refused without --force
+bash test/test_status_label.sh               # fleet status-label: default, set, sizing, reset, env, server restart (private tmux server)
 bash test/test_desks_default.sh               # desks by default: installer step, launch guard, tick desks down, desks up --handoff
 bash test/test_show.sh                        # fleet show: every mode, mosh viewer, shim drops chafa's set-option, FLEET_DESK_PASSTHROUGH on desks
 FLEET_PROBE_LIVE=1 test/test_probe_live.sh --cli claude   # launches 2 real lanes: the probe can't shell or write, a worker can
