@@ -31,6 +31,7 @@ The token is never in argv, env, stdout, the log, status, state or the transcrip
 import argparse
 import datetime
 import fcntl
+import http.client
 import importlib.util
 import json
 import os
@@ -97,7 +98,7 @@ def feed_dir(name):
 
 
 def read_token(path):
-    """The token from a regular file owned by this user with no group/other bits (chmod 600)."""
+    """The token from a regular file owned by this user, mode exactly 600."""
     p = os.path.abspath(os.path.expanduser(path))
     try:
         st = os.stat(p)
@@ -107,7 +108,7 @@ def read_token(path):
         raise FeedError("token file %s is not a regular file" % p)
     if st.st_uid != os.getuid():
         raise FeedError("token file %s is not owned by you" % p)
-    if st.st_mode & 0o077:
+    if stat.S_IMODE(st.st_mode) != 0o600:
         raise FeedError("token file %s is mode %o, refused: run chmod 600 %s" % (p, stat.S_IMODE(st.st_mode),
                                                                              shlex.quote(p)))
     try:
@@ -179,7 +180,7 @@ def http_get(url, headers, timeout):
     except urllib.error.URLError as e:
         reason = e.reason
         raise PollFailed("unreachable (%s)" % (getattr(reason, "strerror", None) or type(reason).__name__))
-    except (OSError, ValueError) as e:
+    except (OSError, ValueError, http.client.HTTPException) as e:  # a cut connection mid-body included
         raise PollFailed("read failed (%s)" % type(e).__name__)
 
 
@@ -481,9 +482,10 @@ class Feed:
             self.failed("HTTP %d" % d)
             return
         self.ok()
-        self._take(stem, d.get("entries") or [])
-        if isinstance(d.get("cursor"), str):
-            self.pos["cursor"] = d["cursor"]
+        with _held():  # a stop mid-answer must not save rows without the position they reach
+            self._take(stem, d.get("entries") or [])
+            if isinstance(d.get("cursor"), str):
+                self.pos["cursor"] = d["cursor"]
         self.maybe_flush()
         if (d.get("meta") or {}).get("ended"):
             self._gone()
@@ -514,23 +516,29 @@ class Feed:
             self.pos["from"] = len(complete)  # start at the current end
             self.flush()
         else:
-            for i, raw in enumerate(complete, start=start):
-                u = _listen_mod().parse_utterance(raw)
-                if not u:
-                    continue
-                if since and not self.pos.get("sinceReached"):
-                    if not u["clock"] or _secs(u["clock"]) < _secs(since):
+            with _held():  # a stop mid-answer must not save rows without the position they reach
+                for i, raw in enumerate(complete, start=start):
+                    u = _listen_mod().parse_utterance(raw)
+                    if not u:
                         continue
-                    self.pos["sinceReached"] = True
-                self.line(u["clock"], u["speaker"], u["text"], i=i)
-            self.pos["from"] = start + len(complete)
+                    if since and not self.pos.get("sinceReached"):
+                        if not u["clock"] or _secs(u["clock"]) < _secs(since):
+                            continue
+                        self.pos["sinceReached"] = True
+                    self.line(u["clock"], u["speaker"], u["text"], i=i)
+                self.pos["from"] = start + len(complete)
             self.maybe_flush()
         self.sleep(self.poll)
 
     def run(self):
         step = self.step_whosaid if self.proto == "whosaid" else self.step_lines
         while True:
-            step()
+            try:
+                step()
+            except Stop:
+                raise
+            except Exception as e:  # anything else is one failed poll, never a dead feed
+                self.failed("error (%s)" % type(e).__name__)
 
 
 def _on_signal(signum, _frame):

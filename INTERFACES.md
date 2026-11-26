@@ -694,8 +694,8 @@ is drawn and served (at draw time) as well as to routing.
 
 - `start URL --token-file PATH [--name N (feed)] [--protocol whosaid|lines] [--stem S] [--from-start]
   [--since HH:MM:SS (lines only)] [--min-chars 12] [--batch 60] [--poll 3] [--header X-Token] [--parent LANE]
-  [--bound 12h]`. Refuses (`FAIL ...`, exit 1): a token file that is not a regular file owned by the user with no
-  group/other mode bits, an empty one, a URL with userinfo, a non-http(s) URL, a bad name, `--since` or `--stem`, a feed
+  [--bound 12h]`. Refuses (`FAIL ...`, exit 1): a token file that is not a regular file owned by the user with mode
+  exactly 600, an empty one, a URL with userinfo, a non-http(s) URL, a bad name, `--since` or `--stem`, a feed
   of that name already running, and whatever `fleet side run` refuses (no parent lane in the roster). Writes
   `$FLEET_STATE/feeds/<name>/config.json` (0600; the token file's path, never the token), then runs `fleet side run
   --host feed --model <name> --bound <bound> --log feeds/<name>/log [--parent LANE] -- python3 lib/fleet_feed.py _run
@@ -722,7 +722,7 @@ is drawn and served (at draw time) as well as to routing.
   First start: N = the current line count unless `--from-start` or `--since`. 404/410: status `gone`, keep polling.
 - Status: `ok | stalled (3 failed polls) | auth refused | gone | stalled (bad request, feed stopped)` in `D/status`,
   one log line `source: http-feed <status>` and one note `source: http-feed <status>`, each only on a change. A failed
-  poll is a network error, a timeout, a non-JSON answer or an HTTP status other than 200/400/401/403/404; an idle long
+  poll is a network error, a timeout, a connection cut mid-answer, any other error in a poll, a non-JSON answer or an HTTP status other than 200/400/401/403/404; an idle long
   poll (200, no entries) is not one. 401/403: `auth refused`, exit 2. 400: exit 1.
 - `ls`: one line per feed dir: `<name> <S#|-> alive|dead <status> <protocol> <safe url>`, or `no feeds`. `status N`:
   alive/dead, side run id and pid, source, position, transcript line and note counts, log path. `stop N`: SIGTERM to the

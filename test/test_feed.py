@@ -440,6 +440,34 @@ class WhosaidTest(Base):
         self.assertTrue(wait_for(lambda: self.status(d) == "ok"))
         self.stop(p)
 
+    def test_a_cut_connection_is_a_failed_poll_not_a_dead_feed(self):
+        s = self.stub(WhosaidStub)
+        orig = s.handle
+        s.cut = False
+
+        def handle(h):
+            if s.cut and "/sessions/" in h.path:
+                h.send_response(200)
+                h.send_header("Content-Length", "100")
+                h.end_headers()
+                h.wfile.write(b'{"ok": true')  # 11 of 100 bytes, then the connection closes
+                h.close_connection = True
+                return
+            orig(h)
+        s.handle = handle
+        s.add("20261126T100000", "backlog line, skipped by default")
+        d = self.config(s.url)
+        p = self.poller(d)
+        self.assertTrue(wait_for(lambda: self.status(d) == "ok"))
+        s.cut = True
+        self.assertTrue(wait_for(lambda: self.status(d) == "stalled (3 failed polls)", secs=40), self.log(d))
+        self.assertIsNone(p.poll(), self.log(d))
+        s.cut = False
+        self.assertTrue(wait_for(lambda: self.status(d) == "ok", secs=40), self.log(d))
+        self.assertEqual(self.notes(d).count("source: http-feed stalled (3 failed polls)"), 1)
+        self.assertIn("IncompleteRead", self.log(d))
+        self.stop(p)
+
     def test_bad_request_is_stalled_and_stops(self):
         s = self.stub(WhosaidStub)
         orig = s.handle
@@ -545,6 +573,12 @@ class CliTest(Base):
         self.assertEqual(self._side_rows(), [])
         self.assertFalse(os.path.exists(os.path.join(self.state, "feeds", "feed", "config.json")))
 
+    def test_refuses_mode_400_too(self):
+        os.chmod(self.tokfile, 0o400)
+        r = self.fleet("feed", "start", "http://127.0.0.1:9/", "--token-file", self.tokfile)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("mode 400, refused", r.stderr)
+
     def test_refuses_credentials_in_the_url(self):
         r = self.fleet("feed", "start", "http://user:%s@127.0.0.1:9/" % TOKEN, "--token-file", self.tokfile)
         self.assertEqual(r.returncode, 1)
@@ -561,8 +595,22 @@ class CliTest(Base):
 # ---------------------------------------------------------------- the listen pane and the WATCH call source
 
 class ListenNoteTest(Base):
+    def setUp(self):
+        Base.setUp(self)
+        env = {"FLEET_STATE": self.state, "FLEET_NAME": "WATCH", "FLEET_DECIDE": "DECISIONS",
+               "FLEET_ROUTE": "ORCHESTRATOR", "FLEET_TMUX_SOCKET": "feed-test-none"}
+        self._saved = {k: os.environ.get(k) for k in env}
+        os.environ.update(env)
+
+    def tearDown(self):
+        for k, v in self._saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        Base.tearDown(self)
+
     def test_note_line_is_shown_and_never_routed(self):
-        os.environ["FLEET_STATE"] = self.state
         path = os.path.join(self.tmp, "transcript.jsonl")
         with open(path, "w") as f:
             f.write(json.dumps({"note": "source: http-feed stalled (3 failed polls)", "at": "x"}) + "\n")
@@ -603,11 +651,14 @@ class RealWhosaidTest(Base):
         if lib is None:
             self.skipTest("no whosaid checkout with live_remote.py (set WHOSAID_LIB); looked in %s" % WHOSAID_LIBS)
         sys.path.insert(0, lib)
+        saved, sys.dont_write_bytecode = sys.dont_write_bytecode, True  # no __pycache__ in that checkout
         try:
             import live
             import live_remote
         except Exception as e:  # noqa: BLE001
             self.skipTest("cannot import whosaid live_remote from %s: %s" % (lib, e))
+        finally:
+            sys.dont_write_bytecode = saved
         if not hasattr(live_remote, "start_server"):
             self.skipTest("whosaid at %s has no live serve (needs v1.52.0)" % lib)
         from pathlib import Path
