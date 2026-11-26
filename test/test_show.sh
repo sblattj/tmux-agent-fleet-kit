@@ -2,7 +2,8 @@
 # test_show.sh: issue #41, `fleet show IMAGE [--text SUMMARY]` and FLEET_DESK_PASSTHROUGH. Every mode (kitty,
 # symbols for a mosh viewer, symbols with passthrough off and the option still off afterwards, no tmux by TERM,
 # FLEET_GFX overrides, chafa missing, no clients), the tmux shim dropping set-option, sizing from the real pane,
-# the static "no allow-passthrough set without -p -t" rule, and fleet desks up with the setting off and on.
+# the static "allow-passthrough is only ever set on (-p -t <pane> or -g), never off" rule, and the v0.8.1 default:
+# fleet launch and fleet desks up turn it on server-wide unless FLEET_DESK_PASSTHROUGH=0, and never turn it off.
 # Throwaway tmux servers (tmux -L), a stub chafa that tries `tmux set-option allow-passthrough on` like the real one,
 # temp state; never the live fleet. Exit 1 on any FAIL.
 set -u
@@ -13,8 +14,8 @@ ROOT=$(cd "$HERE/.." && pwd -P)
 FLEET=$ROOT/bin/fleet
 SHIM=$ROOT/lib/fleet-show-shim/tmux
 T=$(mktemp -d "${TMPDIR:-/tmp}/fleetshow.XXXXXX")
-S=show-$$ D1=showdesk1-$$ D2=showdesk2-$$
-cleanup() { for s in $S $D1 $D2; do tmux -L "$s" kill-server >/dev/null 2>&1; done; rm -rf "$T"; }
+S=show-$$ D1=showdesk1-$$ D2=showdesk2-$$ D3=showlaunch3-$$ D4=showlaunch4-$$
+cleanup() { for s in $S $D1 $D2 $D3 $D4; do tmux -L "$s" kill-server >/dev/null 2>&1; done; rm -rf "$T"; }
 trap cleanup EXIT
 
 FAILS=0
@@ -167,7 +168,7 @@ t "kitty: text line printed" bash -c 'tail -1 "$1" | grep -qx "summary kitty"' _
 po=$(inpane off "${base[@]}")
 t "passthrough-off pane: option off before the run (got: $(popt "$po"))" test "$(popt "$po")" = off
 t "off pane ran" go off
-t "passthrough off -> mode=symbols with the hint" has "$(cat "$T/off.err")" "mode=symbols (allow-passthrough is off on this pane, so no real image; a desk pane gets it with FLEET_DESK_PASSTHROUGH=1"
+t "passthrough off -> mode=symbols with the hint" has "$(cat "$T/off.err")" "mode=symbols (allow-passthrough is off on this pane, so no real image; fleet launch and fleet desks up turn it on unless FLEET_DESK_PASSTHROUGH=0; fleet show never turns it on)"
 t "passthrough off: chafa -f symbols" has "$(cat "$CLOG")" "-f symbols"
 t "passthrough off: option still off on that pane afterwards (got: $(popt "$po"))" test "$(popt "$po")" = off
 t "passthrough off: global still off (got: $(gopt))" test "$(gopt)" = off
@@ -212,47 +213,67 @@ t "real list-clients pane ran" go realclients
 t "real list-clients on a server with no client -> symbols (no client attached)" has "$(cat "$T/realclients.err")" "mode=symbols (no client attached to this session)"
 t "passthrough on stays pane-level: global still off (got: $(gopt))" test "$(gopt)" = off
 
-# ======================================================== 5. static rule: no allow-passthrough set without -p -t
-rule() { grep -E '(set-option|set |setw )' | grep 'allow-passthrough' | grep -vE 'set-option -p -t (<[^>]*>|[^ ]+) allow-passthrough' | grep -vE '^[^:]*:[0-9]+: *#'; }
+# ======================================================== 5. static rule: allow-passthrough is only ever set to on
+# allowed: set-option -p -t <pane> allow-passthrough on, set-option -g allow-passthrough on; anything else (a bare
+# set, setw, off, all, -u, a variable value) is flagged. Comments are skipped.
+tmset() { grep -E '(^|[^a-z_-])(tm|tq|tmux)( -[LS] [^ ]+)? +(set-option|set|setw|set-window-option) '; }  # a tmux option write, not prose
+rule() { tmset | grep 'allow-passthrough' | grep -vE 'set-option (-p -t (<[^>]*>|[^ ]+)|-g) allow-passthrough on( |$|")' | grep -vE '^[^:]*:[0-9]+: *#'; }
 bad=$(cd "$ROOT" && grep -rnE 'allow-passthrough' bin lib | grep -v '^lib/fleet-show-shim/' | rule)
-t "no kit code in bin/ or lib/ sets allow-passthrough without -p -t <pane> (got: $bad)" test -z "$bad"
-ctlbad=$(printf '%s\n' 'bin/x:2:# set-option allow-passthrough on in a comment' 'bin/x:3:  tm set-option allow-passthrough on' 'bin/x:4:  tm set -g allow-passthrough all' 'bin/x:5:  tm set-option -p -t "$p" allow-passthrough on' | rule)
-t "control: the rule flags a bare set-option and a set -g, and passes -p -t and comments" bash -c 'test "$(printf "%s\n" "$1" | wc -l | tr -d " ")" = 2 && ! printf "%s" "$1" | grep -q "x:5:"' _ "$ctlbad"
+t "no kit code in bin/ or lib/ sets allow-passthrough other than on (-p -t <pane> or -g) (got: $bad)" test -z "$bad"
+ctlbad=$(printf '%s\n' 'bin/x:2:# set-option allow-passthrough on in a comment' 'bin/x:3:  tm set-option allow-passthrough on' 'bin/x:4:  tm set -g allow-passthrough all' 'bin/x:5:  tm set-option -p -t "$p" allow-passthrough on' 'bin/x:6:  tm set-option -g allow-passthrough off' 'bin/x:7:  tm set-option -g allow-passthrough on 2>/dev/null' 'bin/x:8:  tm set-option -g allow-passthrough "$v"' | rule)
+t "control: the rule flags a bare set-option, set -g all, -g off and a variable value, and passes -p -t on, -g on and comments (got: $(printf '%s' "$ctlbad" | cut -d: -f2 | tr '\n' ' '))" bash -c 'test "$(printf "%s\n" "$1" | cut -d: -f2 | tr "\n" " ")" = "3 4 6 8 "' _ "$ctlbad"
+offrule() { grep -E 'allow-passthrough +(off|"?\$)|-u +allow-passthrough' | tmset | grep -vE '^[^:]*:[0-9]+: *#'; }
+bad=$(cd "$ROOT" && grep -rnE 'allow-passthrough' bin lib | grep -v '^lib/fleet-show-shim/' | offrule)
+t "no kit code in bin/ or lib/ writes allow-passthrough off or unsets it (got: $bad)" test -z "$bad"
+ctloff=$(printf '%s\n' 'bin/x:2:  tm set-option -g allow-passthrough off' 'bin/x:3:  tm set -u allow-passthrough' 'bin/x:4:  tm set-option -g allow-passthrough "$v"' 'bin/x:5:# tm set -g allow-passthrough off' 'bin/x:6:  why="allow-passthrough $pt on"' 'bin/x:7:  tm set-option -g allow-passthrough on' | offrule)
+t "control: the off rule flags -g off, -u and a variable value, and passes a comment, prose and -g on (got: $(printf '%s' "$ctloff" | cut -d: -f2 | tr '\n' ' '))" bash -c 'test "$(printf "%s\n" "$1" | cut -d: -f2 | tr "\n" " ")" = "2 3 4 "' _ "$ctloff"
 
-# ======================================================== 6. fleet desks up and FLEET_DESK_PASSTHROUGH
+# ======================================================== 6. FLEET_DESK_PASSTHROUGH: default on (v0.8.1), 0 opts out
 export FLEET_CLAUDE_BIN=$HERE/stubs/claude FLEET_DIR=$T
-out=$(env FLEET_STATE=$T/dry FLEET_TMUX_SOCKET=$D1 FLEET_TMUX_SESSION=dsess "$FLEET" desks up --no-proof --dry-run 2>&1)
-t "desks --dry-run, setting off: no allow-passthrough step" hasnot "$out" "allow-passthrough"
-out=$(env FLEET_STATE=$T/dry FLEET_DESK_PASSTHROUGH=1 FLEET_TMUX_SOCKET=$D1 FLEET_TMUX_SESSION=dsess "$FLEET" desks up --no-proof --dry-run 2>&1)
-t "desks --dry-run, setting on: DECIDE, WATCH, LEARN each get set-option -p -t <pane>" bash -c 'for d in DECIDE WATCH LEARN; do printf "%s" "$1" | grep -qx "would run: tmux set-option -p -t <$d pane> allow-passthrough on" || exit 1; done' _ "$out"
-t "desks --dry-run, setting on: never ROUTE, never -g" bash -c '! printf "%s" "$1" | grep -q "<ROUTE pane> allow-passthrough" && ! printf "%s" "$1" | grep "allow-passthrough" | grep -q -- " -g "' _ "$out"
-out=$(env FLEET_STATE=$T/dry FLEET_DESK_PASSTHROUGH=yes FLEET_TMUX_SOCKET=$D1 FLEET_TMUX_SESSION=dsess "$FLEET" desks up --no-proof --dry-run 2>&1)
-t "desks --dry-run, FLEET_DESK_PASSTHROUGH=yes (only 1 turns it on): no step" hasnot "$out" "allow-passthrough"
+dry() { env FLEET_STATE=$T/dry FLEET_TMUX_SOCKET=$D1 FLEET_TMUX_SESSION=dsess "$@" "$FLEET" desks up --no-proof --dry-run 2>&1; }
+out=$(dry env)
+t "desks --dry-run, unset (default): exactly one step, set-option -g allow-passthrough on" test "$(printf '%s\n' "$out" | grep allow-passthrough)" = "would run: tmux set-option -g allow-passthrough on"
+out1=$(dry env FLEET_DESK_PASSTHROUGH=1)
+t "desks --dry-run, FLEET_DESK_PASSTHROUGH=1: identical to unset" test "$out1" = "$out"
+out0=$(dry env FLEET_DESK_PASSTHROUGH=0)
+t "desks --dry-run, FLEET_DESK_PASSTHROUGH=0: no allow-passthrough step" hasnot "$out0" "allow-passthrough"
+t "desks --dry-run, =0 is the default output minus the one passthrough line" test "$out0" = "$(printf '%s\n' "$out" | grep -v allow-passthrough)"
+out=$(dry env FLEET_DESK_PASSTHROUGH=yes)
+t "desks --dry-run, FLEET_DESK_PASSTHROUGH=yes (only unset or 1 turn it on): no step" hasnot "$out" "allow-passthrough"
 
 rget() { jq -r --arg n "$2" --arg f "$3" '.[$n][$f] // empty' "$1/roster.json" 2>/dev/null; }
 D1S=$T/d1; mkdir -p "$D1S"
 fd1() { env FLEET_STATE=$D1S FLEET_TMUX_SOCKET=$D1 FLEET_TMUX_SESSION=dsess "$@" "$FLEET" desks up --no-proof 2>&1; }
+out=$(fd1 env FLEET_DESK_PASSTHROUGH=0); rc=$?
+t "desks up, =0: exit 0 and four desks" bash -c 'test "$1" = 0 && printf "%s" "$2" | grep -q "^OK desks up"' _ "$rc" "$out"
+t "desks up, =0: no passthrough line in the output" hasnot "$out" "allow-passthrough"
+t "desks up, =0: no allow-passthrough set anywhere, global still the tmux default off (got: $(anyset "$D1" | tr '\n' ' '))" test "$(anyset "$D1")" = "global=off"
 out=$(fd1 env); rc=$?
-t "desks up, setting off: exit 0 and four desks" bash -c 'test "$1" = 0 && printf "%s" "$2" | grep -q "^OK desks up"' _ "$rc" "$out"
-t "desks up, setting off: no allow-passthrough anywhere, global unchanged (got: $(anyset "$D1" | tr '\n' ' '))" test "$(anyset "$D1")" = "global=off"
-out=$(fd1 env FLEET_DESK_PASSTHROUGH=1); rc=$?
-t "desks rerun, setting on: the live desks are left alone (ROUTE already live)" bash -c 'test "$1" = 0 && printf "%s" "$2" | grep -q "^ROUTE already live" && printf "%s" "$2" | grep -q "^LEARN already live"' _ "$rc" "$out"
-for d in DECIDE WATCH LEARN; do
+t "desks rerun, unset (default): exit 0, live desks left alone, one OK global line" bash -c 'test "$1" = 0 && printf "%s" "$2" | grep -q "^ROUTE already live" && test "$(printf "%s\n" "$2" | grep -c "^OK allow-passthrough on (global, every fleet pane)$")" = 1' _ "$rc" "$out"
+t "desks rerun, unset: global on, no window- or pane-level value (got: $(anyset "$D1" | tr '\n' ' '))" test "$(anyset "$D1")" = "global=on"
+for d in ROUTE DECIDE WATCH LEARN; do
   p=$(rget "$D1S" "$d" pane)
-  t "desks rerun, setting on: live $d pane $p has allow-passthrough on (pane level)" test "$(tmux -L "$D1" show -pv -t "$p" allow-passthrough 2>/dev/null)" = on
+  t "desks rerun, unset: live $d pane $p sees allow-passthrough on (inherited)" test "$(tmux -L "$D1" show -Apv -t "$p" allow-passthrough 2>/dev/null | tail -1)" = on
 done
-rp=$(rget "$D1S" ROUTE pane)
-t "desks rerun, setting on: ROUTE pane $rp unset (got: '$(tmux -L "$D1" show -pv -t "$rp" allow-passthrough 2>/dev/null)')" test -z "$(tmux -L "$D1" show -pv -t "$rp" allow-passthrough 2>/dev/null)"
-t "desks rerun, setting on: global still off, no window-level value, exactly three panes set (got: $(anyset "$D1" | tr '\n' ' '))" bash -c 'printf "%s\n" "$1" | grep -qx "global=off" && ! printf "%s" "$1" | grep -q "^window" && test "$(printf "%s\n" "$1" | grep -c "^pane .*=on$")" = 3' _ "$(anyset "$D1")"
 sp=$(tmux -L "$D1" list-panes -a -F '#{pane_id} #{@fleet-watch-status}' | awk '$2==1{print $1}')
-t "the WATCH status pane ($sp) is not a desk: unset" bash -c 'test -n "$1" && test -z "$(tmux -L "$2" show -pv -t "$1" allow-passthrough 2>/dev/null)"' _ "$sp" "$D1"
+t "the WATCH status pane ($sp) sees it on too" bash -c 'test -n "$1" && test "$(tmux -L "$2" show -Apv -t "$1" allow-passthrough 2>/dev/null | tail -1)" = on' _ "$sp" "$D1"
+out=$(fd1 env FLEET_DESK_PASSTHROUGH=0); rc=$?
+t "desks rerun, =0 on a server where it is on: exit 0, no passthrough line, global stays on (never flipped off; got: $(anyset "$D1" | tr '\n' ' '))" bash -c 'test "$1" = 0 && ! printf "%s" "$2" | grep -q allow-passthrough && test "$3" = "global=on"' _ "$rc" "$out" "$(anyset "$D1")"
 
 D2S=$T/d2; mkdir -p "$D2S"
-out=$(env FLEET_STATE=$D2S FLEET_TMUX_SOCKET=$D2 FLEET_TMUX_SESSION=dsess2 FLEET_DESK_PASSTHROUGH=1 "$FLEET" desks up --no-proof 2>&1); rc=$?
-t "fresh desks up, setting on: exit 0, three OK passthrough lines" bash -c 'test "$1" = 0 && test "$(printf "%s\n" "$2" | grep -c "allow-passthrough on (pane only)")" = 3' _ "$rc" "$out"
-t "fresh desks up, setting on: DECIDE, WATCH, LEARN on; ROUTE unset; global off" bash -c '
-  for d in DECIDE WATCH LEARN; do p=$(jq -r ".$d.pane" "$1/roster.json"); test "$(tmux -L "$2" show -pv -t "$p" allow-passthrough)" = on || exit 1; done
-  p=$(jq -r ".ROUTE.pane" "$1/roster.json"); test -z "$(tmux -L "$2" show -pv -t "$p" allow-passthrough 2>/dev/null)" && test "$(tmux -L "$2" show -gv allow-passthrough)" = off' _ "$D2S" "$D2"
+out=$(env FLEET_STATE=$D2S FLEET_TMUX_SOCKET=$D2 FLEET_TMUX_SESSION=dsess2 "$FLEET" desks up --no-proof 2>&1); rc=$?
+t "fresh desks up, unset: exit 0, global on, nothing pane- or window-level (got: $(anyset "$D2" | tr '\n' ' '))" bash -c 'test "$1" = 0 && test "$2" = "global=on"' _ "$rc" "$(anyset "$D2")"
+
+# fleet launch alone (a lane, no desks): the same default, on the server the lane opens on
+printf 'hello\n' > "$T/lane-prompt.txt"
+lan() { env FLEET_STATE=$T/$1 FLEET_TMUX_SOCKET=$2 FLEET_TMUX_SESSION=lsess "${@:3}" "$FLEET" launch --no-proof --dir "$T" L1 prompt "$T/lane-prompt.txt" 2>&1; }
+out=$(lan l3 "$D3" env); rc=$?
+t "fleet launch, unset: exit 0 and the fresh server's global is on (got: $(anyset "$D3" | tr '\n' ' '))" bash -c 'test "$1" = 0 && test "$2" = "global=on"' _ "$rc" "$(anyset "$D3")"
+out=$(lan l4 "$D4" env FLEET_DESK_PASSTHROUGH=0); rc=$?
+t "fleet launch, =0: exit 0 and the fresh server's global stays off (got: $(anyset "$D4" | tr '\n' ' '))" bash -c 'test "$1" = 0 && test "$2" = "global=off"' _ "$rc" "$(anyset "$D4")"
+tmux -L "$D4" set -g allow-passthrough on
+out=$(env FLEET_STATE=$T/l4 FLEET_TMUX_SOCKET=$D4 FLEET_TMUX_SESSION=lsess FLEET_DESK_PASSTHROUGH=0 "$FLEET" launch --no-proof --dir "$T" L2 prompt "$T/lane-prompt.txt" 2>&1); rc=$?
+t "fleet launch, =0 on a server where it is on (live global): global stays on" bash -c 'test "$1" = 0 && test "$2" = "global=on"' _ "$rc" "$(anyset "$D4")"
 
 if [ "$FAILS" = 0 ]; then echo "PASS test_show.sh: all assertions"; exit 0; fi
 echo "FAIL test_show.sh: $FAILS failed"; exit 1

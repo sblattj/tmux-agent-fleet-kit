@@ -113,7 +113,7 @@ EOF
         fi
         case $pt in
           on|all) mode=kitty; why="$n Kitty-capable client(s), allow-passthrough $pt on this pane" ;;
-          *) mode=symbols; why="allow-passthrough is ${pt:-unset} on this pane, so no real image; a desk pane gets it with FLEET_DESK_PASSTHROUGH=1 (fleet desks up); fleet show never turns it on" ;;
+          *) mode=symbols; why="allow-passthrough is ${pt:-unset} on this pane, so no real image; fleet launch and fleet desks up turn it on unless FLEET_DESK_PASSTHROUGH=0; fleet show never turns it on" ;;
         esac
       fi
     fi ;;

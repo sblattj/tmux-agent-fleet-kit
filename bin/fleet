@@ -564,6 +564,7 @@ EOF
     tm new-session -d -s "$SESSION" -n home -c "$dir" || die "could not create tmux session $SESSION"
   fi
   status_label_apply || true  # saved or env label (issue #44); no label means no tmux option call
+  passthrough_apply  # allow-passthrough on, server-wide, unless FLEET_DESK_PASSTHROUGH is set to anything but 1
   local pane
   if [ -n "$split" ]; then
     pane=$(tm split-window -d $splitflags -P -F '#{pane_id}' -t "$splitpane" -c "$dir" "bash $q_sh") || die "tmux split-window failed"
@@ -996,6 +997,15 @@ cmd_stop() {
   tm kill-pane -t "$pane" || die "could not kill pane $pane"
   flog "$name stopped pane=$pane"
   echo "OK stopped $name pane=$pane"
+}
+
+# ---- allow-passthrough (v0.8.1): on by default for the whole fleet server, so `fleet show` draws real images
+# in every pane. FLEET_DESK_PASSTHROUGH unset or 1: `tmux set-option -g allow-passthrough on` (never off, never
+# `all`, never -u). Any other value (0 to opt out): no tmux option call at all. Non-fatal on a tmux without it.
+passthrough_apply() {
+  [ "${FLEET_DESK_PASSTHROUGH:-1}" = 1 ] || return 0
+  tm set-option -g allow-passthrough on 2>/dev/null || echo "WARN could not set allow-passthrough on (tmux older than 3.3?)" >&2
+  return 0
 }
 
 # ---- status label (issue #44): the fleet session's status-left, session scoped, never -g

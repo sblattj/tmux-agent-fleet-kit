@@ -434,8 +434,8 @@ Notes:
 | Viewer | What it sees |
 |---|---|
 | Ghostty or kitty, no tmux | the real image |
-| Ghostty or kitty in tmux, pane passthrough on | the real image (Kitty unicode placeholders: text cells tmux moves and clips, so splits and window switches are fine) |
-| Ghostty or kitty in tmux, passthrough off | colored block art, plus a hint |
+| Ghostty or kitty in tmux, passthrough on (the kit default) | the real image (Kitty unicode placeholders: text cells tmux moves and clips, so splits and window switches are fine) |
+| Ghostty or kitty in tmux, passthrough off (`FLEET_DESK_PASSTHROUGH=0`, or set off by hand) | colored block art, plus a hint |
 | any client attached over mosh (phone, tablet) | colored block art for everyone on that pane (mosh carries no images, and one pane shows one output) |
 | other terminals (Terminal.app, iTerm2, xterm, ...) | colored block art |
 
@@ -443,7 +443,11 @@ Notes:
 
 `fleet show` never changes a tmux option. chafa does on its own: when it finds `allow-passthrough` off inside tmux it runs `tmux set-option allow-passthrough on` with no target (it lands on the session's active window), and leaves it on if it is killed early. So every chafa call runs behind `lib/fleet-show-shim/tmux`, which drops `set`, `set-option`, `setw` and `set-window-option`. Agent shells that inherit `TMUX` from a fleet pane should be careful with any tool that talks to tmux.
 
-Passthrough is opt-in per pane, never global: `FLEET_DESK_PASSTHROUGH=1 fleet desks up` runs `tmux set-option -p -t <pane> allow-passthrough on` on the DECIDE, WATCH and LEARN desk panes (the desks that draw), live desks included. ROUTE, the WATCH status pane and every lane stay off. Default off, and a fresh install leaves the global option alone. Don't set it globally or to `all`: placeholders don't need `all`, and `all` lets hidden panes paint.
+Passthrough is on by default (since v0.8.1). `fleet launch` and `fleet desks up` run `tmux set-option -g allow-passthrough on` on the fleet's tmux server, so every pane there (desks, the WATCH status pane, lanes) can draw real images. It is a server-wide option: with no `FLEET_TMUX_SOCKET` the fleet shares your default tmux server, so your other sessions on it get it too. The kit only ever turns it on: it never writes `off`, never unsets it and never uses `all` (placeholders don't need `all`, and `all` lets hidden panes paint).
+
+Opt out with `FLEET_DESK_PASSTHROUGH=0` (any value other than `1` does the same): no passthrough call at all, the v0.8.0 behavior byte for byte. An opt-out doesn't turn off a global that's already on; run `tmux set -g allow-passthrough off` yourself for that.
+
+On mosh, `fleet show` in auto mode picks block art even with passthrough on, and that's expected: mosh only carries text, so Kitty graphics never reach the screen. A client attached over mosh (Blink, for example) shows the symbols version; a local Ghostty or Kitty client shows the real image. If any attached client is on mosh, auto mode picks symbols for everyone on that pane. `FLEET_GFX=kitty` forces the image path, but a mosh client still shows nothing there.
 
 ## Tests
 
@@ -467,7 +471,7 @@ bash test/test_probe_stall_park.sh            # a probe silent 15 min is parked 
 bash test/test_forget.sh                      # fleet forget archives one row; a live lane is refused without --force
 bash test/test_status_label.sh               # fleet status-label: default, set, sizing, reset, env, server restart (private tmux server)
 bash test/test_desks_default.sh               # desks by default: installer step, launch guard, tick desks down, desks up --handoff
-bash test/test_show.sh                        # fleet show: every mode, mosh viewer, shim drops chafa's set-option, FLEET_DESK_PASSTHROUGH on desks
+bash test/test_show.sh                        # fleet show: every mode, mosh viewer, shim drops chafa's set-option, FLEET_DESK_PASSTHROUGH default on, =0 opt-out, never off
 FLEET_PROBE_LIVE=1 test/test_probe_live.sh --cli claude   # launches 2 real lanes: the probe can't shell or write, a worker can
 FLEET_PROBE_ACH=1 test/test_probe_ach.sh                  # the same bar through ach on claude, opencode and kiro (model calls)
 bash test/test_probe_opencode_tools.sh                     # OpenCode offers the fleet-probe verbs to fleet-probe only (FLEET_PROBE_OC_LIVE=1: live)

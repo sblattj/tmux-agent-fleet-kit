@@ -35,7 +35,7 @@ and `$FLEET_ROUTE` (default `ROUTE`). There is no alias layer: a message goes to
 | FLEET_GFX | `auto` | `fleet show` mode: `auto`, `kitty`, `symbols` or `text` (see Graphics in panes in the README) |
 | FLEET_CHAFA_BIN | `chafa` | chafa binary `fleet show` runs (tests point it at a stub); missing means text only |
 | FLEET_SHOW_COLORS | `full` | chafa color mode for `fleet show` block art |
-| FLEET_DESK_PASSTHROUGH | off | `1`: `fleet desks up` sets `allow-passthrough on` pane level (`set-option -p -t <pane>`) on the DECIDE, WATCH and LEARN desk panes, live ones too; never ROUTE, never `-g`, never `all`. Anything else: no passthrough call |
+| FLEET_DESK_PASSTHROUGH | `1` | unset or `1`: `fleet launch` and `fleet desks up` run `set-option -g allow-passthrough on` on the fleet server (every pane, live desks too); never `off`, never `-u`, never `all`. Anything else (`0` to opt out): no passthrough call, the v0.8.0 behavior |
 
 ## State layout ($FLEET_STATE)
 

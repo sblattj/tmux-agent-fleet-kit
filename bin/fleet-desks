@@ -22,9 +22,10 @@
 # WATCH <- LISTENER.md); its brief names the file and tells it to read it first. A desk already live is left alone.
 # Refused while a pre-kit ORCHESTRATOR, DECISIONS or LISTENER still has a live pane in the roster: retire it into a
 # handoff first, so two decision desks never answer at once. A desk with no file in DIR starts on its plain brief.
-# FLEET_DESK_PASSTHROUGH=1 (default off, issue #41): every run (live desks too) sets allow-passthrough on, pane level
-# only (set-option -p -t <pane>), on the DECIDE, WATCH and LEARN desk panes, so `fleet show` can draw real images
-# there. Never on ROUTE, the WATCH status pane or any other lane, never -g, never `all`. Off: no passthrough call.
+# FLEET_DESK_PASSTHROUGH (default 1, v0.8.1; issue #41): unset or 1, every run (live desks too) runs
+# `tmux set-option -g allow-passthrough on` on the fleet server, so every pane it holds (desks, the WATCH status
+# pane, lanes) can draw real images with `fleet show`. Never off, never -u, never `all`. Any other value (0 to opt
+# out): no passthrough call, the v0.8.0 default.
 # ---
 set -euo pipefail
 
@@ -155,16 +156,12 @@ slot() { # window left-desk index: move the desk window to that tmux window inde
   echo "OK window $w moved to index $idx"
 }
 
-passthrough_desks() { # FLEET_DESK_PASSTHROUGH=1: pane-level allow-passthrough on the desks that draw (fleet show)
-  local d p
-  [ "${FLEET_DESK_PASSTHROUGH:-0}" = 1 ] || return 0
-  for d in DECIDE WATCH LEARN; do
-    if [ "$dry" = 1 ]; then printf 'would run: tmux set-option -p -t <%s pane> allow-passthrough on\n' "$d"; continue; fi
-    p=$(roster_get "$d" pane)
-    pane_alive "$p" || { echo "no live $d: no allow-passthrough"; continue; }
-    tm set-option -p -t "$p" allow-passthrough on
-    echo "OK $d pane $p allow-passthrough on (pane only)"
-  done
+passthrough_desks() { # FLEET_DESK_PASSTHROUGH unset or 1 (default): allow-passthrough on, server-wide (fleet show)
+  [ "${FLEET_DESK_PASSTHROUGH:-1}" = 1 ] || return 0
+  if [ "$dry" = 1 ]; then echo "would run: tmux set-option -g allow-passthrough on"; return 0; fi
+  if tm set-option -g allow-passthrough on 2>/dev/null; then echo "OK allow-passthrough on (global, every fleet pane)"
+  else echo "WARN could not set allow-passthrough on (tmux older than 3.3?)"
+  fi
 }
 
 pair deskA ROUTE DECIDE
