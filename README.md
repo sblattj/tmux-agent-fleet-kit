@@ -264,6 +264,32 @@ state (tested: reviews, card schedules, `proof.json` and the snapshot compared, 
   answering cards would fake proof of learning.
 - **Port**: `--port`, else `servePort` in `$FLEET_STATE/learn/learn.json`, else 7341.
 
+## Fleet Desk (Mac app)
+
+The desk pages (DECISIONS, LEARN with its Lesson tab, WATCH) in their own window, with a Dock icon and native notifications. It is a Tauri v2 shell in `app/desk-ui`: it forks none of the pages. It runs `fleet app` verbs and points its window at the live `127.0.0.1` page you pick, so every app action has a pane command (Q698: the UI is a superset of the pane, the pane keeps the full text for mosh).
+
+```bash
+fleet app build    # unsigned local Fleet Desk.app (bunx @tauri-apps/cli, Rust via cargo); never signed, notarized or published
+fleet app open     # opens it in the background
+```
+
+| In the app | In the pane |
+| --- | --- |
+| Home page, Desks menu (Cmd-1 Decisions, Cmd-2 Learn, Cmd-3 Lesson, Cmd-4 Watch, Cmd-0 Home, Cmd-R reload) | `fleet app urls`, then `fleet decisions tui`, `fleet learn lessons` / `quiz`, `fleet learn lesson`, `fleet watch status` |
+| Starts the desk servers that are not answering | `fleet app serve` (detached; logs in `$FLEET_STATE/app-<server>.log`) |
+| A native notification per new DECIDE call and per topic with new lessons waiting | `fleet app notify` (`--dry-run` shows without recording) |
+| The phone tunnel on the home page | `fleet app tunnel [user@host]` |
+
+Notifications are deduped in `$FLEET_STATE/app-notified.json`: calls key on the call id, lessons on each lesson id, so a restart never re-fires and a topic fires again only for a lesson not notified before. More than 4 new items in one poll (every 20 s) become one summary. When `decisions-ui.json` sets `notifyCommand` and `fleet decisions serve` is up, that server already notifies calls, so the app stays quiet on calls. macOS asks once to allow Fleet Desk notifications; until you allow them, banners are dropped (the calls and lessons stay on their pages and in the pane). Every `fleet app` verb is the human's (any `FLEET_ROLE` is refused: the URLs carry the page tokens). Ports: `$FLEET_STATE/app.json` `{"ports": {"decisions": N, "learn": N, "watch": N}}`, else each server's own config, else 7340, 7341, 7342. The app finds the kit through `FLEET_KIT_ROOT`, else the checkout it was built from, and drops `FLEET_ROLE` when it runs `fleet app`.
+
+**From the phone.** The servers bind 127.0.0.1 only, and that stays. Forward the same port numbers over ssh (the pages check the Host header against `127.0.0.1:<their port>`, so another local port gets 403), bound to 127.0.0.1 on the phone too:
+
+```bash
+ssh -N -L 127.0.0.1:7340:127.0.0.1:7340 -L 127.0.0.1:7341:127.0.0.1:7341 -L 127.0.0.1:7342:127.0.0.1:7342 <user>@<overlay-ip>
+```
+
+`fleet app tunnel <user>@<overlay-ip>` prints that line with the real ports, then the URLs (tokens included) to open in the phone browser. Tokens change when a server restarts. The ssh setup is the one in Remote attach below.
+
 ## Side runs
 
 A lane starts codex, agy, gemini or any other CLI outside the fleet's panes with `fleet side run`, which launches it
@@ -351,6 +377,7 @@ bash test/test_learn.sh       # fleet learn: ledger, sync, quiz, 24 h proof with
 bash test/test_learn_lesson.sh   # teach before test: lesson, session, digest, brief, seen gate, guard, rebuild
 python3 -m unittest test/test_learn_sources.py   # whosaid + linear adapters on fakes, sources.json refs-only, rebuild from sources
 python3 -m unittest test.test_fsrs test.test_explain   # FSRS against py-fsrs reference values; explain back grader
+python3 -m unittest test/test_app.py   # Fleet Desk: human-only verbs, deduped notifications, serve, tunnel (same port, Host check), app vs pane parity
 python3 -m unittest test/test_learn_serve.py   # LEARN page: token/loopback, page answer == TUI answer, score history per topic
 python3 -m unittest test/test_watch.py   # WATCH engine: replay counts, scrub, dedupe, filters, quiet hours, literal-credential refusal
 python3 -m unittest test/test_watch_rate.py   # WATCH per-source token bucket: wait, defer, X-RateLimit-Remaining drain (injected clock)

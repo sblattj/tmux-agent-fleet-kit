@@ -18,6 +18,7 @@
 #                                                       the standing desks: windows deskA (ROUTE|DECIDE), deskB (WATCH|LEARN) (bin/fleet-desks)
 #   fleet tick|park|reopen|cleanup|handoff|forget ...   lifecycle, handled by bin/fleet-lifecycle
 #   fleet watch run|check|status|stats|serve|webhook ...  WATCH engine: poll sources, route events to DECIDE/LEARN (bin/fleet-watch)
+#   fleet app urls|serve|notify|tunnel|build|open        Fleet Desk, the Mac app (lib/fleet_app.py, app/desk-ui)
 #   fleet learn add|list|show|confirm|drop|sync|lesson|lessons|session|digest|brief|curate|entity|rebuild|sources|due|quiz|review|proof|snapshot|export|serve ...
 #                                                       LEARN engine: ledger, quizzes, proof of learning (bin/fleet-learn)
 #   fleet probe <verb>|stats|nuked|resume ...           DECIDE read-only probes (bin/fleet-probe)
@@ -991,6 +992,7 @@ case $sub in
   layout) cmd_layout ;;
   stop) cmd_stop "$@" ;;
   decisions) exec python3 "$ROOT/lib/fleet_decisions.py" "$@" ;;  # DECISIONS UI: serve|tui|pick|ask|find|report|refresh
+  app) exec python3 "$ROOT/lib/fleet_app.py" "$@" ;;  # Fleet Desk (Mac app): urls|serve|notify|tunnel|build|open
   send)
     [ $# -ge 2 ] || usage
     exec python3 "$ROOT/lib/fleet_mesh.py" send "${FLEET_NAME:-${FLEET_ROUTE:-ROUTE}}" "$1" "${*:2}" ;;

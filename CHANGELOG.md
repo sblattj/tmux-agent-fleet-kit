@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Fleet Desk, a Mac app for the desk pages (`app/desk-ui`, Tauri v2): its own window, a Dock icon and native notifications for new DECIDE calls and lessons waiting, deduped by call id and lesson id in `$FLEET_STATE/app-notified.json`. It forks none of the pages: `fleet app urls|serve|notify|tunnel|build|open` (`lib/fleet_app.py`) are the pane side of every app action, and the window shows the live 127.0.0.1 page. `fleet app tunnel` prints the one `ssh -N -L` command (same ports, 127.0.0.1 on both ends) that brings the pages to a phone. `fleet app build` makes an unsigned local `.app` (Bun for the Tauri CLI, cargo for Rust), its cargo target dir outside the repo. Tests: `test/test_app.py`.
+
 ## v0.5.1 (2026-11-25)
 
 Typed wakes that arrive whole in a vim-mode Claude pane, and a phone attach that finds tmux and mosh-server.
