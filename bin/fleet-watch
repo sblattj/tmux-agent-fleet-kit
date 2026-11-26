@@ -7,7 +7,8 @@
 #   fleet watch stats [--json]                                      counts per kind, dropped per rule
 #   fleet watch snapshot [--compact]                                snapshot() JSON for pages and status lines
 #   fleet watch poll-now|pause|resume NAME, fleet watch release-held   the pane's verbs
-#   fleet watch serve ...                                           web page (phase 7)
+#   fleet watch serve ...                                           web page: bin/fleet sends it to the fleet ui hub's
+#                                                                   /watch/ tab (Q700); this path runs the standalone page
 #   fleet watch webhook serve [--config F] [--bind 127.0.0.1|::1] [--port N]   loopback webhook receiver (7349)
 # ---
 set -euo pipefail

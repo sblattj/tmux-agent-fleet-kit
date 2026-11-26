@@ -33,7 +33,9 @@ Python 3.8+ stdlib only. Writes only under $FLEET_STATE/learn/ (export --to DIR 
   fleet learn proof [--rebuild] [--check]          per-row proof; --check exits 1 if proof.json != a rebuild
   fleet learn snapshot                             snapshot() as JSON
   fleet learn export [--to DIR]                    markdown, one file per topic (default $FLEET_STATE/learn/export)
-  fleet learn serve [--port P] [--bind 127.0.0.1] [--open]   the phase 7 page (lib/fleet_learn_serve.py, when present)
+  fleet learn serve [--port P] [--bind 127.0.0.1] [--open]   the phase 7 page: bin/fleet sends it to the `fleet ui serve`
+                                                             hub's /learn/ tab (Q700); `python3 lib/fleet_learn.py serve` runs
+                                                             the standalone page (lib/fleet_learn_serve.py)
 
 Clock: FLEET_LEARN_NOW=<ISO-8601 UTC> pins "now" (tests). Failure prints "FAIL <reason>" to stderr and exits 1;
 usage errors exit 2; a role refused a human-only verb (lesson, session, digest, quiz, review) exits 4.

@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.7.0 (2026-11-26)
+
+One page for every desk: the `fleet ui serve` hub.
+
+- `fleet ui serve` (`lib/fleet_ui.py`): one loopback port (default 7343) and one token for every desk. The DECISIONS, LEARN and WATCH pages are tabs at `/decide/`, `/learn/` and `/watch/`, each mounted from the page's own request handler (no copy of their code or HTML), with a tab strip on every page; `/route/` is a read-only ROUTE board of the roster and the last 30 answers in `decisions-log.jsonl`, lane text escaped. The DECIDE tab keeps its live updates and `notifyCommand`, which now deep-link into the hub. Security is each page's, once: loopback bind, Host and Origin checks, the token as `?t=` for GET and the header only for POST, the URL in `$FLEET_STATE/ui.url` (0600, removed on exit). The guard is LEARN's human-only check, so any `FLEET_ROLE` is refused (exit 4), `decide` and `watch` included, since the one token opens every tab. `fleet ui url [--tab T]` prints the live URL. Q700.
+- `fleet decisions serve`, `fleet learn serve` and `fleet watch serve` are aliases of the hub: they print the hub URL for their tab when it answers, else start it. The standalone pages stay as modules (`python3 lib/fleet_learn.py serve` and so on) for their own tests. The pages prefix every request with `window.FLEET_BASE`, empty when served alone.
+- Fleet Desk points at the hub: `fleet app urls|serve|tunnel` read and start the one hub, the Desks menu gains Route (Cmd-5), and `fleet app tunnel` prints a single `-L`. The app reads its menu from `fleet app urls`, so no rebuild is needed. Tests: `test/test_ui.py` (token required, every lane role refused, each tab 200, one keep-alive connection across tabs, POSTs through a mount, SSE through the hub, the board escapes lane text, the aliases), `test/test_app.py` updated for one port.
+
 ## v0.6.1 (2026-11-26)
 
 Side runs that stay running until their child exits.

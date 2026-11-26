@@ -20,6 +20,9 @@ import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FLEET = os.path.join(ROOT, "bin", "fleet")
+# `fleet learn serve` is an alias of the `fleet ui serve` hub (Q700, test/test_ui.py); these tests run the standalone
+# LEARN page the hub mounts, through fleet_learn.main (the module entry point).
+STANDALONE = ["python3", os.path.join(ROOT, "lib", "fleet_learn.py"), "serve"]
 FLEARN = os.path.join(ROOT, "bin", "fleet-learn")
 LIB = os.path.join(ROOT, "lib")
 NOW = "2026-11-20T09:00:00Z"
@@ -116,8 +119,8 @@ class Server:
         self.errpath = os.path.join(t.tmp, "serve-%d.err" % id(self))
         self.err = open(self.errpath, "w")
         env = scrubbed_env({"FLEET_STATE": state or t.state, "FLEET_LEARN_NOW": now})
-        # the production entry point: bin/fleet -> bin/fleet-learn -> fleet_learn.main -> fleet_learn_serve
-        self.p = subprocess.Popen([FLEET, "learn", "serve", "--port", "0"] + list(extra_args), env=env,
+        # the module entry point: fleet_learn.main -> fleet_learn_serve (the page the hub mounts at /learn/)
+        self.p = subprocess.Popen(STANDALONE + ["--port", "0"] + list(extra_args), env=env,
                                   stdout=subprocess.PIPE, stderr=self.err, universal_newlines=True)
         line = self.p.stdout.readline()
         m = re.search(r"LEARN UI: http://127\.0\.0\.1:(\d+)/\?t=([A-Za-z0-9_-]+)", line)
@@ -222,7 +225,7 @@ class TestAccess(Base):
         self.assertNotIn(self.s.token, html)
 
     def test_port_in_use_is_a_one_line_error(self):
-        p = subprocess.run([FLEET, "learn", "serve", "--port", str(self.s.port)], env=scrubbed_env(self.env),
+        p = subprocess.run(STANDALONE + ["--port", str(self.s.port)], env=scrubbed_env(self.env),
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=30)
         self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
         self.assertIn("can't listen", p.stderr)
@@ -234,7 +237,7 @@ class TestServeGuards(Base):
         env = scrubbed_env(self.env)
         if role:
             env["FLEET_ROLE"] = role
-        return subprocess.run([FLEET, "learn", "serve", "--port", "0"] + list(args), env=env,
+        return subprocess.run(STANDALONE + ["--port", "0"] + list(args), env=env,
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=30)
 
     def test_non_loopback_bind_refused(self):

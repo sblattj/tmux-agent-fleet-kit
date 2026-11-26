@@ -16,6 +16,9 @@ import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FLEET = os.path.join(ROOT, "bin", "fleet")
+# `fleet decisions serve` is an alias of the `fleet ui serve` hub (Q700, test/test_ui.py); the server tests here run
+# the standalone DECISIONS page the hub mounts at /decide/.
+STANDALONE = ["python3", os.path.join(ROOT, "lib", "fleet_decisions.py"), "serve"]
 MESH = os.path.join(ROOT, "lib", "fleet_mesh.py")
 DECISIONS = os.path.join(ROOT, "lib", "fleet_decisions.py")
 DESK = os.path.join(ROOT, "skills", "running-the-decisions-desk", "desk.sh")
@@ -513,7 +516,7 @@ class Server:
     def __init__(self, t, extra_args=()):
         self.errpath = os.path.join(t.tmp, "serve.err")
         self.err = open(self.errpath, "w")  # a file, not a pipe: the server logs every request to stderr
-        self.p = subprocess.Popen([FLEET, "decisions", "serve", "--port", "0"] + list(extra_args),
+        self.p = subprocess.Popen(STANDALONE + ["--port", "0"] + list(extra_args),
                                   env=scrubbed_env(t.env), stdout=subprocess.PIPE, stderr=self.err,
                                   universal_newlines=True)
         line = self.p.stdout.readline()
@@ -559,7 +562,7 @@ class TestServer(Base):
         super().tearDown()
 
     def test_port_in_use_is_a_one_line_error_not_a_traceback(self):
-        p = self.fleet("serve", "--port", str(self.s.port), timeout=30)
+        p = self.sh(STANDALONE + ["--port", str(self.s.port)], timeout=30)
         self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
         self.assertIn("can't listen", p.stderr)
         self.assertNotIn("Traceback", p.stderr)

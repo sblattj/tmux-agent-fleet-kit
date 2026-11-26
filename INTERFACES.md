@@ -119,10 +119,35 @@ fleet stop <name>             kill that pane (asks nothing; used by tests and re
 - `--dry-run` prints the window script, the first prompt and the tmux command, touches nothing (no tmux, no state).
 - `--no-proof` skips the pid/goal waits (used by tests with stub CLIs) but still writes the roster.
 
+## Fleet UI hub (lib/fleet_ui.py; `fleet ui ...`)
+
+```
+fleet ui serve [--port P] [--bind 127.0.0.1|::1|localhost] [--open] [--tab decide|learn|watch|route]
+    stdout: with --tab, first "<DECISIONS|LEARN|WATCH|ROUTE> UI: http://127.0.0.1:P/<tab>/?t=TOKEN"; then
+    "FLEET UI: http://127.0.0.1:P/?t=TOKEN" and one "  <tab> <url>" line per tab
+fleet ui url [--json] [--tab T]     the URL while the hub answers (exit 0), else exit 3; --json {url, tabs: {tab: url}}
+fleet decisions serve | fleet learn serve | fleet watch serve [args]    aliases (bin/fleet): the tab URL when the hub
+    answers ("<WORD> UI: <tab url>", exit 0), else `fleet ui serve --tab <tab> [args]`
+```
+
+- One port, one token. Mounts: `/decide/*`, `/learn/*`, `/watch/*` run that page's own `make_handler` class with the
+  prefix stripped (so every route below is reachable as `/<tab><route>`); `/route/` (HTML) and `/route/api/state`
+  (`{lanes: [{name, role, cli, status, pane, goal, dir}], log: [{id, at, asker, verbatim, by}]}`, newest 30 first) are
+  read only; `/` -> 302 `/decide/`. A page's HTML gets `window.FLEET_BASE="/<tab>"` and a tab strip; the pages prefix
+  every fetch, SSE and path check with `FLEET_BASE` (empty when served standalone).
+- Every request needs the token (`?t=` or `X-Fleet-Token` for GET, the header only for POST), a loopback Host for the
+  hub's port, and no foreign `Origin` on POST -> else 403. The DECIDE tab runs its own `Hub` thread (SSE and
+  `notifyCommand`, `{url}` pointing at `/decide/?t=TOKEN#<id>`).
+- Guard: `fleet_learn_serve.human_only`, so any `FLEET_ROLE` exits 4 (`decide` and `watch` included). Non-loopback
+  `--bind` or a busy port: exit 1, one line.
+- `$FLEET_STATE/ui.url` (0600) holds the URL while it runs (removed on exit, SIGTERM included). Port: `--port`, else
+  `app.json` `{"ports": {"ui": N}}`, else 7343. A tab whose core fails to import answers 503; the others stay up.
+
 ## DECISIONS UI (lib/fleet_decisions.py; `fleet decisions ...`)
 
 ```
-fleet decisions serve [--port P] [--bind 127.0.0.1|::1|localhost] [--open]   first stdout line: "DECISIONS UI: http://127.0.0.1:P/?t=TOKEN"
+fleet decisions serve [...]          alias of the hub (see Fleet UI hub); the standalone page: python3 lib/fleet_decisions.py serve
+python3 lib/fleet_decisions.py serve [--port P] [--bind 127.0.0.1|::1|localhost] [--open]   first stdout line: "DECISIONS UI: http://127.0.0.1:P/?t=TOKEN"
 fleet decisions tui [--one] [--plain]                              --plain reads keys from stdin (one per line; "o <text>" = own answer)
 fleet decisions pick <id> <letter|--text T|--edit T|--refuse [why]>   exit 0 relayed, 3 already answered, 4 role refused, 1 error
 fleet decisions retry <id> | snooze <id> [minutes] | state [--json] | find "<text>" | report <id> ok|fail [note]
@@ -186,7 +211,8 @@ fleet decisions learn [<id>]             one LEARN row with the human's verbatim
 
 ## LEARN page (lib/fleet_learn_serve.py; `fleet learn serve`)
 
-    fleet learn serve [--port P] [--bind 127.0.0.1|::1|localhost] [--open]   first stdout line: "LEARN UI: http://127.0.0.1:P/?t=TOKEN"
+    fleet learn serve [...]    alias of the hub (see Fleet UI hub); the standalone page: python3 lib/fleet_learn.py serve
+    python3 lib/fleet_learn.py serve [--port P] [--bind 127.0.0.1|::1|localhost] [--open]   first stdout line: "LEARN UI: http://127.0.0.1:P/?t=TOKEN"
 
 - Exit 1 on a non-loopback `--bind` or a port in use (one line, no traceback); exit 4 when `FLEET_ROLE` is set.
 - Writes only `$FLEET_STATE/learn-ui.url` (0600). Every `learn/` write goes through `fleet_learn.review()`.
@@ -202,7 +228,8 @@ fleet decisions learn [<id>]             one LEARN row with the human's verbatim
 
 ## WATCH page (lib/fleet_watch_serve.py; `fleet watch serve`)
 
-    fleet watch serve [--port P] [--bind 127.0.0.1|::1|localhost] [--open]   first stdout line: "WATCH UI: http://127.0.0.1:P/?t=TOKEN"
+    fleet watch serve [...]    alias of the hub (see Fleet UI hub); the standalone page: python3 lib/fleet_watch_serve.py
+    python3 lib/fleet_watch_serve.py [--port P] [--bind 127.0.0.1|::1|localhost] [--open]   first stdout line: "WATCH UI: http://127.0.0.1:P/?t=TOKEN"
 
 - A second front end on the WATCH desk: reads `fleet_watch.snapshot()` and calls the status pane's verbs
   (`poll_now`, `pause`, `resume`, `release_held`), so a page action and the same pane key end in the same state.
@@ -216,8 +243,9 @@ fleet decisions learn [<id>]             one LEARN row with the human's verbatim
 
 ## Reserved loopback ports
 
-7340 DECISIONS UI (`fleet decisions serve`), 7341 LEARN page (`fleet learn serve`), 7342 WATCH page (`fleet watch serve`),
-7349 WATCH webhook receiver (`fleet watch webhook serve`). 7343-7348 are free.
+7343 the Fleet UI hub (`fleet ui serve`; `fleet decisions|learn|watch serve` are its aliases). The standalone pages keep
+7340 DECISIONS UI, 7341 LEARN page, 7342 WATCH page. 7349 WATCH webhook receiver (`fleet watch webhook serve`).
+7344-7348 are free.
 
 ## lib/fleet_mesh.py
 

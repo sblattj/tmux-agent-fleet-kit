@@ -96,6 +96,7 @@
 <script>
 "use strict";
 const TOKEN = new URLSearchParams(location.search).get("t") || "";
+const BASE = window.FLEET_BASE || "";  // "/decide" etc. under `fleet ui serve`, "" on the standalone page
 let STATE = null, current = null, shownAt = 0;
 
 function el(tag, attrs, ...kids) {
@@ -114,7 +115,7 @@ function originTag(o) { return el("span", { class: "origin o-" + (o === "outside
 const ORIGIN_TEXT = { fleet: "we decided or shipped it", outside: "someone else changed it" };
 
 async function api(path, body) {
-  const r = await fetch(path + (body ? "" : (path.includes("?") ? "&" : "?") + "t=" + encodeURIComponent(TOKEN)), {
+  const r = await fetch(BASE + path + (body ? "" : (path.includes("?") ? "&" : "?") + "t=" + encodeURIComponent(TOKEN)), {
     method: body ? "POST" : "GET", headers: { "X-Fleet-Token": TOKEN, "Content-Type": "application/json" },
     body: body ? JSON.stringify(body) : undefined });
   const j = await r.json().catch(() => ({}));

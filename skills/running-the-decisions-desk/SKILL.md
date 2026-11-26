@@ -21,7 +21,7 @@ One session (the desk, `$FLEET_DECIDE`, default DECIDE) is the only place the hu
 - An ambiguous answer that would trigger something hard to undo: ask one short either/or line first, and look up what the change actually does so the re-ask carries the deciding fact.
 - Second asker of the same call: `desk.sh relayto Q<n> add <session>`. Asker stopped or unreachable: `desk.sh relayto Q<n> set ROUTE`.
 - Facts changed the pick: `desk.sh revise Q<n> "<new text>"` and re-show the item with the line that changed it.
-- The human may answer in the DECISIONS UI instead (`fleet decisions serve` / `tui`, see the README). A UI pick marks `decisions.jsonl`, relays to every asker, copies ROUTE, and runs `desk.sh answer` itself, so the item is already closed in your goal file: do not relay it again. `fleet decisions state` shows what is open and what the UI relayed.
+- The human may answer in the DECISIONS UI instead (the `/decide/` tab of `fleet ui serve`, which `fleet decisions serve` opens, or `fleet decisions tui`; see the README). A UI pick marks `decisions.jsonl`, relays to every asker, copies ROUTE, and runs `desk.sh answer` itself, so the item is already closed in your goal file: do not relay it again. `fleet decisions state` shows what is open and what the UI relayed.
 - After each relay batch print `GATE G1-relayed PASS` and the full `fleet-goal check` output.
 - Calls can also arrive through the mesh: a lane's `decision_open` lands in your inbox (`peer_inbox`) and in `decisions.jsonl`. Close those with `decision_answer {id, answer}` (marks `decisions.jsonl`, delivers to the asker) as well as `desk.sh answer` (goal file).
 

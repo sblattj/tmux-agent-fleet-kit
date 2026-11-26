@@ -203,12 +203,26 @@ fleet-goal condition <goal.json> [--report-to NAME] [--turns N]
 ```
 `check` needs `goal` (a string, or an object with a non-empty `title` or `objective`), `phases[{id}]` (`title` optional), `nextAction`, `done[]`, `openCalls[{id,question,status}]` (calls waiting on DECIDE, each carrying its Q id; a file that still uses the legacy name `openForHuman` is read as is, one of the two per file), `decisions[{id,decision}]`, and ISO-8601 `at` stamps where present. `condition` prints a `/goal` line under 4000 characters that names the file, says the file wins, requires one `GATE <id> PASS` line per `gates` key plus the `fleet-goal check` OK line after the last edit, has a `GOAL HALT: <reason>` exit, a turn bound, and ends the turn when only `openCalls` items remain. A FAIL line names the field and what is missing (`phases[0]: missing id`, `openCalls[2]: missing status`).
 
+## Fleet UI hub
+
+One loopback page for every desk, on one port with one token (Q700). Each desk page is a tab, mounted from the page's own handler, plus a read-only ROUTE board:
+
+```bash
+fleet ui serve --open     # http://127.0.0.1:7343/?t=<token>: tabs /decide/ /learn/ /watch/ /route/ (/ goes to /decide/)
+fleet ui url [--tab T]    # the hub URL (token included) while it answers, else exit 3
+```
+
+- **Tabs**: `/decide/` (the DECISIONS UI below, with its live updates and `notifyCommand`), `/learn/` (the LEARN page), `/watch/` (the WATCH page), `/route/` (the roster and the last 30 answers in `decisions-log.jsonl`, read only; in the pane: `fleet ls`). A tab strip on every page switches between them.
+- **The old commands are aliases**: `fleet decisions serve`, `fleet learn serve` and `fleet watch serve` print the hub URL for their tab when the hub answers, else start the hub (their first stdout line keeps its `DECISIONS UI:` / `LEARN UI:` / `WATCH UI:` prefix, now with the tab URL). The standalone pages stay as modules (`python3 lib/fleet_learn.py serve`, `python3 lib/fleet_decisions.py serve`, `python3 lib/fleet_watch_serve.py`), which their own tests use.
+- **Security**: every page's rules, once. Loopback bind only, a fresh token per launch (`?t=` for page loads and SSE, the `X-Fleet-Token` header for every POST), Host and Origin checks, lane text escaped or rendered with `textContent`, the token kept out of the request log, the URL in `$FLEET_STATE/ui.url` (mode 0600, removed on exit). The guard is LEARN's human-only check: any `FLEET_ROLE` is refused (exit 4), `decide` and `watch` included, since one token opens every tab.
+- **Port**: `--port`, else `$FLEET_STATE/app.json` `{"ports": {"ui": N}}`, else 7343 (7340-7342 stay free for the standalone pages).
+
 ## DECISIONS UI
 
 A second front end on the desk's own state for answering calls without typing into the desk pane. It reads `decisions.jsonl`, the desk goal file, `decisions-log.jsonl` and the roster, and writes only through the desk's paths (`fleet_mesh` mark and deliver, `desk.sh answer`), so a pick in the UI and an answer in the desk pane end in the same state (tested).
 
 ```bash
-fleet decisions serve --open          # http://127.0.0.1:7340/?t=<token>, opened in the background browser
+fleet decisions serve --open          # the hub's DECIDE tab, http://127.0.0.1:7343/decide/?t=<token> (see Fleet UI hub)
 fleet decisions tui                   # terminal fallback; j/k move, a/b/c pick, o own answer, r refresh all, v called list, ? help
 fleet decisions pick Q12 a            # or --text "own words" | --edit "changed rec" | --refuse "why"
 fleet decisions ask "Ship it?" --options "yes (rec),no" --wait --timeout 30m   # from a lane: exit 0 picked, 1 refused or own answer, 2 no answer
@@ -249,7 +263,7 @@ same quiz as `fleet learn quiz`. It reads `fleet_learn.snapshot()` and `reviews(
 `fleet_learn.review()`, the verb the terminal quiz calls, so an answer in the page and one in the TUI end in the same
 state (tested: reviews, card schedules, `proof.json` and the snapshot compared, with a control that must differ).
 
-    fleet learn serve --open      # http://127.0.0.1:7341/?t=<token>, opened in the background browser
+    fleet learn serve --open      # the hub's LEARN tab, http://127.0.0.1:7343/learn/?t=<token> (see Fleet UI hub)
 
 - **Lesson**: the first topic waiting, terms (with a part-of map) then rows in context, each with its quote and
   source; "Seen" records it (POST `/api/seen`, token and the human only) and its cards join the quiz.
@@ -266,7 +280,7 @@ state (tested: reviews, card schedules, `proof.json` and the snapshot compared, 
 
 ## Fleet Desk (Mac app)
 
-The desk pages (DECISIONS, LEARN with its Lesson tab, WATCH) in their own window, with a Dock icon and native notifications. It is a Tauri v2 shell in `app/desk-ui`: it forks none of the pages. It runs `fleet app` verbs and points its window at the live `127.0.0.1` page you pick, so every app action has a pane command (Q698: the UI is a superset of the pane, the pane keeps the full text for mosh).
+The desk pages (DECISIONS, LEARN with its Lesson tab, WATCH, and the ROUTE board) in their own window, with a Dock icon and native notifications. It is a Tauri v2 shell in `app/desk-ui`: it forks none of the pages. It runs `fleet app` verbs and points its window at the tab you pick on the one `fleet ui serve` hub address, so every app action has a pane command (Q698: the UI is a superset of the pane, the pane keeps the full text for mosh).
 
 ```bash
 fleet app build    # unsigned local Fleet Desk.app (bunx @tauri-apps/cli, Rust via cargo); never signed, notarized or published
@@ -275,20 +289,20 @@ fleet app open     # opens it in the background
 
 | In the app | In the pane |
 | --- | --- |
-| Home page, Desks menu (Cmd-1 Decisions, Cmd-2 Learn, Cmd-3 Lesson, Cmd-4 Watch, Cmd-0 Home, Cmd-R reload) | `fleet app urls`, then `fleet decisions tui`, `fleet learn lessons` / `quiz`, `fleet learn lesson`, `fleet watch status` |
-| Starts the desk servers that are not answering | `fleet app serve` (detached; logs in `$FLEET_STATE/app-<server>.log`) |
+| Home page, Desks menu (Cmd-1 Decisions, Cmd-2 Learn, Cmd-3 Lesson, Cmd-4 Watch, Cmd-5 Route, Cmd-0 Home, Cmd-R reload) | `fleet app urls`, then `fleet decisions tui`, `fleet learn lessons` / `quiz`, `fleet learn lesson`, `fleet watch status`, `fleet ls` |
+| Starts the hub when it is not answering | `fleet app serve` (detached; log in `$FLEET_STATE/app-ui.log`) |
 | A native notification per new DECIDE call and per topic with new lessons waiting | `fleet app notify` (`--dry-run` shows without recording) |
 | The phone tunnel on the home page | `fleet app tunnel [user@host]` |
 
-Notifications are deduped in `$FLEET_STATE/app-notified.json`: calls key on the call id, lessons on each lesson id, so a restart never re-fires and a topic fires again only for a lesson not notified before. More than 4 new items in one poll (every 20 s) become one summary. When `decisions-ui.json` sets `notifyCommand` and `fleet decisions serve` is up, that server already notifies calls, so the app stays quiet on calls. macOS asks once to allow Fleet Desk notifications; until you allow them, banners are dropped (the calls and lessons stay on their pages and in the pane), and the running app needs one relaunch after you click Allow before banners show. Every `fleet app` verb is the human's (any `FLEET_ROLE` is refused: the URLs carry the page tokens). Ports: `$FLEET_STATE/app.json` `{"ports": {"decisions": N, "learn": N, "watch": N}}`, else each server's own config, else 7340, 7341, 7342. The app finds the kit through `FLEET_KIT_ROOT`, else the checkout it was built from, and drops `FLEET_ROLE` when it runs `fleet app`.
+Notifications are deduped in `$FLEET_STATE/app-notified.json`: calls key on the call id, lessons on each lesson id, so a restart never re-fires and a topic fires again only for a lesson not notified before. More than 4 new items in one poll (every 20 s) become one summary. When `decisions-ui.json` sets `notifyCommand` and the hub is up, its DECIDE tab already notifies calls, so the app stays quiet on calls. macOS asks once to allow Fleet Desk notifications; until you allow them, banners are dropped (the calls and lessons stay on their pages and in the pane), and the running app needs one relaunch after you click Allow before banners show. Every `fleet app` verb is the human's (any `FLEET_ROLE` is refused: the URLs carry the page tokens). Port: `$FLEET_STATE/app.json` `{"ports": {"ui": N}}`, else 7343. The menu is the desk list `fleet app urls` prints, so the Route entry needs no app rebuild. The app finds the kit through `FLEET_KIT_ROOT`, else the checkout it was built from, and drops `FLEET_ROLE` when it runs `fleet app`.
 
-**From the phone.** The servers bind 127.0.0.1 only, and that stays. Forward the same port numbers over ssh (the pages check the Host header against `127.0.0.1:<their port>`, so another local port gets 403), bound to 127.0.0.1 on the phone too:
+**From the phone.** The hub binds 127.0.0.1 only, and that stays. Forward the same port number over ssh (the hub checks the Host header against `127.0.0.1:<its port>`, so another local port gets 403), bound to 127.0.0.1 on the phone too:
 
 ```bash
-ssh -N -L 127.0.0.1:7340:127.0.0.1:7340 -L 127.0.0.1:7341:127.0.0.1:7341 -L 127.0.0.1:7342:127.0.0.1:7342 <user>@<overlay-ip>
+ssh -N -L 127.0.0.1:7343:127.0.0.1:7343 <user>@<overlay-ip>
 ```
 
-`fleet app tunnel <user>@<overlay-ip>` prints that line with the real ports, then the URLs (tokens included) to open in the phone browser. Tokens change when a server restarts. The ssh setup is the one in Remote attach below.
+`fleet app tunnel <user>@<overlay-ip>` prints that line with the real port, then the tab URLs (token included) to open in the phone browser. The token changes when the hub restarts. The ssh setup is the one in Remote attach below.
 
 ## Side runs
 
@@ -470,7 +484,7 @@ fleet watch stats [--json]                                      counts per kind,
 fleet watch snapshot [--compact]                                snapshot() JSON
 fleet watch poll-now|pause|resume NAME, fleet watch release-held   the pane's verbs (shared with `fleet watch serve`)
 fleet watch webhook serve [--config F] [--bind A] [--port N]    optional loopback webhook receiver (7349)
-fleet watch serve --open             # http://127.0.0.1:7342/?t=<token>: sources, counts, recent events; poll now, pause, resume, release held asks
+fleet watch serve --open             # the hub's WATCH tab, http://127.0.0.1:7343/watch/?t=<token>: sources, counts, recent events; poll now, pause, resume, release held asks
 ```
 
 Run `fleet watch status` as the WATCH window's non-LLM pane, and `fleet watch run` (the poll loop) in its own pane

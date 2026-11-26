@@ -18,6 +18,9 @@
 #                                                       the standing desks: windows deskA (ROUTE|DECIDE), deskB (WATCH|LEARN) (bin/fleet-desks)
 #   fleet tick|park|reopen|cleanup|handoff|forget ...   lifecycle, handled by bin/fleet-lifecycle
 #   fleet watch run|check|status|stats|serve|webhook ...  WATCH engine: poll sources, route events to DECIDE/LEARN (bin/fleet-watch)
+#   fleet ui serve|url [--port P] [--tab T]             one loopback page for every desk: /decide /learn /watch /route,
+#                                                       one port, one token (lib/fleet_ui.py); `fleet decisions|learn|watch
+#                                                       serve` are aliases: they print the hub URL, or start the hub
 #   fleet app urls|serve|notify|tunnel|build|open        Fleet Desk, the Mac app (lib/fleet_app.py, app/desk-ui)
 #   fleet learn add|list|show|confirm|drop|sync|lesson|lessons|session|digest|brief|curate|entity|rebuild|sources|due|quiz|review|proof|snapshot|export|serve ...
 #                                                       LEARN engine: ledger, quizzes, proof of learning (bin/fleet-learn)
@@ -988,6 +991,10 @@ cmd_stop() {
 
 [ $# -ge 1 ] || usage
 sub=$1; shift
+# `fleet decisions|learn|watch serve` are aliases of the hub (Q700): the hub URL for that tab, or start the hub.
+case $sub:${1:-} in
+  decisions:serve|learn:serve|watch:serve) shift; exec python3 "$ROOT/lib/fleet_ui.py" alias "$sub" "$@" ;;
+esac
 case $sub in
   launch) cmd_launch "$@" ;;
   ls) cmd_ls ;;
@@ -995,7 +1002,8 @@ case $sub in
   layout) cmd_layout ;;
   stop) cmd_stop "$@" ;;
   decisions) exec python3 "$ROOT/lib/fleet_decisions.py" "$@" ;;  # DECISIONS UI: serve|tui|pick|ask|find|report|refresh
-  app) exec python3 "$ROOT/lib/fleet_app.py" "$@" ;;  # Fleet Desk (Mac app): urls|serve|notify|tunnel|build|open
+  app) exec python3 "$ROOT/lib/fleet_app.py" "$@" ;;
+  ui) exec python3 "$ROOT/lib/fleet_ui.py" "$@" ;;  # the hub: one port, one token, a tab per desk + ROUTE board  # Fleet Desk (Mac app): urls|serve|notify|tunnel|build|open
   send)
     [ $# -ge 2 ] || usage
     exec python3 "$ROOT/lib/fleet_mesh.py" send "${FLEET_NAME:-${FLEET_ROUTE:-ROUTE}}" "$1" "${*:2}" ;;

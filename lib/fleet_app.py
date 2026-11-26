@@ -2,14 +2,15 @@
 """fleet app: the text side of Fleet Desk, the Mac app in app/desk-ui (Tauri v2).
 
 The app forks none of the desk pages. It runs these verbs and points its window at the live 127.0.0.1 page, so
-every app action has a pane command (Q698: the UI is a superset of the pane, the pane keeps the full text):
+every app action has a pane command (Q698: the UI is a superset of the pane, the pane keeps the full text).
+Every desk is a tab of the one `fleet ui serve` hub (lib/fleet_ui.py, Q700): one address, one token.
 
-  fleet app urls [--json]          each desk page: its URL (token included) and whether it answers
-  fleet app serve [--json]         start the desk servers that are not answering, then print what urls prints
+  fleet app urls [--json]          each desk tab: its hub URL (token included) and whether the hub answers
+  fleet app serve [--json]         start the hub when it is not answering, then print what urls prints
   fleet app notify [--json] [--dry-run]
                                    new DECIDE calls and new lessons waiting, each one once (deduped in
                                    $FLEET_STATE/app-notified.json, so a restart or a second front end never re-fires)
-  fleet app tunnel [HOST]          the one ssh -L command that brings every desk page to a phone, and the URLs to open
+  fleet app tunnel [HOST]          the one ssh -L command that brings the hub (every desk tab) to a phone, and the URLs
   fleet app build                  build the unsigned local Fleet Desk.app (bunx @tauri-apps/cli, cargo)
   fleet app open                   open the built app (in the background)
 
@@ -34,23 +35,23 @@ import fleet_mesh as mesh  # noqa: E402
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.join(ROOT, "app", "desk-ui")
 
-# One row per entry in the app's Desks menu, in menu order. `server` is the desk server that owns the page (a
-# desk that is a tab of another page, like Lesson, shares its server); `pane` is the same thing in the pane.
+# One row per entry in the app's Desks menu, in menu order. `tab` is the hub tab that shows it (a desk inside
+# another page, like Lesson, shares its tab); `pane` is the same thing in the pane.
 DESKS = [
-    {"name": "decisions", "title": "Decisions", "server": "decisions", "anchor": "", "key": "1",
+    {"name": "decisions", "title": "Decisions", "server": "ui", "tab": "decide", "anchor": "", "key": "1",
      "pane": "fleet decisions tui"},
-    {"name": "learn", "title": "Learn", "server": "learn", "anchor": "", "key": "2",
+    {"name": "learn", "title": "Learn", "server": "ui", "tab": "learn", "anchor": "", "key": "2",
      "pane": "fleet learn lessons; fleet learn quiz"},
-    {"name": "lesson", "title": "Lesson", "server": "learn", "anchor": "#lesson", "key": "3",
+    {"name": "lesson", "title": "Lesson", "server": "ui", "tab": "learn", "anchor": "#lesson", "key": "3",
      "pane": "fleet learn lesson"},
-    {"name": "watch", "title": "Watch", "server": "watch", "anchor": "", "key": "4",
+    {"name": "watch", "title": "Watch", "server": "ui", "tab": "watch", "anchor": "", "key": "4",
      "pane": "fleet watch status"},
+    {"name": "route", "title": "Route", "server": "ui", "tab": "route", "anchor": "", "key": "5",
+     "pane": "fleet ls"},
 ]
-# The servers: the file each writes its URL to, its default port and how the pane starts it.
+# The one server, the hub (lib/fleet_ui.py): the file it writes its URL to, its default port, how the pane starts it.
 SERVERS = {
-    "decisions": {"urlfile": "decisions-ui.url", "port": 7340, "argv": ["decisions", "serve"]},
-    "learn": {"urlfile": "learn-ui.url", "port": 7341, "argv": ["learn", "serve"]},
-    "watch": {"urlfile": "watch-ui.url", "port": 7342, "argv": ["watch", "serve"]},
+    "ui": {"urlfile": "ui.url", "port": 7343, "argv": ["ui", "serve"]},
 }
 # Q698 for the app: every app action and the pane verb that does the same.
 APP_ACTIONS = {
@@ -106,8 +107,7 @@ def port_of(url):
 
 
 def configured_port(server):
-    """The port `fleet app serve` starts the server on: $FLEET_STATE/app.json {"ports": {server: N}}, else the
-    server's own config (decisions-ui.json port, learn/learn.json servePort), else its default."""
+    """The port `fleet app serve` starts the hub on: $FLEET_STATE/app.json {"ports": {"ui": N}}, else 7343."""
     try:
         with open(_state("app.json")) as f:
             p = (json.load(f).get("ports") or {}).get(server)
@@ -115,25 +115,22 @@ def configured_port(server):
             return int(p)
     except (OSError, ValueError, TypeError, AttributeError):
         pass
-    try:
-        if server == "decisions":
-            with open(_state("decisions-ui.json")) as f:
-                return int(json.load(f).get("port") or SERVERS[server]["port"])
-        if server == "learn":
-            with open(_state(os.path.join("learn", "learn.json"))) as f:
-                return int(json.load(f).get("servePort") or SERVERS[server]["port"])
-    except (OSError, ValueError, TypeError, AttributeError):
-        pass
     return SERVERS[server]["port"]
 
 
+def tab_url(base, tab, anchor=""):
+    """http://127.0.0.1:P/?t=X -> http://127.0.0.1:P/<tab>/?t=X<anchor>"""
+    u = urllib.parse.urlsplit(base)
+    return urllib.parse.urlunsplit((u.scheme, u.netloc, "/%s/" % tab, u.query, "")) + anchor
+
+
 def alive(url):
-    """The page answers 200 with this URL's token (a stale file from a dead server, or another server that took
-    the port, does not)."""
+    """The hub answers 200 on its ROUTE tab with this URL's token (a stale file from a dead hub, or another server
+    that took the port, does not)."""
     if not url:
         return False
     try:
-        with urllib.request.urlopen(url.split("#")[0], timeout=PROBE_TIMEOUT) as r:
+        with urllib.request.urlopen(tab_url(url.split("#")[0], "route"), timeout=PROBE_TIMEOUT) as r:
             return r.status == 200
     except (urllib.error.URLError, OSError, ValueError):
         return False
@@ -146,12 +143,13 @@ def desks():
     for d in DESKS:
         u = up[d["server"]]
         out.append({"name": d["name"], "title": d["title"], "key": d["key"], "pane": d["pane"],
-                    "server": d["server"], "url": (u + d["anchor"]) if u else None, "alive": ok[d["server"]]})
+                    "server": d["server"], "url": tab_url(u, d["tab"], d["anchor"]) if u else None,
+                    "alive": ok[d["server"]]})
     return out
 
 
 def serve(wait=START_WAIT):
-    """Start every desk server that is not answering, detached, its output in $FLEET_STATE/app-<server>.log."""
+    """Start the hub when it is not answering, detached, its output in $FLEET_STATE/app-ui.log."""
     human_only("start the desk servers")
     fleet = os.path.join(ROOT, "bin", "fleet")
     started = []
@@ -195,14 +193,15 @@ def waiting_lessons():
 
 
 def _decisions_notifies_itself():
-    """`fleet decisions serve` already notifies new calls when decisions-ui.json sets notifyCommand; the app
-    then stays quiet on calls (still marking them) so a call never fires twice."""
+    """The hub's DECIDE tab (like `fleet decisions serve` before it) already notifies new calls when
+    decisions-ui.json sets notifyCommand; the app then stays quiet on calls (still marking them) so a call never
+    fires twice."""
     try:
         import fleet_decisions as fd
         cfg = fd.load_config()
     except Exception:
         return False
-    return bool(cfg.get("notifyCommand")) and cfg.get("notify", True) and alive(read_url("decisions"))
+    return bool(cfg.get("notifyCommand")) and cfg.get("notify", True) and alive(read_url("ui"))
 
 
 def candidates():
@@ -267,8 +266,8 @@ def notify(dry_run=False):
 # ---------------------------------------------------------------- tunnel / build / open
 
 def tunnel(host="<user>@<mac>"):
-    """The one command for the phone. Same port on both ends, bound to 127.0.0.1 on both ends: the pages check
-    the Host header against 127.0.0.1:<their port>, and nothing listens beyond loopback."""
+    """The one command for the phone, one -L for the hub. Same port on both ends, bound to 127.0.0.1 on both ends:
+    the hub checks the Host header against 127.0.0.1:<its port>, and nothing listens beyond loopback."""
     human_only("print the desk URLs")
     ports = []
     for s in SERVERS:

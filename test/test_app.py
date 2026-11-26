@@ -159,7 +159,7 @@ class TestNotify(Base):
 class TestServeAndTunnel(Base):
     def setUp(self):
         super().setUp()
-        self.ports = {"decisions": free_port(), "learn": free_port(), "watch": free_port()}
+        self.ports = {"ui": free_port()}  # one hub (fleet ui serve, Q700): one port for every desk
         with open(os.path.join(self.state, "app.json"), "w") as f:
             json.dump({"ports": self.ports}, f)
         self.lesson("tunnel", "net")
@@ -183,14 +183,18 @@ class TestServeAndTunnel(Base):
         c.close()
         return r.status
 
-    def test_serve_starts_missing_servers_on_loopback(self):
+    def test_serve_starts_the_hub_on_loopback(self):
         p = self.run_fleet("app", "serve", "--json")
         self.assertEqual(p.returncode, 0, p.stderr)
         rows = {r["name"]: r for r in json.loads(p.stdout)}
-        for name, server in (("decisions", "decisions"), ("learn", "learn"), ("watch", "watch")):
-            with open(os.path.join(self.state, "app-%s.log" % server)) as f:
+        port = self.ports["ui"]
+        tokens = set()
+        for name, tab in (("decisions", "decide"), ("learn", "learn"), ("watch", "watch"), ("route", "route")):
+            with open(os.path.join(self.state, "app-ui.log")) as f:
                 self.assertTrue(rows[name]["alive"], (name, rows[name], f.read()))
-            self.assertTrue(rows[name]["url"].startswith("http://127.0.0.1:%d/?t=" % self.ports[server]))
+            self.assertTrue(rows[name]["url"].startswith("http://127.0.0.1:%d/%s/?t=" % (port, tab)), rows[name])
+            tokens.add(rows[name]["url"].split("?t=")[1])
+        self.assertEqual(len(tokens), 1, tokens)  # one token for every desk
         self.assertEqual(rows["lesson"]["url"], rows["learn"]["url"] + "#lesson")
         for s, port in self.ports.items():
             out = subprocess.run(["lsof", "-nP", "-iTCP:%d" % port, "-sTCP:LISTEN"], stdout=subprocess.PIPE,
@@ -206,28 +210,28 @@ class TestServeAndTunnel(Base):
         cmd = t.splitlines()[0]
         self.assertTrue(cmd.startswith("ssh -N ") and cmd.endswith(" me@mac"), cmd)
         fwd = re.findall(r"-L (\S+)", cmd)
-        self.assertEqual(len(fwd), 3)
+        self.assertEqual(len(fwd), 1)
         for s, port in self.ports.items():
             self.assertIn("127.0.0.1:%d:127.0.0.1:%d" % (port, port), fwd)
         self.assertIn(rows["lesson"]["url"], t)
         # why the same port: the page checks Host. Through the tunnel the phone sends Host 127.0.0.1:<port>
         tok = rows["learn"]["url"].split("?t=")[1]
-        lp = self.ports["learn"]
-        self.assertEqual(self.get(lp, "/?t=" + tok, "127.0.0.1:%d" % lp), 200)
-        self.assertEqual(self.get(lp, "/?t=" + tok, "127.0.0.1:%d" % (lp + 1)), 403)  # another local port
-        self.assertEqual(self.get(lp, "/?t=" + tok, "mac.example:%d" % lp), 403)  # not a loopback name
-        self.assertEqual(self.get(lp, "/", "127.0.0.1:%d" % lp), 403)  # no token
+        lp = self.ports["ui"]
+        self.assertEqual(self.get(lp, "/learn/?t=" + tok, "127.0.0.1:%d" % lp), 200)
+        self.assertEqual(self.get(lp, "/learn/?t=" + tok, "127.0.0.1:%d" % (lp + 1)), 403)  # another local port
+        self.assertEqual(self.get(lp, "/learn/?t=" + tok, "mac.example:%d" % lp), 403)  # not a loopback name
+        self.assertEqual(self.get(lp, "/learn/", "127.0.0.1:%d" % lp), 403)  # no token
 
     def test_stale_url_file_is_not_alive(self):
         dead = free_port()
-        with open(os.path.join(self.state, "learn-ui.url"), "w") as f:
+        with open(os.path.join(self.state, "ui.url"), "w") as f:
             f.write("http://127.0.0.1:%d/?t=old\n" % dead)
         rows = {r["name"]: r for r in json.loads(self.run_fleet("app", "urls", "--json").stdout)}
         self.assertFalse(rows["learn"]["alive"])
         self.assertFalse(rows["lesson"]["alive"])
         # a non-loopback URL in the file is never offered
-        with open(os.path.join(self.state, "learn-ui.url"), "w") as f:
-            f.write("http://10.0.0.5:7341/?t=x\n")
+        with open(os.path.join(self.state, "ui.url"), "w") as f:
+            f.write("http://10.0.0.5:7343/?t=x\n")
         rows = {r["name"]: r for r in json.loads(self.run_fleet("app", "urls", "--json").stdout)}
         self.assertIsNone(rows["learn"]["url"])
 
@@ -271,11 +275,15 @@ class TestAppParity(unittest.TestCase):
                                     stderr=subprocess.STDOUT, universal_newlines=True).stdout,
             "watch": open(os.path.join(ROOT, "bin", "fleet-watch")).read(),
         }
+        top = open(FLEET).read()  # a top-level verb (`fleet ls`) is in bin/fleet's own usage header
         shutil.rmtree(env["FLEET_STATE"], ignore_errors=True)
         for d in fa.DESKS:
             for cmd in d["pane"].split(";"):
                 words = cmd.split()
                 self.assertEqual(words[0], "fleet", d)
+                if len(words) == 2:
+                    self.assertIn("#   fleet %s " % words[1], top, (d["name"], cmd))
+                    continue
                 self.assertIn(words[2], helps[words[1]], (d["name"], cmd))
 
     def test_no_fork_of_a_desk_page(self):
