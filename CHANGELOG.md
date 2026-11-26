@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.8.0 (2026-11-26)
+
+Pictures in panes, a call on another machine followed live, and a status label you can change.
+
+- `fleet show FILE` (`bin/fleet-show`) draws an image in a pane: Kitty Unicode placeholders when the client and tmux can pass graphics through, block art otherwise, plain text as the last fallback (`FLEET_GFX=auto|kitty|symbols|text`, `FLEET_CHAFA_BIN`, `FLEET_SHOW_COLORS`). chafa runs behind a tmux shim that drops its `set-option` calls, so a draw never changes server options. A new kit setting, `FLEET_DESK_PASSTHROUGH=1` (off by default), sets pane-level `allow-passthrough on` for the DECIDE, WATCH and LEARN panes only when the desks start; with it off nothing changes. Fixes #41.
+- `fleet feed start URL --token-file F` follows a call transcript served on another machine (whosaid `live serve`, or any `?from=N` lines endpoint with `--protocol lines`) into `$FLEET_STATE/feeds/<name>/transcript.jsonl`, which `fleet listen --source file` and the WATCH `call` source follow. It runs detached under the side-run supervisor, keeps its position in `state.json` so a restart resumes with no duplicate and no gap, reads the token only from a mode-600 file and never writes it anywhere, and reports `ok`, `stalled (N failed polls)`, `auth refused`, `gone` or `stopped` once per change as a pane note. A wrong token stops the feed. `fleet feed ls|status|stop` manage it, and `--bound` (default 12h) ends it. Proven against the real whosaid v1.52.0 serve. Fixes #37.
+- `fleet status-label FORMAT|--reset` sets the fleet session's tmux status-left (session-scoped, live and at every `fleet launch`, saved in `$FLEET_STATE/status-label`, or `FLEET_STATUS_LABEL`), and sizes status-left-length to the rendered width. With nothing set the status line is byte-identical to before. Fixes #44.
+
 ## v0.7.1 (2026-11-26)
 
 LEARN's source drain stops at a wall-clock bound and spaces its requests like WATCH, and work lanes named for a desk are taught again.
