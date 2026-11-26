@@ -933,6 +933,21 @@ TEAMS_NO_SPEAKER_NOTE = ("teams-transcript lines carry no speaker names; they sh
 TEAMS_PANEL_CLOSED_NOTE = "teams transcript panel closed; reopen it with: whosaid teams open-transcript"
 
 
+def source_note(raw):
+    """A {"note": "..."} line with no text (fleet feed writes its status this way): the note, else None.
+    parse_utterance and the WATCH call source skip it, since it has no text."""
+    line = raw.strip()
+    if not line.startswith("{") or '"note"' not in line:
+        return None
+    try:
+        d = json.loads(line)
+    except ValueError:
+        return None
+    if isinstance(d, dict) and isinstance(d.get("note"), str) and "text" not in d:
+        return d["note"]
+    return None
+
+
 class Source:
     """Runs an adapter in a thread; puts ("line", raw) / ("status", msg) / ("note", msg) / ("eof", None) on a queue."""
 
@@ -1058,7 +1073,8 @@ class Source:
                 run[ln] += 1
                 if run[ln] > seen[ln]:
                     seen[ln] += 1
-                    self.q.put(("line", ln + "\n"))
+                    note = source_note(ln)
+                    self.q.put(("note", note) if note is not None else ("line", ln + "\n"))
             self.stop.wait(self.poll)
 
     def close(self):

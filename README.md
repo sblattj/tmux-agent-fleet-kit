@@ -449,6 +449,7 @@ Passthrough is opt-in per pane, never global: `FLEET_DESK_PASSTHROUGH=1 fleet de
 
 ```bash
 python3 -m unittest test/test_listen.py # WATCH UI: parsing, routing, secrets, classifier contract, sources, page
+python3 -m unittest test/test_feed.py   # fleet feed: whosaid and ?from=N servers, resume, filler, batching, status notes, token never leaks
 bash test/test_listen.sh      # WATCH UI in a real tmux pane on a private socket: layout, live filter, page, quit
 python3 -m unittest test/test_mesh.py   # fleet-mesh delivery, reopen, decisions log
 python3 -m unittest test/test_wake_splice.py   # typed wakes: input-box guard, and a vim NORMAL-mode fake Claude box gets the whole pointer (#38)
@@ -573,7 +574,7 @@ fleet listen [--source file|stdin|command|replay|teams-transcript ARG] [--speake
 
 - Only final lines are routed (`final: true`, or WhisperLive-style `completed: true`); the unconfirmed tail shows dimmed.
 - Every routed ask, action or decision must quote the transcript verbatim, or it is not sent (counted as `ungrounded`). Duplicates are dropped.
-- Sources: `file` follows a growing or rewritten-in-place transcript and emits each line once; `stdin`; `command` runs any command printing one utterance per line; `replay` plays a saved transcript (`--speed 1` real time, `0` no delay); `teams-transcript` follows the live transcript panel of a Teams call through whosaid (below). A line is JSON (`{"at","speaker","text","final"}`, `{"start","end","speaker","text","completed"}` or `{"clock","name","text"}`) or text `[hh:mm:ss] Speaker: text`. `speakerAliases` maps diarizer labels (`SPEAKER_00`) to names.
+- Sources: `file` follows a growing or rewritten-in-place transcript and emits each line once (a `{"note": "..."}` line becomes a pane note, never routed; `fleet feed` writes its status that way); `stdin`; `command` runs any command printing one utterance per line; `replay` plays a saved transcript (`--speed 1` real time, `0` no delay); `teams-transcript` follows the live transcript panel of a Teams call through whosaid (below). A line is JSON (`{"at","speaker","text","final"}`, `{"start","end","speaker","text","completed"}` or `{"clock","name","text"}`) or text `[hh:mm:ss] Speaker: text`. `speakerAliases` maps diarizer labels (`SPEAKER_00`) to names.
 - A source failure shows once in the status bar and the pane keeps running.
 - `teams-transcript` runs `whosaid teams transcript-live --jsonl` (a numeric ARG adds `--port ARG`; any other ARG or `source.run` replaces the command) through the command adapter. It needs a whosaid release with that command. whosaid only reads the panel. Its status (`ok`, `panel closed`, `window not found`) shows in the status bar once per change. A closed panel (it closes when you rejoin) also adds one note naming `whosaid teams open-transcript`, the one allow-listed click that reopens it. A gap (rows that scrolled past between two reads) adds a note. The panel has no speaker names, so lines show as `unknown` with a one-time note. No speaker filter can match them, so they stay visible under a filter but are routed only when no filter is set.
 - The speaker filter decides what the pane and page show and what gets routed; it is applied at draw time, so widening it brings earlier lines back. `me` lines always show and route (its own questions are not sent to the desk).
@@ -598,6 +599,59 @@ Config, `$FLEET_STATE/listener.json` (or `--config`; `//` comment lines allowed)
                {"name": "recap", "trigger": "every 30s", "run": "my-recap", "routeTo": "say"}]
 }
 ```
+### A call on another machine: `fleet feed`
+
+When the transcriber runs on a different machine (a laptop on the call, the fleet on a dev box), `fleet feed` follows
+the transcript that machine serves and mirrors it into a local file, which `fleet listen --source file` (and the WATCH
+`call` source) then follow like any transcript:
+
+```bash
+fleet feed start http://laptop.example:8766 --token-file ~/.config/fleet/call-token   # whosaid live serve
+# OK feed feed S4 pid=5120 whosaid http://laptop.example:8766
+# transcript=$FLEET_STATE/feeds/feed/transcript.jsonl
+# follow it: fleet listen --source file $FLEET_STATE/feeds/feed/transcript.jsonl
+fleet listen --source file "$FLEET_STATE/feeds/feed/transcript.jsonl"
+fleet feed ls              # feed  S4  alive  ok  whosaid http://laptop.example:8766
+fleet feed status feed     # alive/dead, status, position, line count, transcript and log paths
+fleet feed stop feed
+```
+
+```
+fleet feed start URL --token-file PATH [--name N] [--protocol whosaid|lines] [--stem S] [--from-start]
+                 [--since HH:MM:SS] [--min-chars 12] [--batch 60] [--poll 3] [--header X-Token]
+                 [--parent LANE] [--bound 12h]
+```
+
+- Protocols. `whosaid` (default) is `whosaid live serve` (whosaid v1.52.0 or later): the newest session (or `--stem`),
+  long-polled with its cursor, `Authorization: Bearer <token>`. `lines` is any server where `GET URL?from=N` returns
+  the text lines `[HH:MM:SS] speaker: text` after the first N, with the token in `--header` (default `X-Token`);
+  `--since HH:MM:SS` starts at the first line at or after that clock (the served file can hold more than one call).
+- It starts at the current end of the call; `--from-start` replays the backlog. A whosaid session that starts after the
+  feed is read from its first line.
+- It runs detached under the side-run supervisor (`fleet side run --host feed`, so it shows in `fleet side ls` and
+  outlives the pane or tool call that started it), for at most `--bound` (12h, the side-run cap). Its position is in
+  `$FLEET_STATE/feeds/<name>/state.json`, saved only after the lines are written, so `fleet feed start` again with the
+  same name resumes and never re-sends a line.
+- Lines under `--min-chars` characters of text (default 12) are dropped as filler. Lines are written in one batch every
+  `--batch` seconds (default 60; `0` writes each poll), so a long call does not flood DECIDE.
+- A speaker the transcriber has not named yet (`them`) shows as `unknown` (one note says so); no speaker filter
+  matches it, so it stays visible and is routed only with no filter. A name whosaid sets later on an earlier line is
+  not rewritten: lines already written keep the speaker they had.
+- Status `ok`, `stalled (3 failed polls)`, `auth refused` or `gone` (the call ended; it then waits for the next
+  session), once per change, never per failed poll: in `$FLEET_STATE/feeds/<name>/status`, the feed's log, and the
+  listen pane as a NOTE (`source: http-feed stalled (3 failed polls)`), shown and never routed. A refused token
+  (401/403) or a refused request (400) stops the feed; fix it and start it again.
+- Read-only: GET only, redirects are not followed, nothing said on the call is acted on (asks and decisions go to
+  DECIDE as usual).
+
+Token rules:
+
+- The token comes only from `--token-file`, read on each start; the file must be yours and mode 600 (`chmod 600`),
+  else `start` refuses. There is no argv or env form, and a URL with `user:password@` is refused.
+- The token never appears in stdout, the log, the status, the state, the transcript or a message, and no URL is
+  printed with a query or credentials in it.
+- Rotate a token that was ever pasted into a command (shell history, a chat, a tool call) after the call.
+
 The default classifier is keyword rules (`classifier.rulesFile` adds regexes per `ask|action|decided|question`). A `command` classifier or watcher reads one JSON request on stdin (`utterances`, `tail` bounded to `tailChars`, `speakers`, `me`, `maxTokens`) and prints one item per line: `ASK:`, `ACTION:`, `SAY:`, `DECIDED:` or `NOTE:`, then the text, then optional ` | owner: X`, ` | due: Y`, ` | source: S`, ` | options: a; b`, ` | rec: a`, ` | uncertain`. Other lines are ignored and counted; a run that exits non-zero or times out routes nothing. It runs at most once per `minIntervalSec` (lines in between are batched into the next call), is killed after `timeoutSec`, and its latency shows in the status bar; any model call behind it needs its own token cap and deadline. Watcher triggers: `every Ns`, `on speaker X`, `on keyword K`; `routeTo: "say"` keeps only SAY and NOTE items.
 
 ## License

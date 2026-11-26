@@ -32,6 +32,8 @@
 #                                                       LEARN engine: ledger, quizzes, proof of learning (bin/fleet-learn)
 #   fleet probe <verb>|stats|nuked|resume ...           DECIDE read-only probes (bin/fleet-probe)
 #   fleet side start|end|ls|show|adopt-ach ...          side runs: a lane's child runs outside tmux (lib/fleet_side.py)
+#   fleet feed start URL --token-file PATH [...]|ls|stop N|status N
+#                                                       follow a remote call transcript into a local file for fleet listen (lib/fleet_feed.py)
 #   fleet remote setup|status|qr|off ...                attach from a phone over ssh+mosh on ZeroTier/Tailscale (bin/fleet-remote)
 #   fleet bootstrap [--dry-run] [--verify] [--no-desks] [--cli C] [--pubkey KEY|FILE]
 #                                                       new computer: brew tools, CLI installers, ssh PATH, desks; writes the root steps
@@ -1076,6 +1078,7 @@ case $sub in
   remote) exec bash "$BINDIR/fleet-remote" "$@" ;;  # phone/tablet attach over ssh+mosh on a private overlay
   bootstrap) role_guard bootstrap; exec bash "$ROOT/bootstrap.sh" "$@" ;;  # new computer: packages, CLIs, ssh PATH, desks, root script (issue #40)
   side) exec python3 "$ROOT/lib/fleet_side.py" "$@" ;;  # side runs: start|end|ls|show (+ later subcommands)
+  feed) exec python3 "$ROOT/lib/fleet_feed.py" "$@" ;;  # remote call transcript -> local file for fleet listen (issue #37)
   tick|park|reopen|cleanup|handoff|forget)
     case $sub in
       park|reopen|forget) role_guard "$sub" ;;

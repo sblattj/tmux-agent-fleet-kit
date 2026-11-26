@@ -658,7 +658,8 @@ is drawn and served (at draw time) as well as to routing.
 
 - Input line: JSON `{"at": ISO-8601, "speaker", "text", "final"}`; aliases `completed` for `final`, `start`/`end`
   seconds or `clock` for `at`, `name`/`who` for `speaker`; missing `final` = true. Or text `[hh:mm:ss] Speaker: text`.
-  Unparseable lines are skipped.
+  Unparseable lines are skipped. In the `file` source a JSON line `{"note": "..."}` with no `text` becomes a pane note
+  (shown, never routed); `parse_utterance` and the WATCH `call` source skip it.
 - `teams-transcript`: runs `whosaid teams transcript-live --jsonl` (ARG all digits: plus `--port ARG`; any other ARG,
   else `source.run`, replaces it) in a shell (own process group). Its stdout is JSONL: `{"status","at"}` -> source status `teams-transcript <status>` once per change,
   and on a change to `panel closed` one note `teams transcript panel closed; reopen it with: whosaid teams
@@ -686,6 +687,48 @@ is drawn and served (at draw time) as well as to routing.
   private key headers, JWTs, `password|token|api key is|:|= <value>`, long mixed-case-and-digit strings).
 - Page routes: `/` (HTML), `/state.json` (`say`, `routed`, `marks`, `explainer`, `counts`, last 50 `lines`),
   `/lines.json?before=N&limit=M` (load more).
+
+## fleet feed (lib/fleet_feed.py)
+
+`fleet feed ...` execs `python3 lib/fleet_feed.py ...` (stdlib only, issue #37).
+
+- `start URL --token-file PATH [--name N (feed)] [--protocol whosaid|lines] [--stem S] [--from-start]
+  [--since HH:MM:SS (lines only)] [--min-chars 12] [--batch 60] [--poll 3] [--header X-Token] [--parent LANE]
+  [--bound 12h]`. Refuses (`FAIL ...`, exit 1): a token file that is not a regular file owned by the user with no
+  group/other mode bits, an empty one, a URL with userinfo, a non-http(s) URL, a bad name, `--since` or `--stem`, a feed
+  of that name already running, and whatever `fleet side run` refuses (no parent lane in the roster). Writes
+  `$FLEET_STATE/feeds/<name>/config.json` (0600; the token file's path, never the token), then runs `fleet side run
+  --host feed --model <name> --bound <bound> --log feeds/<name>/log [--parent LANE] -- python3 lib/fleet_feed.py _run
+  --dir feeds/<name>` and records `{"id","nonce"}` of that row in `feeds/<name>/side.json`. Prints
+  `OK feed <name> <S#> pid=<pid> <protocol> <scheme://host[:port]/path>`, `transcript=<path>`, `log=<path>` and
+  `follow it: fleet listen --source file <path>`.
+- `_run --dir D`: holds `D/lock` (flock) for its life (a second one prints `FAIL feed <name> is already running`, exit 1);
+  reads the token from the file once at start (refused file: exit 2). Appends to `D/transcript.jsonl`:
+  utterances `{"clock","speaker","text","final":true}` plus `"stem","n"` (whosaid) or `"i"` (lines index), and
+  `"unnamed":true` with speaker `unknown` for `them` or an empty speaker; and notes `{"note","at"}`. Text shorter than
+  `--min-chars` is dropped. Lines are held and appended every `--batch` seconds (0: every poll); `D/state.json`
+  (`key{protocol,url,stem}`, `stem`, `n`, `cursor`, `ended`, `began`, `from`, `sinceReached`, `unnamedNoted`, `size`)
+  is replaced (tmp + rename) only after the append, and a transcript longer than `size` at start moves the position
+  past the lines it holds. A changed protocol, URL or `--stem` starts a new position. SIGTERM/SIGINT/SIGHUP write the
+  held batch and exit 0.
+- whosaid: `GET <base>/sessions`, newest stem (or `--stem`); `GET <base>/sessions/<stem>` (no cursor: whole session)
+  then `?cursor=C&wait=W` (W = 25, or `--batch` when smaller, at least 1; client timeout W + 15). Entries with
+  `n <=` the saved max for that stem are skipped (so `reset`/`full` answers never duplicate). The first session seen
+  at the feed's first start is skipped to its end unless `--from-start`; every later stem is read from its start.
+  `meta.ended` or a 404 for the stem: status `gone`, then `/sessions` every `--poll` seconds for a larger stem
+  (`--stem`: exit 0). Speaker = `me` for `who: me`, else `name`, else `who`. A name set later on an earlier line is not
+  rewritten.
+- lines: `GET URL?from=N` (other query keys kept), token in `--header`; only newline-terminated lines count toward N.
+  First start: N = the current line count unless `--from-start` or `--since`. 404/410: status `gone`, keep polling.
+- Status: `ok | stalled (3 failed polls) | auth refused | gone | stalled (bad request, feed stopped)` in `D/status`,
+  one log line `source: http-feed <status>` and one note `source: http-feed <status>`, each only on a change. A failed
+  poll is a network error, a timeout, a non-JSON answer or an HTTP status other than 200/400/401/403/404; an idle long
+  poll (200, no entries) is not one. 401/403: `auth refused`, exit 2. 400: exit 1.
+- `ls`: one line per feed dir: `<name> <S#|-> alive|dead <status> <protocol> <safe url>`, or `no feeds`. `status N`:
+  alive/dead, side run id and pid, source, position, transcript line and note counts, log path. `stop N`: SIGTERM to the
+  side run's process group, waits up to 10 s for the row to end, `OK stopped feed N (S#)` (or `OK feed N is not running`).
+- Never written anywhere: the token (stdout, log, status, state, transcript, side rows, messages). URLs are printed as
+  `scheme://host[:port]/path`. GET only; redirects are not followed.
 
 ## Four desks (docs/design/four-desks.md, v0.2.0)
 
