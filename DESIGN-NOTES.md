@@ -1,7 +1,8 @@
 # LEARN teach-first: design notes
 
-Branch `feature/learn-teach-first-opsx`. The OpenSpec change is `openspec/changes/learn-teach-first/` (archived into
-`openspec/specs/` at the end). This file records the design choices, the answered calls, the assumptions and the
+Built on `feature/learn-teach-first-opsx`, with the raw build's source plumbing ported in (Q704 69a: local whosaid
+engine, the drain, WATCH reading `sources.json`, WATCH's event steps on LEARN's polls, a review() guard test). The
+specs live in `openspec/specs/` only; the change and archive copies were dropped. This file records the design choices, the answered calls, the assumptions and the
 existing tests this change touched.
 
 ## The lesson model (the design question)

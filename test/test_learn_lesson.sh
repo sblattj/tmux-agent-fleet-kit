@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# test_learn_lesson.sh: teach before test (openspec change learn-teach-first). fleet learn lesson, lessons, session,
+# test_learn_lesson.sh: teach before test (openspec/specs/learn-*). fleet learn lesson, lessons, session,
 # digest, brief, curate, entity and rebuild on a temp FLEET_STATE. One PASS/FAIL line per assertion; every positive
 # check has a control that must fail. Fixtures only (generic names), no network.
 set -u
