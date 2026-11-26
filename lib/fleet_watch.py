@@ -777,7 +777,10 @@ def inst_health(loc):
 # ---------------------------------------------------------------- verbs (pane and serve)
 
 def _config_path(state):
-    return C.state_paths(state)["config"]
+    """watch.json; with none, the shared $FLEET_STATE/sources.json that LEARN reads too (Q702)."""
+    p = C.state_paths(state)["config"]
+    shared = os.path.join(state, "sources.json")
+    return shared if not os.path.exists(p) and os.path.exists(shared) else p
 
 
 def _cfg_or_empty(state):

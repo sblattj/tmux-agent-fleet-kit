@@ -8,7 +8,8 @@ registry with one shared config whose credentials are references only.
 ## Requirements
 
 ### Requirement: One shared sources config, references only
-LEARN SHALL read `$FLEET_STATE/sources.json`, else `watch.json`. A credential SHALL be an `env:`, `keychain:` or
+LEARN SHALL read `$FLEET_STATE/sources.json`, else `watch.json`. WATCH SHALL read `sources.json` when it has no
+`watch.json` of its own, so one file names the sources for both desks. A credential SHALL be an `env:`, `keychain:` or
 `cmd:` reference; a literal SHALL be refused, and `fleet learn sources` SHALL exit 1 on one. With no config, LEARN
 polls nothing.
 
@@ -23,7 +24,23 @@ polls nothing.
 ### Requirement: Adapters through WATCH's registry
 Sources SHALL be polled through WATCH's adapter registry, which SHALL include `whosaid` (call decisions from a local
 workspace, through the `whosaid` CLI, bounded by a timeout) and `linear` (GraphQL, read-only, paged by cursor, with
-`retry_after` honoured). An event whose text looks like a secret SHALL be dropped.
+`retry_after` honoured). Every polled event SHALL go through WATCH's own `normalize`, `has_secret` and `drop`
+filters (`match_drop`), then `cap`: an event with a secret, or one a drop filter matches, SHALL be dropped and counted.
+The whosaid adapter SHALL always pass `--engine local`, so a workspace whose `whosaid.toml` names a cloud summarizer
+never sends a transcript off the machine; the test fake SHALL refuse any other engine.
+
+#### Scenario: Local engine only
+- **WHEN** the whosaid adapter runs `whosaid decisions`
+- **THEN** the argv carries `--engine local`, and the fake exits non-zero without it
+
+### Requirement: Each source is drained
+A sync or rebuild SHALL poll each source again from its new cursor until the source has nothing more, at most 50
+polls. The whosaid adapter SHALL stop a poll only after a whole meeting, so no decision is cut by a per-poll cap. A
+rebuild that hits the bound SHALL fail closed; a sync SHALL report the source as drain-capped and resume next time.
+
+#### Scenario: More meetings than one poll takes
+- **WHEN** the workspace holds 60 meetings and a poll reads at most 50
+- **THEN** one rebuild brings rows for all 60, and the next sync adds none
 
 #### Scenario: whosaid decisions arrive heard
 - **WHEN** the whosaid adapter reports a decision from a call

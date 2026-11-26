@@ -116,7 +116,7 @@ add_item(*, kind, origin, quote, source, title="", what="", why="", status="conf
 # Sources (Q702):       sync() also polls sources.json (else watch.json) through WATCH's adapter registry and adds
 #                       each event with add_learn_item(event, by="source"); whosaid call decisions are heard
 # Teach first:          mark_seen(lids, via) (human only) starts the 24 h clock; due() lists only seen rows' cards
-# Rebuild (Q27 b):      rebuild() regenerates ledger, cards, entities, proof, cursors from the sources; keeps only
+# Rebuild (Q703 b):      rebuild() regenerates ledger, cards, entities, proof, cursors from the sources; keeps only
 #                       reviews.jsonl and seen.jsonl, which re-attach by source key (skey) and card key (ckey)
 confirm(lid, *, source, quote, by="manual") -> dict   # heard -> confirmed
 supersede(lid, *, quote, source, by="sync") -> dict   # new row, old one status superseded

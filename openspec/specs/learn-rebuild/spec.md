@@ -3,7 +3,7 @@
 ## Purpose
 
 Everything LEARN holds is re-derivable from its sources; only the human's own results (reviews and seen records)
-are kept as the record (Q27 b). One command regenerates the rest.
+are kept as the record (Q703 b). One command regenerates the rest.
 
 ## Requirements
 

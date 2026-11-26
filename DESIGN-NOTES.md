@@ -40,7 +40,7 @@ background: red }. a card couple be a tuple basically lesson->quiz, let's think 
 | Q694 name and old data | "nuke the old the old is useless"; "both  they can be re-derived  that's the whole point, it all comes from whosaid, git, task tracking sftw, etc" | Verb is `fleet learn lesson`. No migration or compat: ledger kind `lesson` is renamed `done` (`--kind lesson` is refused naming `done`). Everything is re-derivable by `fleet learn rebuild`. Tests use temp state; the live `$FLEET_STATE/learn` is never touched from this worktree. |
 | Q695 proof clock | "an agent can fake it. thats fine, but it wouldnt be the usual behavior.", then "a" | Seen (the lesson half) starts the 24 h clock. The human marks seen in the pane (`lesson`, `session`, `digest`) or with the page button. `human_only` guards seen, `quiz` and `review()`; it is a norm, not a security boundary, so no extra hardening. |
 | Q696 lesson text | "a" | Lesson definitions and examples are verbatim source quotes, written while LEARN builds or rebuilds. A line with no source quote is dropped and counted. No model rewording by default. |
-| Q27 kept records (opened by this lane, desk Q703) | "b" | Only `reviews.jsonl` and `seen.jsonl` survive a rebuild. No inputs journal: a manual `add`, `confirm`, `drop` or `curate` is a message, not a source, so a rebuild drops it and its seen rows show as orphaned (tested: `orphaned 0 review(s), 1 seen`). ROUTE done lines come back only from the lanes' goal files. |
+| Q703 kept records | "b" | Only `reviews.jsonl` and `seen.jsonl` survive a rebuild. No inputs journal: a manual `add`, `confirm`, `drop` or `curate` is a message, not a source, so a rebuild drops it and its seen rows show as orphaned (tested: `orphaned 0 review(s), 1 seen`). ROUTE done lines come back only from the lanes' goal files. |
 | Q697 entity layer | "a" | Typed links (part-of, ships-in, blocked-by, decided-by, owner) in `entities.jsonl`, derived from row topics and the adapters' `fields.edges`; `fleet learn entity list|tree`; a topic rolls up to its subtree. A test deletes the derived files, rebuilds and compares `entity list --json`. No `entity add` (it would not survive a rebuild). Deferred: distractors skipping rows under the same root. |
 | Q702 sources | "a" | LEARN rebuilds from the real sources through WATCH's adapter registry; one shared config with refs-only creds; new `whosaid` and `linear` adapters. See "Where rebuild reads its sources". |
 
@@ -67,15 +67,19 @@ source aborts with exit 1, every file byte-identical and no `rebuild-prev/`.
 
 - Credentials are `env:`, `keychain:` or `cmd:` references only; `fleet learn sources` exits 1 on a literal. No
   config, no polling. Secret-shaped event text is dropped before it reaches the ledger.
-- `whosaid` runs the local `whosaid` CLI on the configured workspace, bounded by a timeout; nothing leaves the
-  machine. `linear` is GraphQL, read-only, paged by cursor (at most 5 pages of 50 per poll), honours
-  `retry_after`, and reports entity links (project or parent as part-of, blockers, assignee as owner, cycle as
+- `whosaid` runs the local `whosaid` CLI on the configured workspace with `--engine local` always (a workspace
+  `whosaid.toml` may name a cloud summarizer), bounded by a timeout; nothing leaves the machine.
+- Drain: every sync and rebuild polls each source again from its new cursor until it has nothing more (at most 50
+  polls; whosaid reads 50 meetings per poll and never splits a meeting). A rebuild that hits the bound fails closed.
+- LEARN's polled events go through WATCH's `normalize`, `has_secret` and `drop` filters, then `cap`, the same steps
+  WATCH runs. WATCH reads `sources.json` when it has no `watch.json`.
+- `linear` is GraphQL, read-only, paged by cursor (at most 5 pages of 50 per poll), honours `retry_after`, and reports entity links (project or parent as part-of, blockers, assignee as owner, cycle as
   ships-in).
 - History depth: whosaid and Linear read from the start, so a rebuild sees everything they hold. The GitHub events
   feed is short (about 90 days, 300 events), so an old PR comes back only through a goal file, the decisions log or
   a tracker that links it.
 
-Kept as the human's record: `learn/reviews.jsonl`, `learn/seen.jsonl` (Q27 b). Derived (rebuild regenerates them,
+Kept as the human's record: `learn/reviews.jsonl`, `learn/seen.jsonl` (Q703 b). Derived (rebuild regenerates them,
 the old copies move to `learn/rebuild-prev/`): `ledger.jsonl`, `cards.jsonl`, `entities.jsonl`, `proof.json`,
 `cursors.json`. The digest cursor is the latest `via: digest` row in `seen.jsonl`, not a stored key.
 

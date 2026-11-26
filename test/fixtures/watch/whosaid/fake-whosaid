@@ -1,7 +1,11 @@
 #!/bin/sh
-# Fake `whosaid decisions <ws> <meeting> --json`: prints <meeting>.decisions.json from this folder, exit 3 when absent.
+# Fake `whosaid decisions <ws> <meeting> --json --engine local`: prints <meeting>.decisions.json from this folder,
+# else <ws>/<meeting>/decisions.json; exit 3 when neither exists.
+# Refuses (exit 5) unless --engine local is given, so a test proves the adapter never asks for a model.
 here=$(cd "$(dirname "$0")" && pwd)
 [ "$1" = decisions ] || exit 2
+case " $* " in *" --engine local "*) ;; *) exit 5 ;; esac
 f="$here/$3.decisions.json"
+[ -f "$f" ] || f="$2/$3/decisions.json"
 [ -f "$f" ] || exit 3
 cat "$f"

@@ -383,7 +383,7 @@ def drop(lid, reason, now=None):
 
 def curate(lid, what=None, why=None, part_of=None, now=None):
     """LEARN fills a row's what and why (and its topic's part-of edge). A new version of the row. Not kept through a
-    rebuild (Q27 b: only reviews and seen are); lessons show what/why only when verbatim from the quote (Q696)."""
+    rebuild (Q703 b: only reviews and seen are); lessons show what/why only when verbatim from the quote (Q696)."""
     r = item(lid)
     if r.get("status") not in LIVE:
         raise Refused("%s is %s; only a live row can be curated" % (lid, r.get("status")))
@@ -735,7 +735,8 @@ def _sync_sources(res, now, source_events=None):
         if row:
             res["added"].append(row["lid"])
     res["sources"] = {"polled": source_events.get("sources") or [], "secretDropped":
-                      source_events.get("secretDropped", 0)}
+                      source_events.get("secretDropped", 0), "dropped": source_events.get("dropped") or {},
+                      "drainCapped": source_events.get("drainCapped") or []}
     if source_events.get("cursors"):
         cur = _read_json("cursors.json", {})
         cur.setdefault("sources", {}).update(source_events["cursors"])
@@ -1387,13 +1388,13 @@ def children(eid):
 # ---------------------------------------------------------------- rebuild from sources (Q694)
 
 DERIVED_FILES = ("ledger.jsonl", "cards.jsonl", "entities.jsonl", "proof.json", "cursors.json")
-KEPT_FILES = ("reviews.jsonl", "seen.jsonl")  # Q27 (b): the human's own results, nothing else
+KEPT_FILES = ("reviews.jsonl", "seen.jsonl")  # Q703 (b): the human's own results, nothing else
 
 
 def rebuild(now=None, source_events=None):
     """Regenerate every derived LEARN file from the sources: the decisions log, WATCH events, achieved goal files
     and the configured sources (sources.json, Q702). Keeps only the human's own results (reviews.jsonl,
-    seen.jsonl, Q27 b), which re-attach by source key; card schedules are restored by replaying the reviews through
+    seen.jsonl, Q703 b), which re-attach by source key; card schedules are restored by replaying the reviews through
     the scheduler. Sources are polled into memory first, so a failing source aborts with the old state intact. The
     old derived files move to learn/rebuild-prev/. LEARN or the human only."""
     learn_or_human("rebuild LEARN state")
@@ -1785,6 +1786,11 @@ def main(argv=None):
                 if sk or res.get("folded"):
                     print("skipped: plumbing %d, answerless %d; folded %d bare answer(s) into their full rows" % (
                         len(sk.get("plumbing") or []), len(sk.get("answerless") or []), len(res.get("folded") or [])))
+                srcs = res.get("sources") or {}
+                if srcs.get("error"):
+                    print("sources: FAIL %s" % srcs["error"])
+                for name in srcs.get("drainCapped") or []:
+                    print("sources: %s still has more after the drain bound; the next sync reads on" % name)
         elif args.cmd == "due":
             ds = due(topic=args.topic)
             if args.json:

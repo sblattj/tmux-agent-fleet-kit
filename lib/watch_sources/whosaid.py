@@ -2,12 +2,15 @@
 
 Config: {"name": "calls", "kind": "whosaid", "workspace": "~/meetings", "meetings": ["2026-01-05-0900"],
          "bin": "whosaid", "timeoutSec": 60, "maxMeetingsPerPoll": 50}
-- Runs `<bin> decisions <workspace> <meeting> --json` per meeting folder, without a shell, stdin closed, in its own
-  process group, killed after timeoutSec (the same bound as the command source). Local: whosaid's decisions ledger
-  needs no model and no network.
+- Runs `<bin> decisions <workspace> <meeting> --json --engine local` per meeting folder, without a shell, stdin
+  closed, in its own process group, killed after timeoutSec (the same bound as the command source). --engine local
+  is always passed: a workspace whosaid.toml may set [summarizer] engine = "claude", which would send the
+  transcript to the cloud when no engine is given. Local: no model, no network.
 - Meetings: the `meetings` list, else every folder in the workspace whose name does not start with `_` or `.`, in
-  name order (whosaid names them by date). Cursor: the last meeting folder read; a poll reads the folders after it,
-  at most maxMeetingsPerPoll. A rebuild polls with no cursor and reads from the first folder.
+  name order (whosaid names them by date). Cursor: the last meeting folder read in full; a poll reads the folders
+  after it, at most maxMeetingsPerPoll, and stops after a whole meeting once maxEventsPerPoll is reached (a
+  meeting's decisions are never split or dropped). `more` is True when folders are left; LEARN's poll_all then
+  polls again from the new cursor (the drain). A rebuild polls with no cursor and reads from the first folder.
 - One event per decision: type `decision.<status>` (agreed, proposed, contested), ref `<meeting>#<decision id>`,
   quote = the decision's verbatim turn text, title = the topic label. No speaker name is put on the event; LEARN
   attributes call lines to "the call". fields.edges.decided-by names the meeting, so LEARN's entity graph links the
@@ -58,13 +61,14 @@ class WhosaidSource(C.Source):
         self.name = cfg.get("name") or "whosaid"
         self.ws = os.path.expanduser(str(cfg.get("workspace") or ""))
         self._health = {"lastOk": None, "lastError": None, "failStreak": 0, "rateRemaining": None, "skipped": 0}
+        self.more = False  # set by poll: meeting folders are left after this poll's cap
 
     def _fail(self, msg):
         self._health["lastError"] = msg
         self._health["failStreak"] += 1
         raise C.SourceError(msg)
 
-    def meetings(self, cursor):
+    def meetings(self, cursor, limit=True):
         names = self.cfg.get("meetings")
         if not isinstance(names, list):
             try:
@@ -75,10 +79,10 @@ class WhosaidSource(C.Source):
         names = sorted(str(n) for n in names)
         if cursor:
             names = [n for n in names if n > str(cursor)]
-        return names[: int(self.cfg.get("maxMeetingsPerPoll") or MAX_MEETINGS)]
+        return names[: int(self.cfg.get("maxMeetingsPerPoll") or MAX_MEETINGS)] if limit else names
 
     def _run(self, meeting):
-        argv = [str(self.cfg.get("bin") or "whosaid"), "decisions", self.ws, meeting, "--json"]
+        argv = [str(self.cfg.get("bin") or "whosaid"), "decisions", self.ws, meeting, "--json", "--engine", "local"]
         timeout = self.cfg.get("timeoutSec") or C.COMMAND_TIMEOUT_SEC
         try:
             p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -106,15 +110,22 @@ class WhosaidSource(C.Source):
             self._fail("whosaid: workspace %r is not a folder" % (self.cfg.get("workspace"),))
         events, last = [], cursor
         cap = int(self.cfg.get("maxEventsPerPoll") or C.DEFAULTS["maxEventsPerPoll"])
-        for m in self.meetings(cursor):
+        todo = self.meetings(cursor, limit=False)
+        batch = todo[: int(self.cfg.get("maxMeetingsPerPoll") or MAX_MEETINGS)]
+        read = 0
+        for m in batch:
+            if events and len(events) >= cap:
+                break  # the cursor stays on the last meeting read in full; the next poll starts here
             doc = self._run(m)
             for d in (doc.get("decisions") if isinstance(doc, dict) else None) or []:
                 ev = self.to_event(m, d)
                 if ev is None:
                     self._health["skipped"] += 1
-                elif len(events) < cap:
+                else:
                     events.append(ev)
             last = m
+            read += 1
+        self.more = read < len(todo)
         self._health.update(lastOk=_iso(datetime.datetime.now(UTC)), lastError=None, failStreak=0)
         return events, last, None
 

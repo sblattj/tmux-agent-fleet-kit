@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""test_learn_sources.py: LEARN reads the real sources (Q702) and rebuilds from them (Q27 b, Q697 a).
+"""test_learn_sources.py: LEARN reads the real sources (Q702) and rebuilds from them (Q703 b, Q697 a).
 
 The whosaid adapter (a fake `whosaid` script over a fixture), the Linear adapter (an injected http over fixture
 pages), the shared sources config (references only), and `rebuild` from sources: links come back, only reviews and
@@ -374,6 +374,135 @@ class TestRebuild(Tmp):
             fl.mark_seen([lid])  # but never marks a lesson seen
         os.environ.pop("FLEET_ROLE")
         self.assertEqual([r["lid"] for r in fl.mark_seen([lid])], [lid])
+
+
+# ------------------------------------------------------------------ ported from the raw arm (Q704 69a)
+
+def many_meetings(tmp, n, per=1):
+    """A workspace of n meeting folders, each with its own decisions.json of `per` distinct decisions."""
+    ws = os.path.join(tmp, "many")
+    for i in range(n):
+        m = "2026-03-%02d-%02d00" % (1 + i // 24, i % 24)
+        os.makedirs(os.path.join(ws, m))
+        with open(os.path.join(ws, m, "decisions.json"), "w") as f:
+            json.dump({"decisions": [{"id": "d%d" % k, "topicLabel": "topic %d" % i, "t": 60.0 * k,
+                                      "status": "agreed", "text": "decision %d of meeting %d" % (k, i)}
+                                     for k in range(per)]}, f)
+    return ws
+
+
+class TestPorted(Tmp):
+    def write(self, cfg, name="sources.json"):
+        with open(os.path.join(self.state, name), "w") as f:
+            json.dump(cfg, f)
+
+    def test_whosaid_always_runs_the_local_engine(self):
+        """The fake refuses any other engine (exit 5), so dropping --engine local from the adapter turns this red."""
+        p = subprocess.run([FAKE_WHOSAID, "decisions", workspace(self.tmp), MEETING, "--json"],
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(p.returncode, 5)
+        p = subprocess.run([FAKE_WHOSAID, "decisions", os.path.join(self.tmp, "meetings"), MEETING, "--json",
+                            "--engine", "claude"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.assertEqual(p.returncode, 5)
+        src = WhosaidSource({"name": "calls", "workspace": os.path.join(self.tmp, "meetings"),
+                             "bin": FAKE_WHOSAID}, {}, {})
+        evs, _cur, _ = src.poll(None)
+        self.assertEqual(len(evs), 2)
+
+    def test_rebuild_drains_a_workspace_bigger_than_one_poll(self):
+        """60 meetings, 50 per poll: a rebuild (and a fresh sync) brings all 60, not 50 now and 10 next sync."""
+        ws = many_meetings(self.tmp, 60)
+        self.write({"sources": [{"name": "calls", "kind": "whosaid", "workspace": ws, "bin": FAKE_WHOSAID}]})
+        res = fl.rebuild()
+        calls = [r for r in fl.items() if r["source"].get("sourceKind") == "whosaid"]
+        self.assertEqual(len(calls), 60)
+        self.assertEqual(res["sources"]["polled"][0]["events"], 60)
+        self.assertGreaterEqual(res["sources"]["polled"][0]["polls"], 2)
+        self.assertEqual(res["sources"]["drainCapped"], [])
+        fl.sync()  # nothing left behind for the next sync
+        self.assertEqual(len([r for r in fl.items() if r["source"].get("sourceKind") == "whosaid"]), 60)
+
+    def test_event_cap_never_loses_a_decision(self):
+        """maxEventsPerPoll stops a poll after a whole meeting; the cursor stays there and the drain reads on."""
+        ws = many_meetings(self.tmp, 26, per=3)
+        self.write({"sources": [{"name": "calls", "kind": "whosaid", "workspace": ws, "bin": FAKE_WHOSAID,
+                                 "maxMeetingsPerPoll": 20, "maxEventsPerPoll": 10}]})
+        res = S.poll_all(full=True)
+        self.assertEqual(len(res["events"]), 78)
+        self.assertEqual(len({e["eid"] for e in res["events"]}), 78)
+        self.assertEqual(res["cursors"]["calls"], sorted(os.listdir(ws))[-1])
+
+    def test_rebuild_fails_closed_at_the_drain_bound(self):
+        ws = many_meetings(self.tmp, 6)
+        self.write({"sources": [{"name": "calls", "kind": "whosaid", "workspace": ws, "bin": FAKE_WHOSAID,
+                                 "maxMeetingsPerPoll": 1}]})
+        old = S.DRAIN_ROUNDS
+        S.DRAIN_ROUNDS = 3
+        try:
+            with self.assertRaisesRegex(S.SourceFailed, "still more after 3 polls"):
+                S.poll_all(full=True)
+            res = S.poll_all()  # a sync reports it and resumes from the cursor next time
+            self.assertEqual((len(res["events"]), res["drainCapped"]), (3, ["calls"]))
+            res2 = S.poll_all(cursors=res["cursors"])
+            self.assertEqual(len(res2["events"]), 3)
+        finally:
+            S.DRAIN_ROUNDS = old
+
+    def test_watch_reads_sources_json_when_it_has_no_watch_json(self):
+        import fleet_watch as FW
+        self.assertEqual(FW._config_path(self.state), C.state_paths(self.state)["config"])  # neither file yet
+        self.write({"sources": [{"name": "calls", "kind": "whosaid", "workspace": workspace(self.tmp)}]})
+        self.assertEqual(FW._config_path(self.state), os.path.join(self.state, "sources.json"))
+        own = C.state_paths(self.state)["config"]
+        os.makedirs(os.path.dirname(own), exist_ok=True)
+        with open(own, "w") as f:
+            json.dump({"sources": []}, f)
+        self.assertEqual(FW._config_path(self.state), own)  # WATCH's own file wins
+
+    def test_learn_events_go_through_watch_normalize_secret_and_drop(self):
+        ws = workspace(self.tmp)
+        self.write({"sources": [{"name": "calls", "kind": "whosaid", "workspace": ws, "bin": FAKE_WHOSAID}],
+                    "filters": [{"drop": {"type": "decision.proposed"}}]})
+        res = S.poll_all()
+        self.assertEqual([e["type"] for e in res["events"]], ["decision.agreed"])
+        self.assertEqual(res["dropped"], {"drop type=decision.proposed": 1})
+        self.assertEqual(res["events"][0]["origin"], "outside")  # stamped by WATCH's normalize
+
+        class Odd(C.Source):
+            kind = "whosaid"
+
+            def poll(self, cursor):
+                good = C.Event(eid="x:1", source="elsewhere", sourceKind="github", at="2026-01-05T09:00:00Z",
+                               type="decision.agreed", ref="r1", quote="plain words")
+                bad = C.Event(eid="x:2", source="calls", sourceKind="whosaid", at="2026-01-05T09:00:00Z",
+                              type="decision.agreed", ref="r2", quote="key ghp_abcdefghijklmnopqrstuvwxyz0123")
+                return [good, bad], "c1", None
+        S.OVERRIDES["whosaid"] = Odd
+        res = S.poll_all()
+        self.assertEqual(res["secretDropped"], 1)
+        self.assertEqual([(e["source"], e["sourceKind"]) for e in res["events"]], [("calls", "whosaid")])
+
+
+class TestReviewGuard(Tmp):
+    def test_review_alone_refuses_under_any_role(self):
+        """Only the guard inside review() stands between a lane and reviews.jsonl: removing it turns this red."""
+        with open(os.path.join(self.state, "sources.json"), "w") as f:
+            json.dump({"sources": [{"name": "tracker", "kind": "linear", "teams": ["ENG"]}]}, f)
+        S.OVERRIDES["linear"] = linear_class(FakeHttp())
+        fl.sync()
+        fl.make_cards()
+        fl.mark_seen([r["lid"] for r in fl.items()])
+        cs = [c for c in fl._cards() if not c.get("retired")]
+        self.assertTrue(cs)
+        rpath = os.path.join(self.state, "learn", "reviews.jsonl")
+        for role in ("worker", "learn", "route"):
+            os.environ["FLEET_ROLE"] = role
+            with self.assertRaises(fl.NotHuman):
+                fl.review(cs[0]["cid"], cs[0]["answer"], rating="good")
+            self.assertFalse(os.path.exists(rpath) and os.path.getsize(rpath))
+        os.environ.pop("FLEET_ROLE")
+        fl.review(cs[0]["cid"], cs[0]["answer"], rating="good")  # control: the human may
+        self.assertTrue(os.path.getsize(rpath))
 
 
 if __name__ == "__main__":
