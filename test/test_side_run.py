@@ -124,6 +124,33 @@ class SideRunTest(unittest.TestCase):
         self.assertEqual(len(lines), 1, lines)
         self.assertTrue(lines[0]["text"].startswith("side %s" % sid), lines[0])
 
+    @unittest.skipUnless(HAS_WATCHER, "needs the #14 watcher (lib/fleet_side_watch.py)")
+    def test_1c_stable_result_file_does_not_end_a_live_child(self):
+        # issue #42: an ach-style host writes its record early, then works. With a 0.2 s poll the watcher's
+        # stable-result rule fired after ~0.6 s; the run must stay running until the real child exits.
+        r, _ = self.run_side("sh", "-c", 'echo "{\\"tokens\\":{\\"in\\":0,\\"out\\":0}}" > "$FLEET_SIDE_RESULT"; '
+                             'sleep 3; echo "{\\"tokens\\":{\\"in\\":7,\\"out\\":8}}" > "$FLEET_SIDE_RESULT"; exit 3')
+        sid, kv = self.parse_out(r)
+        time.sleep(2.0)  # ~10 polls with the result file unchanged
+        row = next(x for x in self._rows() if x["id"] == sid)
+        self.assertEqual(row["status"], "running", row)
+        self.assertIsNone(row.get("endedAt"), row)
+        os.kill(int(kv["pid"]), 0)  # the child really is still alive
+        row = self.wait_ended(sid, secs=8, tokens=True)
+        self.assertEqual(row["status"], "failed", row)
+        self.assertEqual(row["exit"], 3, row)
+        self.assertEqual((row["tokensIn"], row["tokensOut"]), (7, 8), row)
+        inbox = os.path.join(self.state, "inbox", "L.jsonl")
+        end = time.monotonic() + 5
+        while time.monotonic() < end and not os.path.exists(inbox):
+            time.sleep(0.1)
+        time.sleep(1.0)
+        with open(inbox) as f:
+            lines = [json.loads(ln) for ln in f if ln.strip()]
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn(" failed ", lines[0]["text"])
+        self.assertIn("tok in", lines[0]["text"])
+
     def test_2_nonzero_exit_is_failed(self):
         r, _ = self.run_side("sh", "-c", "exit 3")
         sid, _ = self.parse_out(r)

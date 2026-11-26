@@ -249,7 +249,10 @@ def _loop(id, row):
         if not alive(pid):
             status = "done" if row.get("source") != "ach" else "failed"  # ach died before writing a final status
             break
-        if stable >= 2 and row.get("source") != "ach":  # an ach record sits unchanged while the run works
+        # A stable result file ends a `fleet side start` row whose pid may linger after the result is written.
+        # Never an ach row (its record sits unchanged while the run works) or a `fleet side run` row: its
+        # supervisor waits on the real child and records the exit and tokens (issue #42).
+        if stable >= 2 and row.get("source") not in ("ach", "run"):
             status = "done"
             break
         if time.time() > start + bound:

@@ -836,7 +836,8 @@ one inbox message.
   `FLEET_SIDE_WATCH_SPAWN=0` turns spawning off. One watcher per id: each holds an flock on
   `$FLEET_STATE/side/<id>.watch.lock` for its life; a second one exits 0 at once. Unknown id: `FAIL no side run ID`, exit 1.
 - Each poll (`FLEET_SIDE_POLL`, default 5 s): the run is finished when the pid is gone (a zombie counts as gone) or
-  the result file has stayed unchanged (mtime, size) for 2 polls; `status=done`, or `failed` when `exit` is non-zero
+  the result file has stayed unchanged (mtime, size) for 2 polls (never for `source=run` or `source=ach` rows: a
+  `fleet side run` supervisor waits on the real child and records its exit and tokens, issue #42); `status=done`, or `failed` when `exit` is non-zero
   or the result is an ach RunResult (`runId`) with `exitStatus != "success"`. Past `startedAt + boundSec`: SIGTERM to
   the pid and its descendants, SIGKILL to what is left after `FLEET_SIDE_GRACE` (default 10 s), `status=timeout`.
   `sample_children` (#13) runs every poll and the max lands in `children`. `endedAt` set by `fleet side end` ends

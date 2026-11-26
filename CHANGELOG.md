@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.6.1 (2026-11-26)
+
+Side runs that stay running until their child exits.
+
+- `fleet side run` rows no longer end early. The side watcher's "result file unchanged for 2 polls" rule also fired on `fleet side run` rows, so a host that writes its result record early (ach under claude, codex, gemini, agy) was marked `done` about 15 s in, with `exit` null, while the child was still working; the parent got its message with no tokens. That rule now skips `source=run` rows, whose supervisor already waits on the real child: the row stays `running` until the child exits, then carries its exit code, real `endedAt` and the tokens the host reported. Test: `test_side_run.test_1c_stable_result_file_does_not_end_a_live_child`. Fixes #42.
+
 ## v0.6.0 (2026-11-26)
 
 One command for a new computer, LEARN that teaches before it tests, and the Fleet Desk Mac app.
