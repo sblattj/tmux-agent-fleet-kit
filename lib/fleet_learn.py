@@ -1624,18 +1624,7 @@ def _one_line(r):
                                           text[:60] + ("..." if len(text) > 60 else ""))
 
 
-def main(argv=None):
-    argv = sys.argv[1:] if argv is None else argv
-    if not argv or argv[0] in ("-h", "--help", "help"):
-        sys.stdout.write(_help())
-        return 0 if argv else 2
-    if argv[0] == "serve":
-        try:
-            import fleet_learn_serve
-        except ImportError:
-            sys.stderr.write("FAIL fleet learn serve is not built yet (lib/fleet_learn_serve.py, phase 7)\n")
-            return 1
-        return fleet_learn_serve.main(argv[1:])
+def _parser():
     p = _Parser(prog="fleet learn")
     sp = p.add_subparsers(dest="cmd")
     a = sp.add_parser("add")
@@ -1714,6 +1703,28 @@ def main(argv=None):
     rb.add_argument("--json", action="store_true")
     so = sp.add_parser("sources")
     so.add_argument("--resolve", action="store_true")
+    return p
+
+
+def cli_verbs():
+    """Every `fleet learn` verb the pane offers (serve included), for the page parity test (Q698)."""
+    sp = [a for a in _parser()._actions if a.dest == "cmd"][0]
+    return sorted(set(sp.choices) | {"serve"})
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        sys.stdout.write(_help())
+        return 0 if argv else 2
+    if argv[0] == "serve":
+        try:
+            import fleet_learn_serve
+        except ImportError:
+            sys.stderr.write("FAIL fleet learn serve is not built yet (lib/fleet_learn_serve.py, phase 7)\n")
+            return 1
+        return fleet_learn_serve.main(argv[1:])
+    p = _parser()
     args = p.parse_args(argv)
     if args.cmd in ("lesson", "lessons", "session", "digest", "brief", "entity"):
         import fleet_learn_lesson as les

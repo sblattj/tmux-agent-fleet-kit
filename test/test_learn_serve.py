@@ -543,5 +543,91 @@ class TestHistory(Base):
         self.assertTrue(self.series(self.srv.history(now=self.at(NOW)), topic, self.fl.item(c["lid"])["origin"]))
 
 
+class TestPaneParity(Base):
+    """Q698: the page is a superset of the pane. Every pane verb has a page route that works, and the pane keeps a
+    full text version of every verb (the phone over mosh)."""
+    def setUp(self):
+        super().setUp()
+        for kind, origin, src, quote, title, topic in ROWS:
+            p = self.learn("add", "--kind", kind, "--origin", origin, "--source", src, "--quote", quote,
+                           "--title", title, "--topic", topic)
+            self.assertEqual(p.returncode, 0, p.stderr)
+        self.s = Server(self)
+
+    def tearDown(self):
+        self.s.stop()
+        super().tearDown()
+
+    def pane_verbs(self):
+        sys.path.insert(0, LIB)
+        import fleet_learn
+        return fleet_learn.cli_verbs()
+
+    def test_every_pane_verb_has_a_page_route_and_the_page_calls_it(self):
+        verbs = self.pane_verbs()
+        self.assertIn("lesson", verbs)
+        st, a = self.s.json("GET", "/api/actions")
+        self.assertEqual(st, 200)
+        self.assertEqual(sorted(a["actions"]), sorted(verbs))
+        with open(os.path.join(LIB, "learn-ui.html")) as f:
+            html = f.read()
+        for verb, route in a["actions"].items():
+            for part in route.split(" + "):
+                method, path = part.split(" ", 1)
+                path = path.split("?")[0]
+                self.assertTrue(path == "/" or '"%s' % path in html, "%s: the page never calls %s" % (verb, path))
+                if method == "GET":
+                    q = "?topic=widget" if path == "/api/session" else ""
+                    self.assertNotEqual(self.s.req("GET", path + q)[0], 404, "%s %s" % (verb, path))
+            if route == "POST /api/cli":
+                self.assertIn(verb, a["cli"])
+        for verb in ("quiz", "session", "serve"):
+            self.assertNotIn(verb, a["cli"])
+            self.assertEqual(self.s.json("POST", "/api/cli", {"argv": [verb]})[0], 400)
+        self.assertEqual(self.s.json("POST", "/api/cli", {"argv": ["nope"]})[0], 400)
+        self.assertEqual(self.s.req("POST", "/api/cli", {"argv": ["list"]}, token=False)[0], 403)
+
+    def test_the_pane_keeps_a_text_version_of_every_verb(self):
+        help_text = self.learn("help").stdout
+        for verb in self.pane_verbs():
+            self.assertIn("fleet learn %s" % verb, help_text, verb)
+
+    def test_page_commands_print_what_the_pane_prints(self):
+        for argv in (["list"], ["lessons"], ["digest", "--since", "30d", "--preview"], ["entity", "list"],
+                     ["sources"], ["due"]):
+            st, r = self.s.json("POST", "/api/cli", {"argv": argv})
+            pane = self.learn(*argv)
+            self.assertEqual((st, r["rc"], r["out"]), (200, pane.returncode, pane.stdout), argv)
+        st, r = self.s.json("POST", "/api/cli", {"argv": ["show", "--bogus"]})
+        self.assertEqual(st, 200)
+        self.assertNotEqual(r["rc"], 0)
+
+    def test_lesson_for_any_waiting_topic(self):
+        st, body = self.s.json("GET", "/api/lessons?topic=docs")
+        self.assertEqual((st, body["lesson"]["topic"]), (200, "docs"))
+        pane = json.loads(self.learn("lesson", "--preview", "--json", "--topic", "docs").stdout)
+        self.assertEqual(body["lesson"]["lids"], pane["lids"])
+
+    def test_session_on_one_topic_teaches_then_quizzes_that_topic_only(self):
+        since = NOW
+        st, s1 = self.s.json("GET", "/api/session?topic=docs&since=" + since)
+        self.assertEqual(st, 200)
+        self.assertEqual((s1["lesson"]["topic"], s1["quiz"]), ("docs", []))  # teach before test
+        self.assertEqual(self.s.json("POST", "/api/seen", {"lids": s1["lesson"]["lids"]})[0], 200)
+        s2 = self.s.json("GET", "/api/session?topic=docs&since=" + since)[1]
+        self.assertIsNone(s2["lesson"])
+        self.assertTrue(s2["quiz"])
+        lid_of = {c["cid"]: c for c in self.cards().values()}
+        self.assertEqual({lid_of[q["cid"]]["lid"] for q in s2["quiz"]}, set(s1["lesson"]["lids"]))
+        c = lid_of[s2["quiz"][0]["cid"]]
+        body = {"cid": c["cid"], "answer": correct_answer(c)}
+        if c["format"] == "recall":
+            body["rating"] = "good"
+        self.assertEqual(self.s.json("POST", "/api/review", body)[0], 200)
+        s3 = self.s.json("GET", "/api/session?topic=docs&since=" + since)[1]
+        self.assertRegex(s3["line"], r"^session docs: \d+ lesson\(s\), 1 card\(s\), 1 pass, 0 fail, 0 learned$")
+        self.assertEqual(self.s.json("GET", "/api/session")[0], 400)
+
+
 if __name__ == "__main__":
     unittest.main()

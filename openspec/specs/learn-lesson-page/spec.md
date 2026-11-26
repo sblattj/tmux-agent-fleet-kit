@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The LEARN page is a face on the same verbs: a Lesson tab shows the topic's tree, terms and context, and one button
+The LEARN page is a superset of the pane (Q698): a Lesson tab shows the topic's tree, terms and context, and one button
 marks the lesson seen and starts that topic's quiz.
 
 ## Requirements
@@ -34,3 +34,17 @@ data draws the same picture, and insert text only as text nodes.
 #### Scenario: Same data, same SVG
 - **WHEN** the tree function runs twice on the same lesson JSON
 - **THEN** the SVG strings are equal
+
+### Requirement: The page is a superset of the pane (Q698)
+Every `fleet learn` verb SHALL have a page route that does the same thing (lesson for any topic, mark seen under
+the human-only guard, quiz, review, session on one topic, and every other verb through `POST /api/cli`, the same
+`fleet_learn.main()` the pane runs), plus graphics. The pane SHALL keep a full text version of every verb.
+
+#### Scenario: A new pane verb without a page route
+- **WHEN** a verb is added to `fleet learn` with no page route, or the page never calls its route
+- **THEN** `TestPaneParity` in test/test_learn_serve.py fails naming it
+
+#### Scenario: Session in the page
+- **WHEN** the human starts a session on topic T in the page
+- **THEN** the page shows T's lesson, quizzes only T's cards after it is seen, and prints the pane's result line
+

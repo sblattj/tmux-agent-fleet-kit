@@ -3,8 +3,10 @@
 
   fleet learn serve [--port P] [--bind 127.0.0.1|::1] [--open]   loopback page with a per-launch token
 
-The page shows proof per origin (never blended), score history per topic, the heard-only rows, recent reviews,
-and the same quiz as `fleet learn quiz`. It reads fleet_learn.snapshot() and answers through fleet_learn.review(),
+The page is a superset of the pane (Q698): every `fleet learn` verb has a page route (PANE_ACTIONS), plus graphics
+(score sparklines, the term map, waiting lessons per topic). It shows proof per origin (never blended), score history
+per topic, the heard-only rows, recent reviews, the lesson for any waiting topic, a session on one topic, the same
+quiz as `fleet learn quiz`, and a box that runs any other pane command and shows its text. It reads fleet_learn.snapshot() and answers through fleet_learn.review(),
 the verb the terminal quiz calls, so an answer in the page and one in the TUI end in the same state.
 Writes nothing itself except $FLEET_STATE/learn-ui.url (mode 0600); every learn/ write goes through fleet_learn.
 
@@ -16,7 +18,9 @@ checks Host, and refuses a cross-origin Origin. Only the human serves it: a lane
 Port: --port, else learn.json {"servePort": N}, else 7341 (decisions serve uses 7340). Python 3.8+ stdlib only.
 """
 import argparse
+import contextlib
 import datetime
+import io
 import hmac
 import http.server
 import json
@@ -24,6 +28,7 @@ import os
 import secrets
 import subprocess
 import sys
+import threading
 import urllib.parse
 
 HERE = os.path.dirname(os.path.realpath(__file__))
@@ -46,16 +51,82 @@ def human_only(verb):
     fl.human_only(verb)
 
 
-def lessons_state(now=None):
-    """GET /api/lessons: the topics waiting, and the first one as a preview model (nothing recorded)."""
+# Q698: the page is a SUPERSET of the pane. Every `fleet learn` verb (fleet_learn.cli_verbs()) has a page route here,
+# and the pane keeps its full text version (the phone over mosh). test_learn_serve.py checks both directions.
+# quiz and session read stdin in the pane, so the page has its own routes for them; every other verb also runs
+# as-is through POST /api/cli, the same fleet_learn.main() the pane calls, with its text output shown in the page.
+PANE_ACTIONS = {
+    "serve": "GET /",
+    "snapshot": "GET /api/state",
+    "due": "GET /api/state",
+    "lessons": "GET /api/lessons",
+    "lesson": "GET /api/lessons?topic= + POST /api/seen",
+    "session": "GET /api/session?topic= + POST /api/seen + POST /api/review",
+    "quiz": "POST /api/review + POST /api/reveal",
+    "review": "POST /api/review",
+}
+INTERACTIVE = ("quiz", "session", "serve")  # stdin or the page itself: dedicated routes only
+_CLI_LOCK = threading.Lock()
+
+
+def cli_verbs():
+    return [v for v in fl.cli_verbs() if v not in INTERACTIVE]
+
+
+def actions():
+    """GET /api/actions: every pane verb and the page route that does it."""
+    out = {v: PANE_ACTIONS.get(v, "POST /api/cli") for v in fl.cli_verbs()}
+    return {"actions": out, "cli": cli_verbs()}
+
+
+def cli(argv):
+    """POST /api/cli {argv}: one pane verb run through fleet_learn.main(), output captured as text. The human's
+    guards apply as in the pane (the page refuses to start under a role)."""
+    if not isinstance(argv, list) or not argv or not all(isinstance(a, str) for a in argv):
+        raise fl.Refused("argv must be a non-empty list of strings")
+    if argv[0] not in cli_verbs():
+        raise fl.Refused("%s is not a page command (use its own route: %s)" % (
+            argv[0], PANE_ACTIONS.get(argv[0], "none")))
+    o, e = io.StringIO(), io.StringIO()
+    with _CLI_LOCK, contextlib.redirect_stdout(o), contextlib.redirect_stderr(e):
+        try:
+            rc = fl.main(list(argv))
+        except SystemExit as x:  # argparse usage errors
+            rc = x.code if isinstance(x.code, int) else 2
+    return {"argv": argv, "rc": rc or 0, "out": o.getvalue(), "err": e.getvalue()}
+
+
+def lessons_state(now=None, topic=None):
+    """GET /api/lessons[?topic=T]: the topics waiting, and the first one (or T) as a preview model (nothing recorded)."""
     import fleet_learn_lesson as les
     ls = les.lessons()
+    pick = [d for d in ls if d["topic"] == topic] if topic else ls
     first = None
-    if ls:
-        rows = [fl.item(l) for l in ls[0]["lids"]][:les.MAX_ROWS]
+    if pick:
+        rows = [fl.item(l) for l in pick[0]["lids"]][:les.MAX_ROWS]
         first = les.lesson_model(rows)
-        first["topic"] = ls[0]["topic"]
+        first["topic"] = pick[0]["topic"]
     return {"waiting": ls, "lesson": first}
+
+
+def session_state(topic, since=None, now=None):
+    """GET /api/session?topic=T[&since=ISO]: the pane's `session --topic T` as a page model: T's lesson (preview),
+    the cards due on T only, and the same one result line, counting the reviews on T since the session started."""
+    if not topic:
+        raise fl.Refused("session needs a topic")
+    lesson = lessons_state(now, topic=topic)["lesson"]
+    if lesson and lesson.get("topic") != topic:
+        lesson = None
+    quiz = [_public(c) for c in fl.due(now, topic=topic)]
+    lids = {r["lid"] for r in fl.items() if fl.on_topic(r, topic)}
+    revs = [r for r in fl.reviews() if r.get("lid") in lids and (not since or (r.get("at") or "") >= since)]
+    pf = fl.rebuild_proof()
+    learned = len([l for l in lids if (pf.get(l) or {}).get("learned")])
+    p = len([r for r in revs if r.get("grade") == "pass"])
+    seen_n = len([r for r in fl.seen_rows() if r.get("lid") in lids and (not since or (r.get("at") or "") >= since)])
+    line = "session %s: %d lesson(s), %d card(s), %d pass, %d fail, %d learned" % (
+        topic, seen_n, len(revs), p, len(revs) - p, learned)
+    return {"topic": topic, "lesson": lesson, "quiz": quiz, "line": line}
 
 
 def seen(lids):
@@ -190,8 +261,15 @@ def make_handler(token, allowed_hosts):
                     return self._send(200, page, "text/html")
                 if path == "/api/state":
                     return self._send(200, state())
+                q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
                 if path == "/api/lessons":
-                    return self._send(200, lessons_state())
+                    return self._send(200, lessons_state(topic=(q.get("topic") or [None])[0]))
+                if path == "/api/session":
+                    return self._send(200, session_state((q.get("topic") or [""])[0], (q.get("since") or [None])[0]))
+                if path == "/api/actions":
+                    return self._send(200, actions())
+            except fl.Refused as e:
+                return self._send(400, {"error": str(e)})
             except Exception as e:
                 mesh.log("learn-ui %s error: %s" % (path, e))
                 return self._send(500, {"error": str(e)})
@@ -218,6 +296,8 @@ def make_handler(token, allowed_hosts):
                     res = reveal(body.get("cid"))
                 elif path == "/api/seen":
                     res = seen(body.get("lids"))
+                elif path == "/api/cli":
+                    res = cli(body.get("argv"))
                 else:
                     return self._send(404, {"error": "not found"})
             except NotDue as e:

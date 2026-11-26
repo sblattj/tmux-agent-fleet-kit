@@ -48,6 +48,8 @@
   .err { color:var(--bad); }
   .heardtag { color:var(--dim); font-style:italic; }
   .src { color:var(--dim); font-size:12px; }
+  select { font:inherit; color:var(--fg); background:#0f1418; border:1px solid var(--line); border-radius:8px; padding:7px; }
+  pre.quote { font-style:normal; font-size:13px; max-height:420px; overflow:auto; }
   @media (max-width:700px) { .grid { grid-template-columns:1fr; } }
 </style>
 </head>
@@ -66,6 +68,21 @@
 
   <h2>Quiz</h2>
   <div id="quiz"></div>
+
+  <h2>Session on one topic</h2>
+  <div class="card" id="session">
+    <div class="row"><input id="session-topic" placeholder="topic, ticket or entity (as in fleet learn session --topic)">
+      <button id="session-go">Start session</button></div>
+    <div id="session-body"></div>
+  </div>
+
+  <h2>Every pane command</h2>
+  <div class="card" id="pane">
+    <div class="dim">Runs a <code>fleet learn</code> command exactly as the pane does and shows its text.</div>
+    <div class="row"><select id="pane-verb"></select><input id="pane-args" placeholder="arguments, e.g. --since 3d --preview">
+      <button id="pane-go">Run</button></div>
+    <pre id="pane-out" class="quote"></pre>
+  </div>
 
   <h2>Score history per topic</h2>
   <div class="card"><table id="topics"></table></div>
@@ -97,7 +114,7 @@ function originTag(o) { return el("span", { class: "origin o-" + (o === "outside
 const ORIGIN_TEXT = { fleet: "we decided or shipped it", outside: "someone else changed it" };
 
 async function api(path, body) {
-  const r = await fetch(path + (body ? "" : "?t=" + encodeURIComponent(TOKEN)), {
+  const r = await fetch(path + (body ? "" : (path.includes("?") ? "&" : "?") + "t=" + encodeURIComponent(TOKEN)), {
     method: body ? "POST" : "GET", headers: { "X-Fleet-Token": TOKEN, "Content-Type": "application/json" },
     body: body ? JSON.stringify(body) : undefined });
   const j = await r.json().catch(() => ({}));
@@ -186,9 +203,10 @@ function renderRecent(s) {
   }
 }
 
-function renderQuiz() {
-  const box = document.getElementById("quiz"); clear(box);
-  const q = STATE.quiz;
+function renderQuiz(list, boxId, after) {
+  const box = document.getElementById(boxId || "quiz"); clear(box);
+  const q = list || STATE.quiz;
+  const next = after || (() => { current = null; load(); });
   if (!q.length) { box.appendChild(el("div", { class: "empty", text: "Nothing due." })); current = null; return; }
   if (!current || !q.find(c => c.cid === current.cid)) { current = q[0]; shownAt = Date.now(); }
   const c = current;
@@ -203,7 +221,7 @@ function renderQuiz() {
     out.appendChild(el("div", { class: res.review.grade === "pass" ? "pass" : "fail",
       text: res.review.grade === "pass" ? "PASS" : "FAIL" }));
     out.appendChild(el("div", { class: "quote", text: "source: " + res.answer + (res.source ? "  [from " + res.source + "]" : "") }));
-    out.appendChild(el("div", { class: "row" }, el("button", { text: "Next", onclick: () => { current = null; load(); } })));
+    out.appendChild(el("div", { class: "row" }, el("button", { text: "Next", onclick: () => { current = null; next(); } })));
   };
   const fail = (e) => { out.appendChild(el("div", { class: "err", text: e.message })); };
   const send = (body, btns) => {
@@ -275,15 +293,41 @@ function termMap(terms) {
   return svg;
 }
 
+// Waiting lessons per topic as bars; a click opens that topic's lesson (fleet learn lesson --topic T).
+function waitingBars(waiting, onPick) {
+  const ns = "http://www.w3.org/2000/svg", RH = 20, W = 520, max = Math.max(1, ...waiting.map(w => w.rows));
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("class", "waiting"); svg.setAttribute("width", W); svg.setAttribute("height", waiting.length * RH + 4);
+  waiting.forEach((w, i) => {
+    const g = document.createElementNS(ns, "g"); g.style.cursor = "pointer";
+    g.addEventListener("click", () => onPick(w.topic));
+    const r = document.createElementNS(ns, "rect");
+    r.setAttribute("x", 180); r.setAttribute("y", i * RH + 4); r.setAttribute("height", RH - 6);
+    r.setAttribute("width", Math.max(2, (W - 220) * w.rows / max)); r.setAttribute("rx", 3);
+    r.setAttribute("fill", w.heard ? "#e3b341" : "#3fb68b");
+    const t = document.createElementNS(ns, "text");
+    t.setAttribute("x", 0); t.setAttribute("y", i * RH + 16); t.setAttribute("fill", "#e6edf3"); t.setAttribute("font-size", "12");
+    t.textContent = (w.topic.length > 26 ? w.topic.slice(0, 25) + "..." : w.topic) + " (" + w.rows + ")";
+    const tt = document.createElementNS(ns, "title"); tt.textContent = w.topic + ": " + w.rows + " row(s), " + w.heard + " heard";
+    g.appendChild(tt); g.appendChild(r); g.appendChild(t); svg.appendChild(g);
+  });
+  return svg;
+}
+
+let lessonTopic = null;
 async function loadLesson() {
   const box = document.getElementById("lesson"); clear(box);
   let L;
-  try { L = await api("/api/lessons"); } catch (e) { box.appendChild(el("div", { class: "err", text: e.message })); return; }
-  const m = L.lesson;
-  if (!m) { box.appendChild(el("div", { class: "empty", text: "No new lessons. Cards come due only after their lesson." })); return; }
+  try { L = await api("/api/lessons" + (lessonTopic ? "?topic=" + encodeURIComponent(lessonTopic) : ""), null); }
+  catch (e) { box.appendChild(el("div", { class: "err", text: e.message })); return; }
+  if (L.waiting.length) box.appendChild(el("div", { class: "card" }, waitingBars(L.waiting, t => { lessonTopic = t; loadLesson(); })));
+  if (!L.lesson) { box.appendChild(el("div", { class: "empty", text: "No new lessons. Cards come due only after their lesson." })); return; }
+  box.appendChild(lessonCard(L.lesson, L.waiting.length + " topic(s) waiting", () => { lessonTopic = null; load(); }));
+}
+
+function lessonCard(m, note, afterSeen) {
   const card = el("div", { class: "card", id: "lesson-card" },
-    el("div", { class: "top" }, el("span", { class: "id", text: m.topic }),
-      el("span", { text: L.waiting.length + " topic(s) waiting" })));
+    el("div", { class: "top" }, el("span", { class: "id", text: m.topic }), el("span", { text: note })));
   card.appendChild(el("div", { class: "q", text: "Terms" }));
   if (m.terms.length) card.appendChild(termMap(m.terms));
   for (const t of m.terms) {
@@ -306,11 +350,49 @@ async function loadLesson() {
   const go = el("button", { text: "Seen: start the clock" });
   go.addEventListener("click", () => {
     go.disabled = true;
-    api("/api/seen", { lids: m.lids }).then(() => load()).catch(e => { go.disabled = false; out.appendChild(el("div", { class: "err", text: e.message })); });
+    api("/api/seen", { lids: m.lids }).then(() => afterSeen()).catch(e => { go.disabled = false; out.appendChild(el("div", { class: "err", text: e.message })); });
   });
   card.appendChild(el("div", { class: "row" }, go)); card.appendChild(out);
-  box.appendChild(card);
+  return card;
 }
+
+// fleet learn session --topic T: T's lesson, then a quiz on T's cards only, then the one result line.
+let sessionSince = null;
+async function runSession(topic) {
+  const body = document.getElementById("session-body"); clear(body);
+  let S;
+  try { S = await api("/api/session?topic=" + encodeURIComponent(topic) + (sessionSince ? "&since=" + encodeURIComponent(sessionSince) : ""), null); }
+  catch (e) { body.appendChild(el("div", { class: "err", text: e.message })); return; }
+  if (S.lesson) body.appendChild(lessonCard(S.lesson, "session lesson", () => runSession(topic)));
+  const qb = el("div", { id: "session-quiz" }); body.appendChild(qb);
+  if (S.quiz.length) renderQuiz(S.quiz, "session-quiz", () => runSession(topic));
+  else if (!S.lesson) qb.appendChild(el("div", { class: "empty", text: "Nothing more on " + topic + "." }));
+  body.appendChild(el("div", { class: "q", id: "session-line", text: S.line }));
+}
+document.getElementById("session-go").addEventListener("click", () => {
+  const t = document.getElementById("session-topic").value.trim();
+  if (!t) return;
+  sessionSince = new Date().toISOString().replace(/\.\d+Z$/, "Z"); current = null; runSession(t);
+});
+
+function splitArgs(text) {
+  const out = []; const re = /"([^"]*)"|'([^']*)'|(\S+)/g; let m;
+  while ((m = re.exec(text))) out.push(m[1] !== undefined ? m[1] : m[2] !== undefined ? m[2] : m[3]);
+  return out;
+}
+async function loadActions() {
+  const sel = document.getElementById("pane-verb");
+  if (sel.options.length) return;
+  const A = await api("/api/actions", null);
+  for (const v of A.cli) sel.appendChild(el("option", { text: v }));
+}
+document.getElementById("pane-go").addEventListener("click", () => {
+  const out = document.getElementById("pane-out");
+  const argv = [document.getElementById("pane-verb").value].concat(splitArgs(document.getElementById("pane-args").value));
+  out.textContent = "running fleet learn " + argv.join(" ") + " ...";
+  api("/api/cli", { argv }).then(r => { out.textContent = (r.out || "") + (r.err ? "\n" + r.err : "") + "\n(exit " + r.rc + ")"; load(); })
+    .catch(e => { out.textContent = "error: " + e.message; });
+});
 
 async function load() {
   try {
@@ -319,6 +401,7 @@ async function load() {
     renderOrigins(STATE.snapshot); renderTopics(STATE); renderHeard(STATE.snapshot); renderRecent(STATE.snapshot);
     renderQuiz();
     await loadLesson();
+    await loadActions();
   } catch (e) {
     document.getElementById("meta").textContent = "error: " + e.message;
   }
