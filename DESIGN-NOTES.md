@@ -72,7 +72,11 @@ source aborts with exit 1, every file byte-identical and no `rebuild-prev/`.
 - `whosaid` runs the local `whosaid` CLI on the configured workspace with `--engine local` always (a workspace
   `whosaid.toml` may name a cloud summarizer), bounded by a timeout; nothing leaves the machine.
 - Drain: every sync and rebuild polls each source again from its new cursor until it has nothing more (at most 50
-  polls; whosaid reads 50 meetings per poll and never splits a meeting). A rebuild that hits the bound fails closed.
+  polls and 300 s per source; whosaid reads 50 meetings per poll and never splits a meeting). Every poll goes through
+  WATCH's rate gate (`ratePerMin` token bucket, one per source per drain): short waits are slept, a deferral that
+  still fits in the 300 s is waited out and the same cursor polled again, a longer one stops the drain. A rebuild that
+  stops early at any bound fails closed (rc 1, names the bound, polls and events read, nothing changed); a sync
+  keeps what it read, prints `sources: PARTIAL <name>: <why>` and reads on from the cursor next time.
 - LEARN's polled events go through WATCH's `normalize`, `has_secret` and `drop` filters, then `cap`, the same steps
   WATCH runs. WATCH reads `sources.json` when it has no `watch.json`.
 - `linear` is GraphQL, read-only, paged by cursor (at most 5 pages of 50 per poll), honours `retry_after`, and reports entity links (project or parent as part-of, blockers, assignee as owner, cycle as

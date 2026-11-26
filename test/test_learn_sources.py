@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LIB = os.path.join(ROOT, "lib")
@@ -481,6 +482,224 @@ class TestPorted(Tmp):
         res = S.poll_all()
         self.assertEqual(res["secretDropped"], 1)
         self.assertEqual([(e["source"], e["sourceKind"]) for e in res["events"]], [("calls", "whosaid")])
+
+
+# ------------------------------------------------------------------ drain bounds: wall clock and WATCH's rate gate
+
+class FakeClock:
+    """One clock for the drain deadline (S._clock), the rate gate (S._wall) and its waits (S._sleep)."""
+
+    def __init__(self):
+        self.t, self.sleeps = 1_000_000.0, []
+
+    def __call__(self):
+        return self.t
+
+    def sleep(self, sec):
+        self.sleeps.append(round(sec, 3))
+        self.t += sec
+
+
+class FakeResp:
+    headers = None
+
+    def read(self):
+        return b"[]"
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+class FakeNet:
+    """Stands in for urllib.request.urlopen; records every request that would have gone out."""
+
+    def __init__(self):
+        self.sent = []
+
+    def __call__(self, req, *a, **kw):
+        self.sent.append(getattr(req, "full_url", req))
+        return FakeResp()
+
+
+def http_source(requests_per_poll, polls, clock=None, sec_per_poll=0):
+    """A source of `polls` pages; each poll makes n urlopen calls (as every HTTP adapter does), moves the fake clock
+    by sec_per_poll and returns one new event. polls=None never runs dry."""
+    class Http(C.Source):
+        kind = "command"
+        calls = 0
+
+        def poll(self, cursor):
+            i = int(cursor or 0)
+            for k in range(requests_per_poll):
+                with urllib.request.urlopen("https://acme.example/api/%d/%d" % (i, k), timeout=20) as r:
+                    r.read()
+            Http.calls += 1
+            if clock is not None:
+                clock.t += sec_per_poll
+            self.more = polls is None or i + 1 < polls
+            ev = C.Event(eid="api:%d" % i, source="api", sourceKind="github", at="2026-01-05T09:00:00Z",
+                         type="decision.agreed", ref="r%d" % i, quote="decision %d" % i)
+            return [ev], str(i + 1), None
+    return Http
+
+
+class TestDrainBounds(Tmp):
+    def setUp(self):
+        super().setUp()
+        self.clock = FakeClock()
+        self._saved = (S._clock, S._wall, S._sleep, urllib.request.urlopen)
+        S._clock = S._wall = self.clock
+        S._sleep = self.clock.sleep
+        self.net = FakeNet()
+        urllib.request.urlopen = self.net
+
+    def tearDown(self):
+        S._clock, S._wall, S._sleep, urllib.request.urlopen = self._saved
+        super().tearDown()
+
+    def write(self, per_min=None, **src):
+        s = {"name": "api", "kind": "command", "argv": ["true"]}
+        s.update(src)
+        cfg = {"me": {"names": ["Human_Example"]}, "sources": [s]}
+        if per_min is not None:
+            cfg["defaults"] = {"ratePerMin": per_min}
+        with open(os.path.join(self.state, "sources.json"), "w") as f:
+            json.dump(cfg, f)
+        return cfg
+
+    def snap(self):
+        d = os.path.join(self.state, "learn")
+        out = {}
+        for f in sorted(os.listdir(d)):
+            if os.path.isfile(os.path.join(d, f)):
+                with open(os.path.join(d, f), "rb") as fh:
+                    out[f] = fh.read()
+        return out
+
+    def run_cli(self, *argv):
+        out, err = io.StringIO(), io.StringIO()
+        so, se = sys.stdout, sys.stderr
+        sys.stdout, sys.stderr = out, err
+        try:
+            rc = fl.main(list(argv))
+        finally:
+            sys.stdout, sys.stderr = so, se
+        return rc, out.getvalue(), err.getvalue()
+
+    def test_rebuild_stops_at_the_time_bound_fails_closed_and_exits_nonzero(self):
+        """An endless source, 40 s a poll: the drain stops at 300 s (8 polls), the rebuild changes nothing, rc 1."""
+        fl.sync()
+        fl.make_cards()
+        before = self.snap()
+        self.write()
+        S.OVERRIDES["command"] = http_source(0, None, self.clock, sec_per_poll=40)
+        rc, out, err = self.run_cli("rebuild")
+        self.assertEqual(rc, 1)
+        self.assertIn("FAIL source api failed: stopped at the 300s bound after 8 polls (8 event(s) read, partial); "
+                      "nothing changed\n", err)
+        self.assertEqual(self.snap(), before)
+        self.assertFalse(os.path.exists(os.path.join(self.state, "learn", "rebuild-prev")))
+        self.assertLess(S._clock() - 1_000_000.0, 300 + 40 + 1)  # never ran past the bound by more than one poll
+
+    def test_sync_keeps_the_partial_result_and_names_the_bound(self):
+        self.write()
+        S.OVERRIDES["command"] = http_source(0, None, self.clock, sec_per_poll=40)
+        rc, out, err = self.run_cli("sync")
+        self.assertEqual(rc, 0)
+        self.assertIn("sources: PARTIAL api: stopped at the 300s bound after 8 polls; the next sync reads on", out)
+        self.assertEqual(len([r for r in fl.items() if r["source"].get("source") == "api"]), 8)
+        with open(os.path.join(self.state, "learn", "cursors.json")) as f:
+            cur = json.load(f)
+        self.assertEqual(cur["sources"]["api"], "8")  # the next sync reads on from here
+
+    def test_rate_gate_spaces_the_calls_the_way_watch_does(self):
+        """The same source and ratePerMin through WATCH's Engine and through LEARN's drain: the same waits."""
+        import datetime
+        import fleet_watch as W
+        cfg = self.write(per_min=20)  # 20 a minute: 20 at once, then one every 3 s (under RATE_MAX_WAIT_SEC)
+
+        class WClock:
+            t = datetime.datetime(2026, 11, 20, 12, 0, 0, tzinfo=datetime.timezone.utc)
+            sleeps = []
+
+            def __call__(self):
+                return self.t
+
+            def sleep(self, sec):
+                self.sleeps.append(round(sec, 3))
+                self.t += datetime.timedelta(seconds=sec)
+        wc = WClock()
+        wstate = os.path.join(self.tmp, "wstate")
+        os.makedirs(wstate)
+        W.Engine(wstate, dict(cfg, filters=[{"kind": "fyi", "when": {"any": True}}]), now=wc,
+                 sources={"command": http_source(25, 1)}, sleep=wc.sleep).run_once(force=True)
+        self.assertEqual(len(self.net.sent), 25)
+        self.assertEqual(wc.sleeps, [3.0] * 5)
+        self.net.sent.clear()
+        S.OVERRIDES["command"] = http_source(25, 1)
+        res = S.poll_all(full=True)
+        self.assertEqual(len(self.net.sent), 25)
+        self.assertEqual(self.clock.sleeps, wc.sleeps)
+        self.assertEqual(res["sources"][0]["rate"], {"calls": 25, "waitedSec": 15.0, "perMin": 20.0})
+
+    def test_rate_gate_spans_the_whole_drain_not_each_poll(self):
+        """Three polls of 10 requests at 20 a minute: one bucket per source per drain, so polls 3 waits 3 s a call."""
+        self.write(per_min=20)
+        S.OVERRIDES["command"] = http_source(10, 3)
+        res = S.poll_all(full=True)
+        self.assertEqual((len(res["events"]), len(self.net.sent)), (3, 30))
+        self.assertEqual(self.clock.sleeps, [3.0] * 10)
+
+    def test_rate_deferral_inside_the_bound_waits_and_polls_the_same_cursor_again(self):
+        """1 a minute: each later poll defers 60 s (nothing sent), the drain waits it out and reads every page."""
+        self.write(per_min=1)
+        S.OVERRIDES["command"] = http_source(1, 3)
+        res = S.poll_all(full=True)
+        self.assertEqual(len(res["events"]), 3)
+        self.assertEqual(len(self.net.sent), 3)  # a deferred poll sends nothing
+        self.assertEqual(self.clock.sleeps, [60.0, 60.0])
+        self.assertEqual(res["cursors"]["api"], "3")
+
+    def test_rate_deferral_past_the_bound_stops_and_fails_the_rebuild_closed(self):
+        fl.sync()
+        before = self.snap()
+        self.write(per_min=0.1)  # a bucket of 0.1 token: even the first request is 540 s away, past 300 s
+        S.OVERRIDES["command"] = http_source(1, 3)
+        rc, out, err = self.run_cli("rebuild")
+        self.assertEqual(rc, 1)
+        self.assertIn("FAIL source api failed: rate limit: next call in 540s, past the 300s bound, after 1 polls "
+                      "(0 event(s) read, partial); nothing changed\n", err)
+        self.assertEqual(len(self.net.sent), 0)  # the gate deferred before anything went out
+        self.assertEqual(self.clock.sleeps, [])
+        self.assertEqual(self.snap(), before)
+
+    def test_310_of_310_with_engine_local_through_the_cli(self):
+        """60 small meetings plus one of 250 decisions, real bounds and defaults, the fake whosaid that refuses any
+        engine but local: the rebuild brings all 310, and the gate sends no wait (whosaid is a subprocess)."""
+        S._clock, S._wall, S._sleep = self._saved[:3]
+        ws = many_meetings(self.tmp, 60)
+        big = os.path.join(ws, "2026-04-01-0900")
+        os.makedirs(big)
+        with open(os.path.join(big, "decisions.json"), "w") as f:
+            json.dump({"decisions": [{"id": "d%d" % k, "topicLabel": "big", "t": 1.0 * k, "status": "agreed",
+                                      "text": "big decision %d" % k} for k in range(250)]}, f)
+        with open(os.path.join(self.state, "sources.json"), "w") as f:
+            json.dump({"sources": [{"name": "calls", "kind": "whosaid", "workspace": ws, "bin": FAKE_WHOSAID}]}, f)
+        env = dict(os.environ)
+        for k in ("TMUX", "TMUX_PANE", "FLEET_ROLE"):
+            env.pop(k, None)
+        p = subprocess.run([FLEARN, "rebuild", "--json"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
+                           universal_newlines=True, timeout=300)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        res = json.loads(p.stdout)
+        polled = res["sources"]["polled"][0]
+        self.assertEqual(polled["events"], 310)
+        self.assertEqual(polled["rate"]["waitedSec"], 0)
+        self.assertEqual(res["sources"]["drainCapped"], [])
+        self.assertEqual(len([r for r in fl.items() if r["source"].get("sourceKind") == "whosaid"]), 310)
 
 
 class TestReviewGuard(Tmp):

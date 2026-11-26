@@ -122,7 +122,9 @@ The launcher warns once and launches without the role when the Codex profile, Op
 - Sources: `$FLEET_STATE/sources.json` (else `watch.json`) names the git repos, trackers and call workspaces LEARN
   reads through WATCH's adapter registry, credentials as `env:`, `keychain:` or `cmd:` references only
   (`fleet learn sources` checks them). Generic example: `docs/learn-sources.example.json`. Adapters include
-  `whosaid` (call decisions, local, heard) and `linear` (GraphQL, read-only). No config, no polling.
+  `whosaid` (call decisions, local, heard) and `linear` (GraphQL, read-only). No config, no polling. Each source
+  drains until it has nothing more, bounded per source by 50 polls and 300 s, with WATCH's `ratePerMin` gate on
+  every request; a rebuild that stops early fails closed (rc 1), a sync prints `sources: PARTIAL` and reads on.
 - `fleet learn rebuild` regenerates the ledger, cards, entity graph (`part-of`, `ships-in`, `blocked-by`,
   `decided-by`, `owner` links from the sources), proof and cursors from the sources. Only the human's own results,
   `reviews.jsonl` and `seen.jsonl`, are kept; they re-attach by source key, and a failing source aborts with the old

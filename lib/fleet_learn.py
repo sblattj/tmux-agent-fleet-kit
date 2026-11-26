@@ -738,7 +738,8 @@ def _sync_sources(res, now, source_events=None):
             res["added"].append(row["lid"])
     res["sources"] = {"polled": source_events.get("sources") or [], "secretDropped":
                       source_events.get("secretDropped", 0), "dropped": source_events.get("dropped") or {},
-                      "drainCapped": source_events.get("drainCapped") or []}
+                      "drainCapped": source_events.get("drainCapped") or [],
+                      "drainStopped": source_events.get("drainStopped") or {}}
     if source_events.get("cursors"):
         cur = _read_json("cursors.json", {})
         cur.setdefault("sources", {}).update(source_events["cursors"])
@@ -1803,7 +1804,8 @@ def main(argv=None):
                 if srcs.get("error"):
                     print("sources: FAIL %s" % srcs["error"])
                 for name in srcs.get("drainCapped") or []:
-                    print("sources: %s still has more after the drain bound; the next sync reads on" % name)
+                    why = (srcs.get("drainStopped") or {}).get(name) or "stopped at the drain bound"
+                    print("sources: PARTIAL %s: %s; the next sync reads on" % (name, why))
         elif args.cmd == "due":
             ds = due(topic=args.topic)
             if args.json:

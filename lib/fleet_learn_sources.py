@@ -16,12 +16,17 @@ WATCH's own event steps (fleet_watch.normalize, has_secret, match_drop on the `d
 WATCH's Engine (that opens DECIDE questions and writes WATCH state).
 
 Drain: a source caps each poll (whosaid reads at most maxMeetingsPerPoll meetings), so poll_all polls a source again
-from its new cursor until it has nothing more, at most DRAIN_ROUNDS rounds. A rebuild that hits the bound fails
-closed; a sync reports it and carries on from the saved cursor next time.
+from its new cursor until it has nothing more. Three bounds stop a drain early, each per source: DRAIN_ROUNDS polls,
+DRAIN_SECONDS of wall clock, and WATCH's rate gate (lib/fleet_watch_rate.py: a fresh token bucket per source at its
+ratePerMin; every urlopen in a poll takes a token, waits up to RATE_MAX_WAIT_SEC for one, and defers past that). A
+deferral that still fits in DRAIN_SECONDS is waited out and the same cursor polled again; one that does not stops
+the drain. A rebuild that stops early fails closed (SourceFailed: which bound, how far it got, nothing changed); a
+sync reports it (drainCapped, drainStopped) and carries on from the saved cursor next time.
 """
 import json
 import os
 import sys
+import time
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 if HERE not in sys.path:
@@ -30,9 +35,14 @@ if HERE not in sys.path:
 import fleet_watch_contract as C  # noqa: E402
 import fleet_watch_creds as creds_mod  # noqa: E402
 import fleet_watch as FW  # noqa: E402
+import fleet_watch_rate as rate  # noqa: E402
 
 OVERRIDES = {}  # kind -> Source class, for tests
 DRAIN_ROUNDS = 50  # bound on polls per source per sync or rebuild
+DRAIN_SECONDS = 300  # wall-clock bound per source per sync or rebuild
+_clock = time.monotonic  # the drain's deadline clock; tests replace these three
+_wall = time.time  # the rate gate's clock (epoch seconds), as WATCH's
+_sleep = time.sleep  # the rate gate's waits
 
 
 class SourceFailed(Exception):
@@ -109,11 +119,12 @@ def poll_all(full=False, cursors=None, cfg=None, env=None):
     """Poll every configured source into memory, draining each until it has nothing more (DRAIN_ROUNDS polls at
     most). full=True (a rebuild) ignores cursors and reads each source from the start. Each event goes through
     WATCH's normalize, has_secret and drop filters, then cap. Returns {"events": [event dict], "cursors": {name:
-    cursor}, "sources": [summary], "secretDropped": n, "dropped": {label: n}, "drainCapped": [name]}. Raises
-    SourceFailed on the first failing source, and on a rebuild that hits the drain bound (nothing is written by this
-    function)."""
+    cursor}, "sources": [summary], "secretDropped": n, "dropped": {label: n}, "drainCapped": [name], "drainStopped":
+    {name: why}}. Raises SourceFailed on the first failing source, and on a rebuild that stops early at a bound
+    (rounds, DRAIN_SECONDS or the rate gate; nothing is written by this function)."""
     cfg = load_config() if cfg is None else cfg
-    out = {"events": [], "cursors": {}, "sources": [], "secretDropped": 0, "dropped": {}, "drainCapped": []}
+    out = {"events": [], "cursors": {}, "sources": [], "secretDropped": 0, "dropped": {}, "drainCapped": [],
+           "drainStopped": {}}
     if not cfg:
         return out
     errs = C.validate_config(cfg)
@@ -136,11 +147,28 @@ def poll_all(full=False, cursors=None, cfg=None, env=None):
             s = cls(C.source_cfg_with_me(cfg, src), auth, {})
         except (ImportError, KeyError) as e:
             raise SourceFailed(name, "no adapter: %s" % e)
-        cur, seen, n, rounds, more = cursors.get(name), set(), 0, 0, True
-        while more and rounds < DRAIN_ROUNDS:
+        gate = rate.Gate(rate.TokenBucket.from_dict(rate.rate_per_min(cfg, src, C.RATE_PER_MIN), None), _wall, _sleep)
+        cur, seen, n, rounds, more, stop = cursors.get(name), set(), 0, 0, True, None
+        t0 = _clock()
+        while more:
+            if rounds >= DRAIN_ROUNDS:
+                stop = "still more after %d polls" % DRAIN_ROUNDS
+                break
+            left = DRAIN_SECONDS - (_clock() - t0)
+            if left <= 0:
+                stop = "stopped at the %gs bound after %d polls" % (DRAIN_SECONDS, rounds)
+                break
             rounds += 1
             try:
-                events, new_cur, next_poll = s.poll(cur)
+                with rate.gated(gate):
+                    events, new_cur, next_poll = s.poll(cur)
+            except rate.RateDeferred as e:  # nothing more was sent; the cursor stays where it was
+                if e.wait < DRAIN_SECONDS - (_clock() - t0):
+                    _sleep(e.wait)
+                    continue
+                stop = "rate limit: next call in %ds, past the %gs bound, after %d polls" % (
+                    int(e.wait + 0.999), DRAIN_SECONDS, rounds)
+                break
             except C.SourceError as e:
                 raise SourceFailed(name, str(e))
             more = _more(s, events, new_cur, cur, next_poll)
@@ -165,10 +193,13 @@ def poll_all(full=False, cursors=None, cfg=None, env=None):
                     continue
                 out["events"].append(FW.cap(ev, settings).to_dict())
                 n += 1
-        if more:
+        if stop:
             if full:
-                raise SourceFailed(name, "still more after %d polls; nothing changed" % DRAIN_ROUNDS)
+                raise SourceFailed(name, "%s (%d event(s) read, partial)" % (stop, n))
             out["drainCapped"].append(name)
+            out["drainStopped"][name] = stop
         out["cursors"][name] = cur
-        out["sources"].append({"name": name, "kind": kind, "events": n, "polls": rounds})
+        out["sources"].append({"name": name, "kind": kind, "events": n, "polls": rounds,
+                               "rate": {"calls": gate.calls, "waitedSec": round(gate.waited, 3),
+                                        "perMin": gate.bucket.per_min}})
     return out
