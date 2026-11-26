@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.8.1 (2026-11-26)
+
+`fleet show` draws real images by default: passthrough is on for the whole fleet server unless you opt out.
+
+- `FLEET_DESK_PASSTHROUGH` now defaults to `1`. `fleet launch` (every lane, every desk) and `fleet desks up` (live desks too) run `tmux set-option -g allow-passthrough on` on the fleet's tmux server, so every pane there, not only the DECIDE, WATCH and LEARN desks, can show a real image with `fleet show`. v0.8.0 set it per desk pane, and only with `FLEET_DESK_PASSTHROUGH=1`. It is a server-wide option: with no `FLEET_TMUX_SOCKET` the fleet shares the default tmux server, so other sessions on it get it too.
+- `FLEET_DESK_PASSTHROUGH=0` (any value other than `1`) opts out. The kit then makes no passthrough call at all, so `fleet desks up` output and every tmux option are byte for byte what v0.8.0 gave with the variable unset.
+- The kit only ever turns passthrough on. It never writes `off`, never unsets it and never uses `all`, so a launch or `fleet desks up`, opted out or not, can't flip a global that is already on back off. `test/test_show.sh` checks this statically (with controls) and on throwaway servers.
+- A tmux older than 3.3 has no `allow-passthrough`: the call prints a WARN and the launch goes on.
+- The `fleet show` hint for a pane with passthrough off now says the kit turns it on unless `FLEET_DESK_PASSTHROUGH=0`. The README covers mosh: an attached mosh client (Blink, for example) still gets block art in auto mode, because mosh carries only text.
+
 ## v0.8.0 (2026-11-26)
 
 Pictures in panes, a call on another machine followed live, and a status label you can change.
