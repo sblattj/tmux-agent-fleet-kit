@@ -1,0 +1,157 @@
+#!/usr/bin/env bash
+# fleet-show: put an image (PNG, SVG, ...) in this pane the best way every viewer can see it (issue #41). Dispatched as `fleet show`.
+#
+#   fleet show IMAGE [--text SUMMARY]
+#
+# Draws IMAGE with chafa, then always prints one text line: SUMMARY, else the sidecar IMAGE-without-extension.txt
+# (or IMAGE.txt), else "image: <file name>". On stderr it prints `fleet-show: mode=<m> (<why>)` before drawing, so a
+# lane can tell what the human saw, and a second `mode=text (chafa failed ...)` line if chafa then fails. Modes:
+#   kitty    real image as Kitty graphics unicode placeholders (text cells tmux moves and clips like any text)
+#   symbols  colored block art (chafa -f symbols); works in every terminal and over mosh
+#   text     the text line only
+# FLEET_GFX=auto|kitty|symbols|text picks the mode; auto (default) decides:
+#   - no tmux: TERM xterm-ghostty|xterm-kitty, TERM_PROGRAM ghostty or KITTY_WINDOW_ID -> kitty, else symbols
+#   - in tmux: every client of this pane's session (tmux list-clients) must be Kitty-capable (client_termname
+#     xterm-ghostty, xterm-kitty, ghostty, kitty) and none may have mosh-server among its ancestors (mosh carries no
+#     images), and `tmux show -Apv allow-passthrough` on this pane must be on or all -> kitty; else symbols.
+#     No attached client -> symbols. Passthrough off -> symbols with a hint; this helper never turns it on.
+#   - chafa missing -> text.
+# It only reads tmux options. Every chafa call runs with PATH fronted by lib/fleet-show-shim (a `tmux` that drops
+# set, set-option, setw and set-window-option), because chafa turns allow-passthrough on by itself when it finds it off.
+# The image is sized from the real pane (stty size </dev/tty, else tmux #{pane_width}/#{pane_height}).
+# Env: FLEET_CHAFA_BIN (default chafa), FLEET_SHOW_COLORS (symbols color mode, default full).
+# Test hooks: FLEET_SHOW_CLIENTS (client lines "PID TERMNAME", replaces list-clients; empty = no clients),
+# FLEET_SHOW_PS (a file of "PID PPID COMM" lines, replaces ps), FLEET_SHOW_PASSTHROUGH (replaces the option read),
+# FLEET_SHOW_SIZE (COLSxROWS, replaces the size read), FLEET_SHOW_SHIM_LOG (the shim logs what it dropped).
+# ---
+set -u
+
+BINDIR=$(cd "$(dirname "$0")" && pwd -P)
+ROOT=$(cd "$BINDIR/.." && pwd -P)
+SHIMDIR=$ROOT/lib/fleet-show-shim
+
+usage() { sed -n '2,/^# ---$/{/^# ---$/d;s/^# \{0,1\}//;p;}' "$0"; exit 2; }
+die() { printf 'FAIL %s\n' "$*" >&2; exit 2; }
+
+img= text= have_text=0
+while [ $# -gt 0 ]; do
+  case $1 in
+    --text) [ $# -ge 2 ] || usage; text=$2; have_text=1; shift 2 ;;
+    -h|--help) usage ;;
+    -*) die "unknown argument $1" ;;
+    *) [ -z "$img" ] || die "one IMAGE only (got $img and $1)"; img=$1; shift ;;
+  esac
+done
+[ -n "$img" ] || usage
+[ -f "$img" ] || die "no such image: $img"
+
+if [ "$have_text" = 0 ]; then
+  for f in "${img%.*}.txt" "$img.txt"; do
+    if [ -f "$f" ] && [ "$f" != "$img" ]; then text=$(head -n 1 "$f"); have_text=1; break; fi
+  done
+fi
+[ "$have_text" = 1 ] || text="image: $(basename "$img")"
+
+# the real tmux, resolved before the shim fronts PATH; our own reads use it directly
+REAL_TMUX=$(command -v tmux 2>/dev/null || true)
+CHAFA=${FLEET_CHAFA_BIN:-chafa}
+tq() { [ -n "$REAL_TMUX" ] || return 1; "$REAL_TMUX" "$@"; }
+
+kitty_term() { case ${1:-} in xterm-ghostty|xterm-kitty|ghostty|kitty|kitty-*) return 0 ;; esac; return 1; }
+
+ps_table() { if [ -n "${FLEET_SHOW_PS:-}" ]; then cat "$FLEET_SHOW_PS"; else ps -A -o pid= -o ppid= -o comm= 2>/dev/null; fi; }
+
+PS_CACHE=
+mosh_ancestor() { # pid -> 0 when mosh-server is the process itself or one of its ancestors (up to 12 levels)
+  local pid=$1 n=0 line ppid comm
+  [ -n "$PS_CACHE" ] || PS_CACHE=$(ps_table)
+  while [ -n "$pid" ] && [ "$pid" != 0 ] && [ "$pid" != 1 ] && [ $n -lt 12 ]; do
+    line=$(printf '%s\n' "$PS_CACHE" | awk -v p="$pid" '$1==p {print; exit}')
+    [ -n "$line" ] || return 1
+    ppid=$(printf '%s\n' "$line" | awk '{print $2}')
+    comm=$(printf '%s\n' "$line" | sed 's/^ *[0-9][0-9]* *[0-9][0-9]* *//')
+    comm=${comm%% *}; comm=${comm##*/}; comm=${comm#-}
+    case $comm in mosh-server*) return 0 ;; esac
+    pid=$ppid; n=$((n + 1))
+  done
+  return 1
+}
+
+pane=${TMUX_PANE:-}
+gfx=${FLEET_GFX:-auto}
+intmux=0
+[ -z "${TMUX:-}" ] || intmux=1
+mode= why=
+case $gfx in
+  kitty|symbols|text) mode=$gfx; why="FLEET_GFX=$gfx" ;;
+  auto)
+    if [ "$intmux" = 0 ]; then
+      if kitty_term "${TERM:-}"; then mode=kitty; why="no tmux, TERM=$TERM"
+      elif [ "${TERM_PROGRAM:-}" = ghostty ]; then mode=kitty; why="no tmux, TERM_PROGRAM=ghostty"
+      elif [ -n "${KITTY_WINDOW_ID:-}" ]; then mode=kitty; why="no tmux, KITTY_WINDOW_ID set"
+      else mode=symbols; why="no tmux, TERM=${TERM:-unset} is not Kitty-capable"
+      fi
+    else
+      if [ -n "${FLEET_SHOW_CLIENTS+x}" ]; then clients=$FLEET_SHOW_CLIENTS
+      else
+        sess=$(tq display-message -p ${pane:+-t "$pane"} '#{session_id}' 2>/dev/null || true)
+        clients=$(tq list-clients ${sess:+-t "$sess"} -F '#{client_pid} #{client_termname}' 2>/dev/null || true)
+      fi
+      n=0
+      while read -r cpid cterm; do
+        [ -n "${cpid:-}" ] || continue
+        n=$((n + 1))
+        if mosh_ancestor "$cpid"; then mode=symbols; why="mosh viewer (client pid $cpid): mosh carries no images"; break; fi
+        if ! kitty_term "${cterm:-}"; then mode=symbols; why="client pid $cpid TERM=${cterm:-unknown} is not Kitty-capable"; break; fi
+      done <<EOF
+$clients
+EOF
+      if [ -z "$mode" ] && [ "$n" = 0 ]; then mode=symbols; why="no client attached to this session"; fi
+      if [ -z "$mode" ]; then
+        if [ -n "${FLEET_SHOW_PASSTHROUGH+x}" ]; then pt=$FLEET_SHOW_PASSTHROUGH
+        else pt=$(tq show-options -Apv ${pane:+-t "$pane"} allow-passthrough 2>/dev/null || true)
+        fi
+        case $pt in
+          on|all) mode=kitty; why="$n Kitty-capable client(s), allow-passthrough $pt on this pane" ;;
+          *) mode=symbols; why="allow-passthrough is ${pt:-unset} on this pane, so no real image; a desk pane gets it with FLEET_DESK_PASSTHROUGH=1 (fleet desks up); fleet show never turns it on" ;;
+        esac
+      fi
+    fi ;;
+  *) die "FLEET_GFX must be auto, kitty, symbols or text (got $gfx)" ;;
+esac
+
+if [ "$mode" != text ] && ! command -v "$CHAFA" >/dev/null 2>&1; then
+  why="chafa not installed (wanted $mode: $why)"; mode=text
+fi
+
+cols= rows=
+if [ -n "${FLEET_SHOW_SIZE:-}" ]; then cols=${FLEET_SHOW_SIZE%x*}; rows=${FLEET_SHOW_SIZE#*x}
+else
+  sz=$( { stty size </dev/tty; } 2>/dev/null || true)
+  case $sz in *[0-9]' '[0-9]*) rows=${sz%% *}; cols=${sz##* } ;; esac
+  if { [ -z "$cols" ] || [ "$cols" = 0 ]; } && [ "$intmux" = 1 ]; then
+    sz=$(tq display-message -p ${pane:+-t "$pane"} '#{pane_width} #{pane_height}' 2>/dev/null || true)
+    case $sz in *[0-9]' '[0-9]*) cols=${sz%% *}; rows=${sz##* } ;; esac
+  fi
+fi
+case ${cols:-} in ''|*[!0-9]*|0) cols=80 ;; esac
+case ${rows:-} in ''|*[!0-9]*|0) rows=24 ;; esac
+h=$((rows - 3)); [ "$h" -ge 1 ] || h=1   # leave room for the text line and the prompt
+
+shimmed_chafa() { # every chafa call: PATH fronted by the shim, so chafa can't set a tmux option
+  FLEET_SHOW_REAL_TMUX=$REAL_TMUX PATH="$SHIMDIR:$PATH" "$CHAFA" "$@"
+}
+
+printf 'fleet-show: mode=%s (%s)\n' "$mode" "$why" >&2
+rc=0
+case $mode in
+  kitty)
+    if [ "$intmux" = 1 ]; then pass=tmux; else pass=none; fi
+    shimmed_chafa -f kitty --passthrough "$pass" --size "${cols}x${h}" "$img" || rc=$? ;;
+  symbols)
+    shimmed_chafa -f symbols -c "${FLEET_SHOW_COLORS:-full}" --passthrough none --size "${cols}x${h}" "$img" || rc=$? ;;
+esac
+# chafa failed: the human saw at most part of an image, so say text (a lane reads the last mode line)
+[ "$rc" = 0 ] || printf 'fleet-show: mode=text (chafa failed with exit %s in %s mode)\n' "$rc" "$mode" >&2
+printf '%s\n' "$text"
+exit 0

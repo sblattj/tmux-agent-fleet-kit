@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# lib/fleet-show-shim/tmux: the `tmux` fleet show puts first on PATH for every chafa call (issue #41). chafa runs
+# `tmux set-option allow-passthrough on` (no -t) when it finds passthrough off, and its restore never runs if it is
+# killed early. This shim drops set, set-option, setw and set-window-option (as the command or after a `;`) and
+# passes every other call to the real tmux ($FLEET_SHOW_REAL_TMUX, else the next tmux on PATH after this dir).
+# FLEET_SHOW_SHIM_LOG=FILE logs each dropped call.
+here=$(cd "$(dirname "$0")" && pwd -P)
+want=1  # the next bare word is a command name
+skip=0
+for a in "$@"; do
+  if [ "$skip" = 1 ]; then skip=0; continue; fi
+  if [ "$want" = 1 ]; then
+    case $a in
+      -L|-S|-f|-c|-T) skip=1; continue ;;
+      -*) continue ;;
+    esac
+    case $a in
+      set|set-option|setw|set-window-option)
+        [ -z "${FLEET_SHOW_SHIM_LOG:-}" ] || printf 'dropped: tmux %s\n' "$*" >> "$FLEET_SHOW_SHIM_LOG"
+        exit 0 ;;
+    esac
+    want=0
+  fi
+  case $a in ';'|'\;') want=1 ;; esac
+done
+real=${FLEET_SHOW_REAL_TMUX:-}
+if [ -z "$real" ]; then
+  IFS=:
+  for d in $PATH; do
+    [ "$(cd "$d" 2>/dev/null && pwd -P)" != "$here" ] || continue
+    if [ -x "$d/tmux" ]; then real=$d/tmux; break; fi
+  done
+  unset IFS
+fi
+[ -n "$real" ] || { echo "fleet-show-shim: no real tmux" >&2; exit 127; }
+exec "$real" "$@"

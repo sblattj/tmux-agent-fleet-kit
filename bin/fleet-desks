@@ -22,6 +22,9 @@
 # WATCH <- LISTENER.md); its brief names the file and tells it to read it first. A desk already live is left alone.
 # Refused while a pre-kit ORCHESTRATOR, DECISIONS or LISTENER still has a live pane in the roster: retire it into a
 # handoff first, so two decision desks never answer at once. A desk with no file in DIR starts on its plain brief.
+# FLEET_DESK_PASSTHROUGH=1 (default off, issue #41): every run (live desks too) sets allow-passthrough on, pane level
+# only (set-option -p -t <pane>), on the DECIDE, WATCH and LEARN desk panes, so `fleet show` can draw real images
+# there. Never on ROUTE, the WATCH status pane or any other lane, never -g, never `all`. Off: no passthrough call.
 # ---
 set -euo pipefail
 
@@ -152,9 +155,22 @@ slot() { # window left-desk index: move the desk window to that tmux window inde
   echo "OK window $w moved to index $idx"
 }
 
+passthrough_desks() { # FLEET_DESK_PASSTHROUGH=1: pane-level allow-passthrough on the desks that draw (fleet show)
+  local d p
+  [ "${FLEET_DESK_PASSTHROUGH:-0}" = 1 ] || return 0
+  for d in DECIDE WATCH LEARN; do
+    if [ "$dry" = 1 ]; then printf 'would run: tmux set-option -p -t <%s pane> allow-passthrough on\n' "$d"; continue; fi
+    p=$(roster_get "$d" pane)
+    pane_alive "$p" || { echo "no live $d: no allow-passthrough"; continue; }
+    tm set-option -p -t "$p" allow-passthrough on
+    echo "OK $d pane $p allow-passthrough on (pane only)"
+  done
+}
+
 pair deskA ROUTE DECIDE
 pair deskB WATCH LEARN
 status_pane
+passthrough_desks
 
 # fleet launch opened the session with a `home` window; drop it once deskA and deskB exist
 if [ "$created" = 1 ] && [ "$dry" = 0 ]; then tm kill-window -t "=$SESSION:home" 2>/dev/null || true; fi

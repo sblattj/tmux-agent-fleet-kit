@@ -31,6 +31,10 @@ and `$FLEET_ROUTE` (default `ROUTE`). There is no alias layer: a message goes to
 | FLEET_NATIVE | `1` | `0` turns the Claude to Claude native route off (every Claude target gets the guarded typed wake) |
 | FLEET_WAKE_SPAWN | `1` | `0` never starts a detached waker (unit tests); a busy pane then just keeps its unread message |
 | FLEET_AGY_HOME | `~/.gemini` | where agy keeps `config/` and `antigravity-cli/` (agents, rules, mcp_config.json, brain/<conversation>/ transcripts); passed to agy lanes when set; read by install/agy.sh and bin/fleet-lifecycle. agy itself always uses `$HOME/.gemini` (PROVEN 1.5.13), so this must point there |
+| FLEET_GFX | `auto` | `fleet show` mode: `auto`, `kitty`, `symbols` or `text` (see Graphics in panes in the README) |
+| FLEET_CHAFA_BIN | `chafa` | chafa binary `fleet show` runs (tests point it at a stub); missing means text only |
+| FLEET_SHOW_COLORS | `full` | chafa color mode for `fleet show` block art |
+| FLEET_DESK_PASSTHROUGH | off | `1`: `fleet desks up` sets `allow-passthrough on` pane level (`set-option -p -t <pane>`) on the DECIDE, WATCH and LEARN desk panes, live ones too; never ROUTE, never `-g`, never `all`. Anything else: no passthrough call |
 
 ## State layout ($FLEET_STATE)
 
@@ -60,7 +64,19 @@ fleet ls                      roster + liveness (pane alive?) + mesh=yes|no, one
 fleet attach                  tmux attach -t $FLEET_TMUX_SESSION
 fleet layout                  print the tmux window/pane map
 fleet stop <name>             kill that pane (asks nothing; used by tests and retire)
+fleet show IMAGE [--text S]   draw IMAGE in this pane (bin/fleet-show, issue #41): mode kitty, symbols or text, then one
+                              text line; `fleet-show: mode=<m> (<why>)` on stderr; never sets a tmux option
 ```
+- `fleet show` auto mode: no tmux -> kitty for TERM `xterm-ghostty`/`xterm-kitty`, `TERM_PROGRAM=ghostty` or
+  `KITTY_WINDOW_ID`, else symbols. In tmux: `list-clients -t <this pane's session> -F '#{client_pid} #{client_termname}'`;
+  any client with `mosh-server` among its ancestors (up to 12 levels, `ps` comm basename), or with a termname not in
+  xterm-ghostty|xterm-kitty|ghostty|kitty, or no client at all -> symbols; else `show -Apv -t $TMUX_PANE allow-passthrough`
+  on/all -> kitty (`chafa -f kitty --passthrough tmux`), else symbols with a hint. Size from `stty size </dev/tty`, else
+  `#{pane_width}x#{pane_height}`; the image gets rows-3. Every chafa call runs with PATH fronted by
+  `lib/fleet-show-shim/tmux`, which drops set|set-option|setw|set-window-option (also after a `;`) and execs the real
+  tmux for the rest. Test hooks: FLEET_SHOW_CLIENTS, FLEET_SHOW_PS, FLEET_SHOW_PASSTHROUGH, FLEET_SHOW_SIZE,
+  FLEET_SHOW_SHIM_LOG. Exit 0 once a mode ran (chafa failing adds a last `mode=text (chafa failed ...)` line); 2 on
+  usage, a missing image or a bad FLEET_GFX.
 - `<name>` matches `^[A-Za-z0-9._-]+$`; refuse if roster has a live pane for it.
 - goal mode condition lint (same as today's launcher): starts with `/goal `, <= 4000 chars, names a `*.json` goal file,
   contains `file wins`, contains `stop after`. desk mode refuses text starting with `/goal`.

@@ -14,6 +14,9 @@
 #   fleet send <to> <text>                              message a lane (reopens it if parked), sender is $FLEET_NAME
 #   fleet listen [--source NAME [ARG]] [--speakers "A,B"] [--page] [--pane-right-of NAME | --here]
 #                                                       WATCH UI pane: follow a call, route asks/actions (lib/fleet_listen.py)
+#   fleet show IMAGE [--text SUMMARY]                  draw an image in this pane: real image (Kitty placeholders) when every
+#                                                       viewer can see it, block art otherwise (mosh), always a text line;
+#                                                       FLEET_GFX=auto|kitty|symbols|text; never sets a tmux option (bin/fleet-show)
 #   fleet desks up [--cli C] [--model M] [--dir D] [--handoff DIR] [--no-proof] [--dry-run]
 #                                                       the standing desks: windows deskA (ROUTE|DECIDE), deskB (WATCH|LEARN) (bin/fleet-desks)
 #   fleet tick|park|reopen|cleanup|handoff|forget ...   lifecycle, handled by bin/fleet-lifecycle
@@ -1008,6 +1011,7 @@ case $sub in
     [ $# -ge 2 ] || usage
     exec python3 "$ROOT/lib/fleet_mesh.py" send "${FLEET_NAME:-${FLEET_ROUTE:-ROUTE}}" "$1" "${*:2}" ;;
   listen) exec python3 "$ROOT/lib/fleet_listen.py" "$@" ;;
+  show) exec bash "$BINDIR/fleet-show" "$@" ;;  # draw an image in this pane: kitty, block art or text (issue #41)
   desks) role_guard desks; exec bash "$BINDIR/fleet-desks" "$@" ;;
   watch|learn|probe) # four-desks engines (docs/design/four-desks.md sections 2.5, 3, 4)
     [ -f "$BINDIR/fleet-$sub" ] || die "fleet-$sub missing"

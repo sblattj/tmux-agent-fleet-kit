@@ -192,7 +192,7 @@ fleet-mesh types one line into the Claude (or Kiro, or agy) pane: `[fleet] messa
 
 ## Environment
 
-All variables are optional. The full table (`FLEET_TMUX_SESSION`, `FLEET_TMUX_SOCKET`, `FLEET_STATE`, `FLEET_DIR`, `FLEET_HUMAN`, `FLEET_DECIDE`, `FLEET_ROUTE`, `FLEET_NAME`, `FLEET_CLAUDE_BIN`, `FLEET_CODEX_BIN`, `FLEET_OPENCODE_BIN`, `FLEET_KIRO_BIN`, `KIRO_HOME`, `FLEET_KIRO_GOAL_MAX`, `FLEET_AGY_BIN`, `FLEET_AGY_HOME`) and the state layout are in [INTERFACES.md](INTERFACES.md).
+All variables are optional. The full table (`FLEET_TMUX_SESSION`, `FLEET_TMUX_SOCKET`, `FLEET_STATE`, `FLEET_DIR`, `FLEET_HUMAN`, `FLEET_DECIDE`, `FLEET_ROUTE`, `FLEET_NAME`, `FLEET_CLAUDE_BIN`, `FLEET_CODEX_BIN`, `FLEET_OPENCODE_BIN`, `FLEET_KIRO_BIN`, `KIRO_HOME`, `FLEET_KIRO_GOAL_MAX`, `FLEET_AGY_BIN`, `FLEET_AGY_HOME`, `FLEET_GFX`, `FLEET_CHAFA_BIN`, `FLEET_DESK_PASSTHROUGH`) and the state layout are in [INTERFACES.md](INTERFACES.md).
 
 Installer-only: `FLEET_OC_GOAL_PLUGIN_URL`, `FLEET_OC_GOAL_PLUGIN_REF`, `FLEET_OC_CONFIG_DIR`, `FLEET_PREFIX`, `FLEET_ROLES_DIR` (default `<repo>/roles`), `CODEX_HOME` (default `~/.codex`). Kiro: `FLEET_KIRO_BIN` (default `kiro-cli`), `KIRO_HOME` (default `~/.kiro`; passed to kiro lanes and read by the installer and lifecycle when set), `FLEET_KIRO_GOAL_MAX` (default 20, the `--max` of `/goal`). agy: `FLEET_AGY_BIN` (default `agy`), `FLEET_AGY_HOME` (default `~/.gemini`; where the installer writes and where launcher and lifecycle read transcripts; agy itself always uses `$HOME/.gemini`). Runtime: `FLEET_BIN` (the `fleet` script fleet-mesh runs to reopen a parked lane; default `<repo>/bin/fleet`).
 
@@ -415,6 +415,24 @@ Notes:
 - On Linux, `setup` leaves the host firewall alone. If one is on, allow UDP 60000-61000 on the overlay interface.
 - The Linux sshd step is not covered by tests.
 
+## Graphics in panes
+
+`fleet show IMAGE [--text SUMMARY]` puts a chart or a diagram in the pane it runs in, the best way every viewer can see it, and always prints one text line after it (SUMMARY, else the sidecar `IMAGE-without-extension.txt`, else `image: <file name>`). It needs [chafa](https://hpjansson.org/chafa/) (`brew install chafa`); without it you get the text line only. On stderr it says what the human saw: `fleet-show: mode=<kitty|symbols|text> (<why>)`.
+
+| Viewer | What it sees |
+|---|---|
+| Ghostty or kitty, no tmux | the real image |
+| Ghostty or kitty in tmux, pane passthrough on | the real image (Kitty unicode placeholders: text cells tmux moves and clips, so splits and window switches are fine) |
+| Ghostty or kitty in tmux, passthrough off | colored block art, plus a hint |
+| any client attached over mosh (phone, tablet) | colored block art for everyone on that pane (mosh carries no images, and one pane shows one output) |
+| other terminals (Terminal.app, iTerm2, xterm, ...) | colored block art |
+
+`FLEET_GFX=auto|kitty|symbols|text` overrides the choice (default `auto`). A mosh viewer is found by walking each tmux client's parent processes for `mosh-server`, since its TERM says nothing.
+
+`fleet show` never changes a tmux option. chafa does on its own: when it finds `allow-passthrough` off inside tmux it runs `tmux set-option allow-passthrough on` with no target (it lands on the session's active window), and leaves it on if it is killed early. So every chafa call runs behind `lib/fleet-show-shim/tmux`, which drops `set`, `set-option`, `setw` and `set-window-option`. Agent shells that inherit `TMUX` from a fleet pane should be careful with any tool that talks to tmux.
+
+Passthrough is opt-in per pane, never global: `FLEET_DESK_PASSTHROUGH=1 fleet desks up` runs `tmux set-option -p -t <pane> allow-passthrough on` on the DECIDE, WATCH and LEARN desk panes (the desks that draw), live desks included. ROUTE, the WATCH status pane and every lane stay off. Default off, and a fresh install leaves the global option alone. Don't set it globally or to `all`: placeholders don't need `all`, and `all` lets hidden panes paint.
+
 ## Tests
 
 ```bash
@@ -435,6 +453,7 @@ python3 -m unittest test/test_side_ach.py     # side runs: adopt-ach registers r
 bash test/test_probe_stall_park.sh            # a probe silent 15 min is parked as stalled by fleet cleanup --apply
 bash test/test_forget.sh                      # fleet forget archives one row; a live lane is refused without --force
 bash test/test_desks_default.sh               # desks by default: installer step, launch guard, tick desks down, desks up --handoff
+bash test/test_show.sh                        # fleet show: every mode, mosh viewer, shim drops chafa's set-option, FLEET_DESK_PASSTHROUGH on desks
 FLEET_PROBE_LIVE=1 test/test_probe_live.sh --cli claude   # launches 2 real lanes: the probe can't shell or write, a worker can
 FLEET_PROBE_ACH=1 test/test_probe_ach.sh                  # the same bar through ach on claude, opencode and kiro (model calls)
 bash test/test_probe_opencode_tools.sh                     # OpenCode offers the fleet-probe verbs to fleet-probe only (FLEET_PROBE_OC_LIVE=1: live)
