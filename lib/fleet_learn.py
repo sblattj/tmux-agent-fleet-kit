@@ -434,7 +434,11 @@ _NOT_TICKETS = {"UTF", "ISO", "SHA", "RFC", "HTTP", "TLS", "AES", "IPV", "GPT", 
 _TICKET_RE = re.compile(r"\bAB#\d+\b|\b[A-Z][A-Z0-9]{1,9}-\d+\b")
 _PR_RE = re.compile(r"\b[\w.-]+/[\w.-]+#\d+\b|(?<![\w&#/])#\d{1,6}\b|(?<![\w!])![0-9]{3,}\b")
 _RELEASE_RE = re.compile(r"(?<![\w.])v?\d+\.\d+\.\d+(?:-[a-z]+\.?\d*)?(?![.\d])")
-PLUMBING_LANE_TOKENS = ("kit", "fleet", "desk", "desks", "tmux", "mesh", "mcp", "launchd", "dotfiles", "zerotier")
+# Kit and tooling words mark a plumbing lane wherever they sit in its name ("kit-pane-slots", "fleetkit-desk-windows").
+# "desk" only does as the lead token ("desk-ui", "desks-layout"): a work lane named for the desk it serves
+# ("questions-desk", "buy-desk") is work, and the fleet's own desks are whole names in DESKS (#43).
+PLUMBING_LANE_TOKENS = ("kit", "fleet", "fleetkit", "tmux", "mesh", "mcp", "launchd", "dotfiles", "zerotier")
+PLUMBING_LANE_LEADS = ("desk", "desks")
 _STRONG_RE = re.compile(r"tmux-agent-fleet-kit|\bfleet[ -]kit\b|\bfleet_mesh\b|\blane-env\b|\bdesk[AB]\b"
                         r"|\bdesks? (?:rename|slots?|layout)\b|\bMCP server|\blaunchd\b|\bzerotier\b|\bmosh\b", re.I)
 _WEAK_RE = re.compile(r"\b(?:launch|launched|park|parked|reopen|relaunch|retire|cleanup|clean up|refresh|relay|relayed"
@@ -477,7 +481,9 @@ def _plumbing_lane(name):
         return False
     if name in DESKS:
         return True
-    toks = re.split(r"[^a-z0-9]+", name.lower())
+    toks = [t for t in re.split(r"[^a-z0-9]+", name.lower()) if t]
+    if toks and toks[0] in PLUMBING_LANE_LEADS:
+        return True
     return any(t in PLUMBING_LANE_TOKENS for t in toks)
 
 

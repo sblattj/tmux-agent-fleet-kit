@@ -456,6 +456,20 @@ has "#24 'learn: teach' in a done line keeps it, even in a plumbing lane" "$out"
 out=$(jqs "$S22" sync --goal "$tmp/work-z.goal.json" --lane work-z 2>&1)
 has "#24 {\"learn\": \"skip\"} in a goal file skips the whole lane" "$out" "added 0,"
 
+# ---- #43: "desk" names a role only as the lane's lead token; a work lane named for its desk is not plumbing
+S43=$tmp/s43; mkdir -p "$S43"
+cat > "$tmp/questions-desk.goal.json" <<'J'
+{"goal":"answer the open questions","done":["PROJ-12: the vendor confirmed the renewal date is March 3"]}
+J
+out=$(jqs "$S43" sync --goal "$tmp/questions-desk.goal.json" --lane questions-desk 2>&1)
+has "#43 a work lane named questions-desk keeps its work row" "$out" "added 1,"
+out=$(jqs "$S43" sync --goal "$tmp/questions-desk.goal.json" --lane buy-desk 2>&1)
+has "#43 a work lane named buy-desk keeps its work row" "$out" "added 1,"
+for ln in desk-ui desks-layout fleet-four-desks fleetkit-desk-windows kit-desk-slots; do
+  out=$(jqs "$tmp/s43-$ln" sync --goal "$tmp/questions-desk.goal.json" --lane "$ln" 2>&1)
+  has "#43 control: kit or desk-setup lane $ln is still skipped" "$out" "added 0,"
+done
+
 # ---- route-done adds: plumbing refused unless taught
 S23=$tmp/s23
 out=$(jqs "$S23" add --kind done --origin fleet --source route-done:kit-pane-slots --quote "route-done: kit-pane-slots parked (goal met). desk panes pinned to slots 0 and 1" 2>&1); rc=$?

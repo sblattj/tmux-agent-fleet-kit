@@ -2,9 +2,11 @@
 
 ## v0.7.1 (2026-11-26)
 
-LEARN's source drain stops at a wall-clock bound and spaces its requests like WATCH.
+LEARN's source drain stops at a wall-clock bound and spaces its requests like WATCH, and work lanes named for a desk are taught again.
 
+- LEARN no longer skips a work lane whose name ends in "desk". The plumbing-lane rule split a lane name into tokens and skipped it when any token was `desk` or `desks`, so every `goal:` row from a lane like `questions-desk` or `buy-desk` was dropped as `plumbing lane`, even rows that named a ticket, and had to be re-added with `--teach`. `desk`/`desks` now mark a plumbing lane only as the lead token (`desk-ui`, `desks-layout`); kit and tooling tokens (`kit`, `fleet`, `fleetkit`, `tmux`, `mesh`, `mcp`, ...) still count anywhere in the name, and the fleet's own desks are matched by whole name. Tests: `test_learn.sh` #43 (two work lanes kept, five kit or desk-setup lanes still skipped). Fixes #43.
 - LEARN's source drain is bounded by wall clock and rate, not only by rounds. Each source's drain in `fleet learn sync` and `fleet learn rebuild` stops at 300 s (`DRAIN_SECONDS`) as well as at 50 polls, and every poll goes through WATCH's rate gate (`lib/fleet_watch_rate.py`: a token bucket at the source's `ratePerMin`, short waits slept, longer ones deferred), so a drain spaces its requests the way WATCH does. A deferral that fits in the 300 s is waited out and the same cursor polled again. A rebuild that stops early at any bound fails closed: rc 1, `FAIL source <name> failed: <bound> after N polls (M event(s) read, partial); nothing changed`. A sync keeps what it read and prints `sources: PARTIAL <name>: <why>; the next sync reads on`. Tests: `test_learn_sources.TestDrainBounds` (time bound, WATCH-equal spacing, deferral inside and past the bound, 310 of 310 with `--engine local`).
+
 ## v0.7.0 (2026-11-26)
 
 One page for every desk: the `fleet ui serve` hub.
