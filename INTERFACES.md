@@ -720,10 +720,10 @@ is drawn and served (at draw time) as well as to routing.
   rewritten.
 - lines: `GET URL?from=N` (other query keys kept), token in `--header`; only newline-terminated lines count toward N.
   First start: N = the current line count unless `--from-start` or `--since`. 404/410: status `gone`, keep polling.
-- Status: `ok | stalled (3 failed polls) | auth refused | gone | stalled (bad request, feed stopped)` in `D/status`,
+- Status: `ok | stalled (3 failed polls) | auth refused | gone | stalled (bad request, feed stopped) | stopped` in `D/status`,
   one log line `source: http-feed <status>` and one note `source: http-feed <status>`, each only on a change. A failed
   poll is a network error, a timeout, a connection cut mid-answer, any other error in a poll, a non-JSON answer or an HTTP status other than 200/400/401/403/404; an idle long
-  poll (200, no entries) is not one. 401/403: `auth refused`, exit 2. 400: exit 1.
+  poll (200, no entries) is not one. 401/403: `auth refused`, exit 2. 400: exit 1. Any other exit (stop, bound, signal) ends on `stopped`; those two keep their reason.
 - `ls`: one line per feed dir: `<name> <S#|-> alive|dead <status> <protocol> <safe url>`, or `no feeds`. `status N`:
   alive/dead, side run id and pid, source, position, transcript line and note counts, log path. `stop N`: SIGTERM to the
   side run's process group, waits up to 10 s for the row to end, `OK stopped feed N (S#)` (or `OK feed N is not running`).

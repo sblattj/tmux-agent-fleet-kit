@@ -23,7 +23,7 @@ Protocols (GET only, never a write):
   lines    GET URL?from=N -> text lines `[HH:MM:SS] speaker: text` after the first N lines; token in --header
            (default X-Token). --since HH:MM:SS skips to the first line at or after that clock.
 
-Status (ok | stalled (N failed polls) | auth refused | gone), once per change, goes to feeds/<name>/status, the
+Status (ok | stalled (N failed polls) | auth refused | gone | stopped), once per change, goes to feeds/<name>/status, the
 side-run log, and the transcript as {"note": "source: http-feed <status>"}, which fleet listen shows as a NOTE and never
 routes. 401/403 (auth refused) and 400 (a bad stem, cursor or wait) stop the poller: the token is read only at start.
 The token is never in argv, env, stdout, the log, status, state or the transcript.
@@ -583,7 +583,10 @@ def run_main(argv):
             signal.signal(s, signal.SIG_IGN)
         if feed is not None:
             try:
-                feed.flush()
+                if feed.status == "auth refused" or str(feed.status).startswith("stalled (bad request"):
+                    feed.flush()  # keep the reason it stopped as the last status the pane saw
+                else:
+                    feed.set_status("stopped")  # fleet feed stop, the bound, a signal: one pane note, then done
             except OSError:
                 pass
             feed.say("stopped")

@@ -362,7 +362,8 @@ class WhosaidTest(Base):
         time.sleep(0.8)
         self.assertEqual([r["n"] for r in self.utts(d)], [1, 2, 3, 4])
         self.assertEqual(self.stop(p), 0)
-        self.assertEqual(self.notes(d).count("source: http-feed ok"), 1, self.notes(d))  # restart: no status change
+        # each run ends on one `stopped` note and a restart says `ok` again: never a note per poll
+        self.assertEqual(self.notes(d), ["source: http-feed ok", "source: http-feed stopped"] * 2, self.notes(d))
 
     def test_full_responses_never_duplicate(self):
         s = self.stub(WhosaidStub, ignore_cursor=True)
@@ -563,6 +564,9 @@ class CliTest(Base):
         self.assertIn("OK stopped feed call", stop.stdout)
         self.assertTrue(wait_for(lambda: "dead" in self.fleet("feed", "ls").stdout))
         self.assertIn("stopped", self.log(d))
+        self.assertEqual(self.status(d), "stopped")  # a stop is one last status change the pane sees
+        notes = [r["note"] for r in self.rows(d) if "note" in r and "text" not in r]
+        self.assertEqual(notes[-1], "source: http-feed stopped", notes)
         self.assert_no_token_anywhere([self.log(d)])
 
     def test_refuses_a_token_file_that_others_can_read(self):

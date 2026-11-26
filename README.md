@@ -637,8 +637,8 @@ fleet feed start URL --token-file PATH [--name N] [--protocol whosaid|lines] [--
 - A speaker the transcriber has not named yet (`them`) shows as `unknown` (one note says so); no speaker filter
   matches it, so it stays visible and is routed only with no filter. A name whosaid sets later on an earlier line is
   not rewritten: lines already written keep the speaker they had.
-- Status `ok`, `stalled (3 failed polls)`, `auth refused` or `gone` (the call ended; it then waits for the next
-  session), once per change, never per failed poll: in `$FLEET_STATE/feeds/<name>/status`, the feed's log, and the
+- Status `ok`, `stalled (3 failed polls)`, `auth refused`, `gone` (the call ended; it then waits for the next
+  session) or `stopped` (`fleet feed stop`, the bound or a signal), once per change, never per failed poll: in `$FLEET_STATE/feeds/<name>/status`, the feed's log, and the
   listen pane as a NOTE (`source: http-feed stalled (3 failed polls)`), shown and never routed. A refused token
   (401/403) or a refused request (400) stops the feed; fix it and start it again.
 - Read-only: GET only, redirects are not followed, nothing said on the call is acted on (asks and decisions go to
