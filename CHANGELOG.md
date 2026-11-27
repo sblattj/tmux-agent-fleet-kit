@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.9.0 (2026-11-27)
 
 `tafk` is a second name for `fleet`, and `tafk update` (or `fleet update`) moves the kit to the latest release.
 
