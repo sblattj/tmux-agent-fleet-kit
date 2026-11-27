@@ -17,7 +17,21 @@
       {
         "capability": "shell",
         "match": [
+          "tafk launch*"
+        ],
+        "effect": "deny"
+      },
+      {
+        "capability": "shell",
+        "match": [
           "fleet park*"
+        ],
+        "effect": "deny"
+      },
+      {
+        "capability": "shell",
+        "match": [
+          "tafk park*"
         ],
         "effect": "deny"
       },
@@ -31,7 +45,21 @@
       {
         "capability": "shell",
         "match": [
+          "tafk stop*"
+        ],
+        "effect": "deny"
+      },
+      {
+        "capability": "shell",
+        "match": [
           "fleet reopen*"
+        ],
+        "effect": "deny"
+      },
+      {
+        "capability": "shell",
+        "match": [
+          "tafk reopen*"
         ],
         "effect": "deny"
       }

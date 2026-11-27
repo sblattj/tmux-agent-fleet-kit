@@ -9,9 +9,13 @@
   "permission": {
     "bash": {
       "fleet launch*": "deny",
+      "tafk launch*": "deny",
       "fleet park*": "deny",
+      "tafk park*": "deny",
       "fleet stop*": "deny",
+      "tafk stop*": "deny",
       "fleet reopen*": "deny",
+      "tafk reopen*": "deny",
       "git commit*": "deny",
       "git push*": "deny"
     }

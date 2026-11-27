@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+`tafk` is a second name for `fleet`, and `tafk update` (or `fleet update`) moves the kit to the latest release.
+
+- `bin/tafk` is a symlink to `fleet`, so `tafk <anything>` runs `fleet <anything>` (same dispatch, same help). Every installer (and so `fleet bootstrap`) links `tafk` into `<prefix>/bin` next to `fleet` and `fleet-goal`.
+- `fleet update [--check] [--dry-run]` (`bin/fleet-update`): a git checkout fast-forwards to the highest `vX.Y.Z` tag on `origin` (tag-only fetch, `git merge --ff-only`; a detached HEAD moves to the tag); a copied tree with a `VERSION` file downloads the release tarball and swaps it in, keeping the old tree as `<dir>.prev-vOLD`. Then the bin links that point into the kit are refreshed and `tafk` is added beside `fleet`. Prints `updated: vOLD -> vNEW`, or `already at vX.Y.Z` (exit 0, nothing changed). A dirty tree, a diverged branch or no network: a clear message, exit 1, nothing changed. Prerelease tags don't count, versions compare numerically, and it never downgrades. `--check` reports only; `--dry-run` prints every step and writes nothing. It never runs an installer or touches tmux.
+- `fleet version` prints the kit's version (`git describe`, else the new `VERSION` file).
+- Role deny lists: every deny on `fleet launch`, `fleet park`, `fleet stop` and `fleet reopen` now has a `tafk` twin in the claude, kiro, opencode and agy role files, and the role texts say the twins are off limits too.
+- Tests: `test/test_update.sh` (63 assertions: current, newer, dirty, untracked, diverged, offline, detached, prerelease, numeric order, no downgrade, copied tree with a bad tarball; local bare origin and `file://` fixtures, no network), tafk twin checks with controls in `test/test_roles.sh`, tafk link checks in `test/test_installs.sh` and `test/test_bootstrap.sh`.
+
 LEARN keeps two card stacks: auto (generated) and manual (asked for by the human), and the manual stack comes first.
 
 - Every ledger row and card now has `stack`: `auto` or `manual`. `fleet learn add ... --manual` makes a manual card (never filtered as plumbing: the human asked for it); `fleet learn stack L<a>-L<b> --manual|--auto` moves rows already in the ledger (cards follow in place, cid and schedule kept), and a bare `fleet learn stack` lists the manual stack. LEARN or the human only.

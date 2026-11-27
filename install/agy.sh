@@ -6,7 +6,7 @@
 #   - agents/fleet-<role>.md     roles/<role>.agy.md frontmatter + roles/<role>.md as the system prompt
 #   - skills/<name>/             a copy of each skills/<name>/ (SKILL.md with name/description frontmatter)
 #   - with --trust DIR: DIR added to antigravity-cli/settings.json trustedWorkspaces (lanes also trust per launch)
-#   - symlinks bin/fleet and bin/fleet-goal into <prefix>/bin
+#   - symlinks bin/fleet, bin/fleet-goal and bin/tafk into <prefix>/bin
 # Permissions: nothing global. fleet launch runs each lane with --dangerously-skip-permissions and a per-lane
 # --settings (toolPermission always-proceed, the lane dir trusted, roles/<role>.agy.json deny rules).
 # Flags: --dry-run  --no-desks (skip the closing `fleet desks up --cli agy`)  --prefix DIR (default $HOME/.local)  --trust DIR

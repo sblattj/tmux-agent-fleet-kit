@@ -43,8 +43,8 @@ done
 
 # ---- claude.json: exact deny lists
 want_orch='["Edit","Write","NotebookEdit","Bash(git commit:*)","Bash(git push:*)","AskUserQuestion"]'
-want_desk='["Edit","Write","NotebookEdit","Bash(fleet launch:*)","Bash(fleet park:*)","Bash(fleet stop:*)","Bash(fleet reopen:*)","Bash(git commit:*)","Bash(git push:*)","AskUserQuestion"]'
-want_work='["Bash(fleet launch:*)","Bash(fleet park:*)","Bash(fleet stop:*)","Bash(fleet reopen:*)","AskUserQuestion"]'
+want_desk='["Edit","Write","NotebookEdit","Bash(fleet launch:*)","Bash(tafk launch:*)","Bash(fleet park:*)","Bash(tafk park:*)","Bash(fleet stop:*)","Bash(tafk stop:*)","Bash(fleet reopen:*)","Bash(tafk reopen:*)","Bash(git commit:*)","Bash(git push:*)","AskUserQuestion"]'
+want_work='["Bash(fleet launch:*)","Bash(tafk launch:*)","Bash(fleet park:*)","Bash(tafk park:*)","Bash(fleet stop:*)","Bash(tafk stop:*)","Bash(fleet reopen:*)","Bash(tafk reopen:*)","AskUserQuestion"]'
 for r in $ROLES; do
   case $r in route) w=$want_orch ;; decide|watch|learn) w=$want_desk ;; worker) w=$want_work ;; esac
   t "$r.claude.json parses with only permissions.deny and hooks" jq -e '(keys == ["hooks","permissions"]) and (.permissions|keys == ["deny"])' "$ROOT/roles/$r.claude.json"
@@ -52,6 +52,23 @@ for r in $ROLES; do
   t "$r.claude.json deny list is exact" jq -e --argjson w "$w" '.permissions.deny == $w' "$ROOT/roles/$r.claude.json"
   t "control: $r deny list != a perturbed list" bash -c '! jq -e --argjson w "$1" ".permissions.deny == (\$w + [\"X\"])" "$2" >/dev/null' _ "$w" "$ROOT/roles/$r.claude.json"
 done
+
+# ---- tafk twins (v0.9.0): tafk is fleet under a second name, so every deny on a `fleet <verb>` has the same
+# deny on `tafk <verb>` in all four formats (claude Bash(...), kiro shell match, opencode bash key, agy command(...)).
+twins_ok() { jq -e '[.. | strings | select(test("fleet (launch|park|stop|reopen)"))] as $f
+  | [.. | strings | select(test("tafk (launch|park|stop|reopen)"))] as $t
+  | ([.permission.bash // {} | keys[] | select(test("fleet (launch|park|stop|reopen)"))]) as $fk
+  | ([.permission.bash // {} | keys[] | select(test("tafk (launch|park|stop|reopen)"))]) as $tk
+  | (($f + $fk) | length) > 0 and (($f|map(sub("fleet ";"tafk "))|sort) == ($t|sort)) and (($fk|map(sub("fleet ";"tafk "))|sort) == ($tk|sort))' "$1" >/dev/null; }
+nt=0
+for f in "$ROOT"/roles/*.json; do
+  grep -q 'fleet \(launch\|park\|stop\|reopen\)' "$f" || continue
+  nt=$((nt + 1)); t "$(basename "$f") has a tafk twin for every fleet launch/park/stop/reopen deny" twins_ok "$f"
+done
+t "tafk twin check covered 16 role files (claude, kiro, opencode, agy x decide, watch, learn, worker)" test "$nt" = 16
+t "control: a worker.kiro.json without its tafk park rule fails the twin check" bash -c 'jq '"'"'.permissions.rules|=map(select((.match//[])|index("tafk park*")|not))'"'"' "$1" > "$2/k.json" || exit 1; '"$(declare -f twins_ok)"'; ! twins_ok "$2/k.json"' _ "$ROOT/roles/worker.kiro.json" "${TMPDIR:-/tmp}"
+t "control: an opencode file without its tafk stop key fails the twin check" bash -c 'jq '"'"'del(.permission.bash["tafk stop*"])'"'"' "$1" > "$2/o.json"; '"$(declare -f twins_ok)"'; ! twins_ok "$2/o.json"' _ "$ROOT/roles/worker.opencode.json" "${TMPDIR:-/tmp}"
+t "route and probe role files deny no tafk verb (they deny no fleet verb either)" bash -c '! grep -l "tafk " "$@"' _ "$ROOT"/roles/route.*.json "$ROOT"/roles/probe.*.json
 
 # ---- codex.toml: developer_instructions == md, enabled_tools exact
 for r in $ROLES; do

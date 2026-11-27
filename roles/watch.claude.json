@@ -5,9 +5,13 @@
       "Write",
       "NotebookEdit",
       "Bash(fleet launch:*)",
+      "Bash(tafk launch:*)",
       "Bash(fleet park:*)",
+      "Bash(tafk park:*)",
       "Bash(fleet stop:*)",
+      "Bash(tafk stop:*)",
       "Bash(fleet reopen:*)",
+      "Bash(tafk reopen:*)",
       "Bash(git commit:*)",
       "Bash(git push:*)",
       "AskUserQuestion"

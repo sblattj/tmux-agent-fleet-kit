@@ -245,6 +245,7 @@ t "curl|bash: exits 0 under /bin/bash" test "$rc" = 0
 t "curl|bash: clones the kit to the default dir" test -x "$H/.local/share/tmux-agent-fleet-kit/bin/fleet"
 t "curl|bash: hands over to the clone's bootstrap.sh" has "$out" "$H/.local/share/tmux-agent-fleet-kit"
 t "curl|bash: installs from the clone (bin/fleet symlink points into it)" test "$(readlink "$H/.local/bin/fleet")" = "$H/.local/share/tmux-agent-fleet-kit/bin/fleet"
+t "curl|bash: links tafk too (bin/tafk symlink points into the clone)" test "$(readlink "$H/.local/bin/tafk")" = "$H/.local/share/tmux-agent-fleet-kit/bin/tafk"
 t "curl|bash: no sudo" test ! -s "$TRIP"
 out=$(B /bin/bash -s -- --no-desks < "$ROOT/bootstrap.sh" 2>&1); rc=$?
 t "curl|bash: second run reuses the clone" bash -c '[ "$(grep -c "^git clone" "$1")" = 1 ]' _ "$LOG"

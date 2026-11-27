@@ -5,7 +5,7 @@
 #   - settings/mcp.json            .mcpServers.fleet = python3 <repo>/lib/fleet_mesh.py serve
 #   - agents/fleet-<role>.json     from roles/<role>.kiro.json, prompt = inline text of roles/<role>.md
 #   - settings/cli.json            "chat.disableTrustAllConfirmation": true (lanes always run trust-all)
-#   - symlinks bin/fleet and bin/fleet-goal into <prefix>/bin
+#   - symlinks bin/fleet, bin/fleet-goal and bin/tafk into <prefix>/bin
 # Flags: --dry-run  --no-desks (skip the closing `fleet desks up --cli kiro`)  --prefix DIR (default $HOME/.local)
 # Env: KIRO_HOME (default $HOME/.kiro); FLEET_ROLES_DIR overrides the roles dir.
 # Placeholders come from FLEET_HUMAN / FLEET_DECIDE / FLEET_ROUTE.

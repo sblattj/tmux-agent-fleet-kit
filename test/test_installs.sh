@@ -89,6 +89,7 @@ done
 check "claude: desk.sh copied and executable" test -x "$h/.claude/skills/running-the-decisions-desk/desk.sh"
 check "claude: roster.sh copied and executable" test -x "$h/.claude/skills/retiring-the-fleet-into-handoffs/roster.sh"
 eq "claude: bin/fleet symlink target" "$(readlink "$h/.local/bin/fleet")" "$ROOT/bin/fleet"
+eq "claude: bin/tafk symlink (fleet under a second name)" "$(readlink "$h/.local/bin/tafk")" "$ROOT/bin/tafk"
 eq "claude: bin/fleet-goal symlink target" "$(readlink "$h/.local/bin/fleet-goal")" "$ROOT/bin/fleet-goal"
 check "claude: --mesh ran mcp add with the exact argv" grep -qF "claude mcp add --scope user fleet -- python3 $ROOT/lib/fleet_mesh.py serve" "$STUB_LOG"
 check "claude: --trust wrote hasTrustDialogAccepted" jq -e --arg d "$projreal" '.projects[$d].hasTrustDialogAccepted == true' "$h/.claude.json"
@@ -130,6 +131,7 @@ check "codex: env_vars sits under [mcp_servers.fleet]" bash -c "awk '/^\\[/{s=(\
 eq "codex: trust header once" "$(count "[projects.\"$projreal\"]" "$cfg")" 1
 check "codex: trust_level trusted written" grep -q 'trust_level = "trusted"' "$cfg"
 eq "codex: bin/fleet symlink" "$(readlink "$h/.local/bin/fleet")" "$ROOT/bin/fleet"
+eq "codex: bin/tafk symlink (fleet under a second name)" "$(readlink "$h/.local/bin/tafk")" "$ROOT/bin/tafk"
 before=$(cksum < "$cfg")
 inst "$h" codex.sh --trust "$proj" --prefix "$h/.local" >/dev/null 2>&1; rc=$?
 eq "codex.sh second run exits 0" "$rc" 0
@@ -181,6 +183,7 @@ check "opencode: the worker keeps its bash deny map next to the probe deny" jq -
 eq "opencode: AGENTS.md begin marker once" "$(count 'fleet-rules:begin' "$cdir/AGENTS.md")" 1
 eq "opencode: AGENTS.md end marker once" "$(count 'fleet-rules:end' "$cdir/AGENTS.md")" 1
 eq "opencode: bin/fleet-goal symlink" "$(readlink "$h/.local/bin/fleet-goal")" "$ROOT/bin/fleet-goal"
+eq "opencode: bin/tafk symlink (fleet under a second name)" "$(readlink "$h/.local/bin/tafk")" "$ROOT/bin/tafk"
 before=$(cksum < "$cdir/opencode.json")
 inst "$h" opencode.sh --bypass --prefix "$h/.local" >/dev/null 2>&1; rc=$?
 eq "opencode.sh second run exits 0" "$rc" 0
@@ -436,6 +439,7 @@ check "kiro: agent fleet-probe carries only the fleet + fleet-probe servers" jq 
 check "kiro: agent fleet-probe prompt is the inline text of roles/probe.md" jq -e --rawfile t "$ROOT/roles/probe.md" '.prompt == $t' "$pf"
 check "kiro: control: fleet-worker gets no fleet-probe server" jq -e '(.mcpServers // {}) | has("fleet-probe") | not' "$kh/agents/fleet-worker.json"
 eq "kiro: bin/fleet symlink" "$(readlink "$h/.local/bin/fleet")" "$ROOT/bin/fleet"
+eq "kiro: bin/tafk symlink (fleet under a second name)" "$(readlink "$h/.local/bin/tafk")" "$ROOT/bin/tafk"
 # CONTROL: the deny assertion must fail on an agent whose deny rule was stripped
 jq '.permissions.rules |= map(select((.match // []) | index("fleet park*") | not))' "$kh/agents/fleet-worker.json" > "$tmp/stripped-agent.json"
 if jq -e '[.permissions.rules[] | select(.capability=="shell" and .effect=="deny" and (.match | index("fleet park*")))] | length == 1' "$tmp/stripped-agent.json" >/dev/null 2>&1; then fail "control: kiro deny assertion catches an agent missing the fleet park rule"; else pass "control: kiro deny assertion catches an agent missing the fleet park rule"; fi
@@ -517,6 +521,7 @@ check "agy: worker agent has write tools, decide does not" bash -c 'grep -q writ
 check "agy: skills copied with SKILL.md" test -f "$ah/config/skills/running-the-decisions-desk/SKILL.md"
 check "agy: --trust adds the dir to antigravity-cli/settings.json trustedWorkspaces" jq -e --arg d "$(cd "$h/proj" && pwd -P)" '.trustedWorkspaces | index($d) != null' "$ah/antigravity-cli/settings.json"
 eq "agy: bin/fleet symlink" "$(readlink "$h/.local/bin/fleet")" "$ROOT/bin/fleet"
+eq "agy: bin/tafk symlink (fleet under a second name)" "$(readlink "$h/.local/bin/tafk")" "$ROOT/bin/tafk"
 sumbefore=$(cat "$ah/config/mcp_config.json" "$ah"/config/agents/fleet-*.md "$ah/config/rules/fleet-rules.md" "$ah/antigravity-cli/settings.json" | cksum)
 nadd=$(grep -c '^agy mcp add' "$STUB_LOG")
 out=$(inst "$h" agy.sh --prefix "$h/.local" --trust "$h/proj" 2>&1); rc=$?

@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+# fleet-update: `fleet update` / `tafk update` [--check] [--dry-run]: move this kit to the latest release tag.
+#
+#   git checkout (ROOT is a git work tree root): the current version is the nearest vX.Y.Z tag at HEAD
+#     (VERSION as a fallback); the latest is the highest vX.Y.Z tag on the `origin` remote (git ls-remote).
+#     Newer: fetch that one tag, then fast-forward the current branch to it (git merge --ff-only; a detached
+#     HEAD moves to the tag). Refused, nothing changed, exit 1: a dirty tree (git status --porcelain not
+#     empty), HEAD not an ancestor of the tag (diverged), origin unreachable (offline).
+#   copied tree (no .git): the current version is ROOT/VERSION; the latest is tag_name of the GitHub
+#     releases/latest API. Newer: download the tag's tarball next to ROOT, check its VERSION, then swap it in
+#     with two renames; the old tree stays beside it as ROOT.prev-vOLD (rolled back if the swap fails).
+#   Both: then the bin symlinks in $FLEET_PREFIX/bin (default ~/.local/bin) that already point into ROOT
+#     are refreshed, and `tafk` is added next to a `fleet` link that points here. Prints "updated: vOLD -> vNEW".
+#   Already current (latest <= current, never a downgrade): "already at vX.Y.Z", exit 0, nothing changed.
+#   --check: report only ("update available: vOLD -> vNEW" or "already at"), exit 0; writes nothing.
+#   --dry-run: the refusals plus every step it would run; writes nothing (git ls-remote, never fetch).
+# env: FLEET_UPDATE_TIMEOUT (20 s per network call)  FLEET_UPDATE_REPO (sblattj/tmux-agent-fleet-kit)
+#      FLEET_UPDATE_API (https://api.github.com/repos/$FLEET_UPDATE_REPO)
+#      FLEET_UPDATE_TARBALLS (https://github.com/$FLEET_UPDATE_REPO/archive/refs/tags)  FLEET_PREFIX (~/.local)
+# ---
+set -euo pipefail
+
+# The whole body is a function called on the last line: bash has parsed it before a tree swap moves this file.
+update_main() {
+  local check=0 dry=0 a
+  for a in "$@"; do
+    case $a in
+      --check) check=1 ;;
+      --dry-run) dry=1 ;;
+      -h|--help|help) sed -n '2,/^# ---$/{/^# ---$/d;s/^# \{0,1\}//;p;}' "$0"; return 0 ;;
+      *) echo "fleet update: unknown argument $a (try --check or --dry-run)" >&2; return 2 ;;
+    esac
+  done
+  local self=$0 l
+  while [ -L "$self" ]; do l=$(readlink "$self"); case $l in /*) self=$l ;; *) self=$(dirname "$self")/$l ;; esac; done
+  ROOT=$(cd "$(dirname "$self")/.." && pwd -P)
+  T=${FLEET_UPDATE_TIMEOUT:-20}
+  REPO=${FLEET_UPDATE_REPO:-sblattj/tmux-agent-fleet-kit}
+  PREFIX_BIN=${FLEET_PREFIX:-$HOME/.local}/bin
+  export GIT_TERMINAL_PROMPT=0
+  local top
+  top=$(git -C "$ROOT" rev-parse --show-toplevel 2>/dev/null || true)
+  if [ -n "$top" ] && [ "$(cd "$top" && pwd -P)" = "$ROOT" ]; then
+    update_git "$check" "$dry"
+  else
+    update_tree "$check" "$dry"
+  fi
+}
+
+refuse() { echo "fleet update: $*; nothing changed" >&2; exit 1; }
+bounded() { perl -e 'alarm shift; exec @ARGV or exit 127' "$T" "$@"; }  # macOS has no timeout(1)
+
+# ver_gt A B: A > B for X.Y.Z (a leading v ignored).
+ver_gt() {
+  local a=${1#v} b=${2#v} i x y
+  local -a A B
+  IFS=. read -r -a A <<< "$a"; IFS=. read -r -a B <<< "$b"
+  for i in 0 1 2; do
+    x=${A[$i]:-0}; y=${B[$i]:-0}
+    [ "$x" -gt "$y" ] && return 0
+    [ "$x" -lt "$y" ] && return 1
+  done
+  return 1
+}
+
+semver_tag() { [[ $1 =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; }
+
+# Refresh links in PREFIX_BIN that point into ROOT/bin; add tafk beside a fleet link that points here.
+relink() {
+  local dry=$1 n link t found=0
+  for n in fleet fleet-goal tafk; do
+    link=$PREFIX_BIN/$n
+    if [ -L "$link" ]; then
+      t=$(readlink "$link")
+      case $t in
+        "$ROOT"/bin/*) found=1
+          if [ "$t" = "$ROOT/bin/$n" ]; then echo "unchanged: symlink $link"
+          elif [ "$dry" = 1 ]; then echo "would relink: $link -> $ROOT/bin/$n"
+          else ln -sfn "$ROOT/bin/$n" "$link"; echo "relinked: $link -> $ROOT/bin/$n"; fi ;;
+        *) echo "left alone: $link -> $t (not this kit)" ;;
+      esac
+    elif [ -e "$link" ]; then
+      echo "left alone: $link (not a symlink)"
+    elif [ "$n" = tafk ] && [ -L "$PREFIX_BIN/fleet" ] && [ "$(readlink "$PREFIX_BIN/fleet")" = "$ROOT/bin/fleet" ]; then
+      if [ "$dry" = 1 ]; then echo "would link: $link -> $ROOT/bin/tafk"
+      else ln -s "$ROOT/bin/tafk" "$link"; echo "linked: $link -> $ROOT/bin/tafk"; fi
+    fi
+  done
+  [ "$found" = 1 ] || echo "note: no symlink in $PREFIX_BIN points into $ROOT/bin; nothing relinked (run an installer to add them)"
+}
+
+update_git() {
+  local check=$1 dry=$2 cur latest sha out branch
+  cur=$(git -C "$ROOT" describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' --exclude '*-*' 2>/dev/null || true)
+  [ -n "$cur" ] || { [ -f "$ROOT/VERSION" ] && cur=v$(tr -d ' \n' < "$ROOT/VERSION"); }
+  [ -n "$cur" ] || refuse "can't read the current version of $ROOT (no vX.Y.Z tag reachable from HEAD, no VERSION file)"
+  git -C "$ROOT" remote get-url origin >/dev/null 2>&1 || refuse "$ROOT has no origin remote to update from"
+  if ! out=$(bounded git -C "$ROOT" ls-remote --tags --refs origin 'v*' 2>&1); then
+    refuse "can't reach origin ($(git -C "$ROOT" remote get-url origin)): offline? $(printf '%s' "$out" | tail -1)"
+  fi
+  latest=$(printf '%s\n' "$out" | awk '{sub("refs/tags/","",$2); print $2}' | { grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true; } \
+    | awk -F'[v.]' '{printf "%d %d %d %s\n",$2,$3,$4,$0}' | sort -n -k1,1 -k2,2 -k3,3 | tail -1 | awk '{print $4}')
+  [ -n "$latest" ] || refuse "origin has no vX.Y.Z release tag"
+  sha=$(printf '%s\n' "$out" | awk -v t="refs/tags/$latest" '$2==t {print $1}')
+  if ! ver_gt "$latest" "$cur"; then echo "already at $cur (latest release $latest)"; return 0; fi
+  if [ "$check" = 1 ]; then echo "update available: $cur -> $latest (git checkout $ROOT)"; return 0; fi
+  [ -z "$(git -C "$ROOT" status --porcelain 2>/dev/null)" ] \
+    || refuse "$ROOT has uncommitted or untracked changes (git status --porcelain); commit or move them, then rerun"
+  branch=$(git -C "$ROOT" symbolic-ref -q --short HEAD || true)
+  # ls-remote gives the tag object; a local copy (already fetched) lets the diverged check run before any write.
+  if git -C "$ROOT" cat-file -e "$latest^{commit}" 2>/dev/null; then
+    git -C "$ROOT" merge-base --is-ancestor HEAD "$latest^{commit}" \
+      || refuse "${branch:-HEAD} has diverged from $latest (HEAD is not an ancestor of the tag); fast-forward only, so rebase or reset it yourself"
+  fi
+  if [ "$dry" = 1 ]; then
+    echo "would fetch: tag $latest from origin ($sha)"
+    echo "would fast-forward: ${branch:-detached HEAD} $(git -C "$ROOT" rev-parse --short HEAD) -> $latest (refused if HEAD is not an ancestor)"
+    relink 1
+    echo "dry run: $cur -> $latest, nothing changed"
+    return 0
+  fi
+  if ! out=$(bounded git -C "$ROOT" fetch -q --no-tags origin "refs/tags/$latest:refs/tags/$latest" 2>&1); then
+    refuse "fetch of $latest from origin failed: offline? $(printf '%s' "$out" | tail -1)"
+  fi
+  git -C "$ROOT" merge-base --is-ancestor HEAD "$latest^{commit}" \
+    || refuse "${branch:-HEAD} has diverged from $latest (HEAD is not an ancestor of the tag); fast-forward only, so rebase or reset it yourself"
+  if [ -n "$branch" ]; then
+    git -C "$ROOT" merge -q --ff-only "$latest^{commit}" || refuse "git merge --ff-only $latest failed"
+  else
+    git -C "$ROOT" -c advice.detachedHead=false checkout -q --detach "$latest^{commit}" || refuse "git checkout --detach $latest failed"
+  fi
+  relink 0
+  echo "updated: $cur -> $latest ($ROOT)"
+}
+
+update_tree() {
+  local check=$1 dry=$2 cur latest json parent stage dir newv prev api tarball
+  [ -f "$ROOT/VERSION" ] || refuse "$ROOT is not a git checkout and has no VERSION file; reinstall: git clone https://github.com/$REPO, then run its install/<cli>.sh"
+  cur=v$(tr -d ' \n' < "$ROOT/VERSION")
+  semver_tag "$cur" || refuse "$ROOT/VERSION holds '$cur', not X.Y.Z"
+  api=${FLEET_UPDATE_API:-https://api.github.com/repos/$REPO}
+  if ! json=$(curl -fsSL --max-time "$T" -H 'Accept: application/vnd.github+json' "$api/releases/latest" 2>&1); then
+    refuse "can't read the latest release from $api: offline? $(printf '%s' "$json" | tail -1)"
+  fi
+  latest=$(printf '%s' "$json" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("tag_name",""))' 2>/dev/null || true)
+  semver_tag "$latest" || refuse "the latest release answer from $api has no vX.Y.Z tag_name"
+  if ! ver_gt "$latest" "$cur"; then echo "already at $cur (latest release $latest)"; return 0; fi
+  if [ "$check" = 1 ]; then echo "update available: $cur -> $latest (copied tree $ROOT)"; return 0; fi
+  parent=$(dirname "$ROOT")
+  [ -w "$parent" ] || refuse "$parent is not writable, so $ROOT can't be swapped"
+  prev=$ROOT.prev-$cur
+  [ ! -e "$prev" ] || prev=$ROOT.prev-$cur.$$
+  tarball=${FLEET_UPDATE_TARBALLS:-https://github.com/$REPO/archive/refs/tags}/$latest.tar.gz
+  if [ "$dry" = 1 ]; then
+    echo "would download: $tarball"
+    echo "would swap: $ROOT -> $prev (kept), new $latest tree -> $ROOT"
+    relink 1
+    echo "dry run: $cur -> $latest, nothing changed"
+    return 0
+  fi
+  stage=$(mktemp -d "$parent/.fleet-update.XXXXXX")
+  STAGE=$stage; trap 'rm -rf "${STAGE:-}"' EXIT   # a global: the trap runs after this function's locals are gone
+  curl -fsSL --max-time "$((T * 6))" -o "$stage/kit.tar.gz" "$tarball" 2>"$stage/err" \
+    || refuse "download of $tarball failed: offline? $(tail -1 "$stage/err")"
+  mkdir "$stage/x"
+  tar -xzf "$stage/kit.tar.gz" -C "$stage/x" 2>"$stage/err" || refuse "the $latest tarball did not unpack: $(tail -1 "$stage/err")"
+  dir=$(find "$stage/x" -mindepth 1 -maxdepth 1 -type d | head -1)
+  [ -n "$dir" ] && [ -f "$dir/bin/fleet" ] && [ -f "$dir/VERSION" ] || refuse "the $latest tarball has no bin/fleet or VERSION"
+  newv=v$(tr -d ' \n' < "$dir/VERSION")
+  [ "$newv" = "$latest" ] || refuse "the $latest tarball's VERSION says $newv"
+  mv "$ROOT" "$prev" || refuse "can't move $ROOT aside"
+  if ! mv "$dir" "$ROOT"; then mv "$prev" "$ROOT"; refuse "can't move the new tree into $ROOT (rolled back)"; fi
+  relink 0
+  echo "updated: $cur -> $latest ($ROOT; the old tree is kept at $prev)"
+}
+
+update_main "$@"

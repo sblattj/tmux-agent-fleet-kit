@@ -15,6 +15,9 @@ and `$FLEET_ROUTE` (default `ROUTE`). There is no alias layer: a message goes to
 | FLEET_TMUX_SOCKET | empty | if set, every tmux call gets `-L $FLEET_TMUX_SOCKET` (tests use a private server) |
 | FLEET_STATE | `${XDG_STATE_HOME:-$HOME/.local/state}/fleet` | roster, inboxes, launch scripts |
 | FLEET_STATUS_LABEL | empty | tmux format for the fleet session's `status-left`; overrides `$FLEET_STATE/status-label` (issue #44); empty means use the file, and with no file the kit sets no status option |
+| FLEET_UPDATE_TIMEOUT | `20` | seconds per network call of `fleet update` (git ls-remote / fetch, curl) |
+| FLEET_UPDATE_REPO | `sblattj/tmux-agent-fleet-kit` | the GitHub repo a copied tree updates from |
+| FLEET_UPDATE_API / FLEET_UPDATE_TARBALLS | `https://api.github.com/repos/$FLEET_UPDATE_REPO` / `https://github.com/$FLEET_UPDATE_REPO/archive/refs/tags` | a copied tree's release lookup (`$API/releases/latest`, `tag_name`) and tarball base (`$TARBALLS/vX.Y.Z.tar.gz`); tests use `file://` |
 | FLEET_DIR | `$PWD` | working dir for a launched lane (`--dir` overrides) |
 | FLEET_HUMAN | `the human` | who answers DECIDE calls |
 | FLEET_DECIDE / FLEET_ROUTE | `DECIDE` / `ROUTE` | desk lane names; a send to the retired `DECISIONS` / `ORCHESTRATOR` goes to `DECIDE` / `ROUTE` when the roster has the new desk and no lane under the old name |
@@ -398,6 +401,20 @@ fleet-goal check <goal.json>     first line `OK` or `FAIL <path>: <why>`; exit 0
 ```
 `check` accepts `goal` as a string or an object with `title`/`objective`, phases with only an `id`, and the open-calls list as `openCalls` or the legacy `openForHuman` (one per file).
 Desk helper `skills/running-the-decisions-desk/desk.sh` uses `fleet-goal check` and field `openCalls`; on a file that already has `openForHuman` it reads and writes that key instead (never migrated in place, so readers that know only the legacy name keep working). `lib/fleet_decisions.py` reads the same way.
+
+## bin/fleet-update (`fleet update`, `tafk update`, v0.9.0)
+
+```
+fleet update [--check] [--dry-run]   tafk update ... is the same (bin/tafk -> fleet)
+fleet version                         git describe --tags, else v$(cat VERSION), else `unknown`
+```
+- Install type: ROOT (bin/..) is a git work tree root -> git; otherwise a copied tree (needs `VERSION`, `X.Y.Z`).
+- Versions: only `vX.Y.Z` tags count (no prerelease suffix), compared numerically per field; latest <= current -> `already at vCUR (latest release vLATEST)`, exit 0, no writes.
+- git: current = `git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' --exclude '*-*'` (VERSION fallback); latest = highest from `git ls-remote --tags --refs origin 'v*'`. Update = fetch `refs/tags/vX` only, `git merge --ff-only` on a branch, `checkout --detach` on a detached HEAD.
+- copied tree: latest = `tag_name` of `$FLEET_UPDATE_API/releases/latest`; update = tarball into `<parent>/.fleet-update.XXXXXX`, its `VERSION` must equal the tag, then `mv ROOT ROOT.prev-vCUR` and `mv new ROOT` (rolled back on failure).
+- Output: `update available: vA -> vB (...)` (--check), `would ...` lines and `dry run: vA -> vB, nothing changed` (--dry-run), `updated: vA -> vB (...)`. Link lines: `unchanged:`, `relinked:`, `linked:`, `would link:`, `would relink:`, `left alone:`, `note: no symlink ...`.
+- Refusals print `fleet update: <why>; nothing changed` on stderr and exit 1, before any write to the tree or branch: dirty (`git status --porcelain` non-empty), diverged (HEAD not an ancestor of the tag; checked before the fetch when the tag is already local, else right after the tag-only fetch), offline (ls-remote, fetch, API or tarball download failed or timed out), bad tarball. Bad arguments exit 2.
+- Links: in `${FLEET_PREFIX:-$HOME/.local}/bin`, names fleet, fleet-goal, tafk: a symlink pointing into `ROOT/bin/` is refreshed; a missing `tafk` is created when `fleet` points at `ROOT/bin/fleet`; anything else is left alone. Never runs an installer, `desks up` or tmux.
 
 ## bin/fleet-remote (`fleet remote ...`, issue #22)
 

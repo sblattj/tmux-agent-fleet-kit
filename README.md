@@ -21,7 +21,8 @@ The desks are the default (issue #9): every installer ends with `fleet desks up 
 
 **Migrating from pre-kit desks.** A fleet whose routing and decision desks are older sessions (ORCHESTRATOR, DECISIONS, LISTENER) moves over without two desks answering at once: each old desk writes a handoff (`fleet handoff ORCHESTRATOR`, or its own handoff file), then is stopped (`fleet stop NAME`); then `fleet desks up --handoff DIR` starts each new desk on its predecessor's file, `DIR/<DESK>.md` or the old name's (`ORCHESTRATOR.md` for ROUTE, `DECISIONS.md` for DECIDE, `LISTENER.md` for WATCH). `fleet handoff` writes to `$FLEET_STATE/handoff`, so `--handoff "$FLEET_STATE/handoff"` picks those up. It refuses while an old desk is still live in the roster.
 
-- `bin/fleet` launches and lists lanes (`fleet launch`, `fleet ls`, `fleet attach`, `fleet layout`, `fleet stop`).
+- `bin/fleet` launches and lists lanes (`fleet launch`, `fleet ls`, `fleet attach`, `fleet layout`, `fleet stop`). `bin/tafk` is the same command under a second name (a symlink to `fleet`), so `tafk <anything>` runs `fleet <anything>`.
+- `bin/fleet-update` moves the kit to the latest release (`fleet update`, `tafk update`).
 - `bin/fleet-goal` creates, validates and turns a living goal file into a `/goal` condition.
 - `lib/fleet_mesh.py` is a stdlib-only stdio MCP server (`peer_list`, `peer_send`, `peer_inbox`, `decision_open`, `decision_list`, `decision_answer`) for CLIs without native messaging.
 - `rules/fleet-rules.md` is the operating rules block the installers put into each CLI's global instructions file.
@@ -29,7 +30,7 @@ The desks are the default (issue #9): every installer ends with `fleet desks up 
 
 ## Quick start
 
-Common first steps: clone the repo, then run the installer for your CLI. Every installer is idempotent, retires the v0.1.x role names (desk, orchestrator, listener) on upgrade, takes `--dry-run` (prints every change, writes nothing), `--prefix DIR` (default `$HOME/.local`; symlinks `bin/fleet` and `bin/fleet-goal` into `DIR/bin`, so put that on PATH) and `--trust DIR` where the CLI needs it. Placeholders in the rules come from `FLEET_HUMAN`, `FLEET_DECIDE` (default `DECIDE`) and `FLEET_ROUTE` (default `ROUTE`).
+Common first steps: clone the repo, then run the installer for your CLI. Every installer is idempotent, retires the v0.1.x role names (desk, orchestrator, listener) on upgrade, takes `--dry-run` (prints every change, writes nothing), `--prefix DIR` (default `$HOME/.local`; symlinks `bin/fleet`, `bin/fleet-goal` and `bin/tafk` into `DIR/bin`, so put that on PATH) and `--trust DIR` where the CLI needs it. Placeholders in the rules come from `FLEET_HUMAN`, `FLEET_DECIDE` (default `DECIDE`) and `FLEET_ROUTE` (default `ROUTE`).
 
 ### Claude Code
 ```bash
@@ -70,6 +71,21 @@ fleet launch --cli agy lane-e goal /tmp/lane-e.cond.txt
 ```
 The installer writes `config/rules/fleet-rules.md` (`trigger: always_on`), `config/mcp_config.json` (`mcpServers.fleet` via `agy mcp add`, jq when agy is not on PATH or `FLEET_AGY_HOME` is not `$HOME/.gemini`), `config/agents/fleet-<role>.md` and `config/skills/<name>/`; `--trust DIR` adds DIR to `antigravity-cli/settings.json` `trustedWorkspaces`. Nothing global turns permissions off: each lane gets `--dangerously-skip-permissions` plus a per-lane `--settings` file (`$FLEET_STATE/launch/<name>.agy-settings.json`: tool permission always-proceed, the lane dir trusted, the role's deny rules). agy always reads `$HOME/.gemini`; `FLEET_AGY_HOME` only tells the kit where that is. Sign in and finish agy's first-run screens once by hand before launching lanes (agy records that in `antigravity-cli/cache/onboarding.json`): the launcher fails loud on a trust dialog, the onboarding screens or a sign-in wait, and fleet-mesh never types a wake into an agy pane showing one of them, because Enter there would answer for you (the Terms of Service screen has a data-sharing opt-in pre-checked).
 
+### Updating (`tafk update`)
+
+```bash
+tafk update --check                               # report only: "update available: v0.8.1 -> v0.9.0" or "already at v0.9.0"
+tafk update --dry-run                             # the refusals plus every step it would run; writes nothing
+tafk update                                       # move to the latest release, then refresh the bin links; prints "updated: vOLD -> vNEW"
+```
+
+`fleet update` is the same command. It finds the latest release tag (the highest `vX.Y.Z`; prerelease tags like `v1.0.0-rc.1` don't count) and never moves backwards: a kit already at or past it prints `already at vX.Y.Z`, exits 0 and changes nothing.
+
+- **A git checkout** (the clone the Quick start makes): the current version is the nearest `vX.Y.Z` tag at HEAD, the latest is the highest one on `origin` (`git ls-remote`, no GitHub login needed). It fetches that tag and fast-forwards the current branch to it (`git merge --ff-only`; a detached HEAD moves to the tag). It refuses, exits 1 and changes nothing when the tree is dirty (anything in `git status --porcelain`, untracked files too), when HEAD isn't an ancestor of the tag (diverged: rebase or reset it yourself), or when `origin` can't be reached.
+- **A copied tree** (no `.git`, for example an unpacked release tarball): the current version is its `VERSION` file, the latest is the GitHub releases API's `tag_name`. It downloads that tag's tarball next to the tree, checks the `VERSION` inside, then swaps it in with two renames and keeps the old tree beside it as `<dir>.prev-vOLD` (the swap rolls back if the second rename fails). Offline or a bad tarball: exit 1, nothing changed. A tree with neither `.git` nor `VERSION` can't tell its version, so reinstall it: clone the repo and run its `install/<cli>.sh`.
+- **Links:** afterwards the symlinks in `${FLEET_PREFIX:-~/.local}/bin` that already point into this kit are refreshed, and `tafk` is added beside a `fleet` link that points here. Links that point anywhere else are left alone. It never reruns an installer and never touches tmux, so live desks and lanes keep running; they pick up the new code on their next `fleet` call.
+- Every network call is bounded by `FLEET_UPDATE_TIMEOUT` (default 20 seconds). `fleet version` prints the kit's version (`git describe`, else `VERSION`).
+
 Try anything first with `fleet launch --dry-run ...` (prints the window script, first prompt and tmux command, touches nothing).
 
 ## Roles
@@ -98,7 +114,7 @@ Tags: **PROVEN** = run locally; **DOC** = vendor docs; **UNVERIFIED** = not prov
 | Install step | none (passed per launch) | `install/codex.sh` | `install/opencode.sh` | `install/kiro.sh` | `install/agy.sh` |
 | Enforcement | DOC "Deny rules block in every mode, including bypassPermissions ... Allow rules have no effect in bypassPermissions", so roles use `permissions.deny` only | PROVEN `-p fleet-worker` layers the profile's `developer_instructions`: asked to run `fleet park NOLANE`, the lane declined ("ORCHESTRATOR owns fleet parking") while the same prompt without `-p` ran it; `enabled_tools` behaviour is UNVERIFIED; the shell cannot be limited in bypass mode, so a codex role is guidance plus the MCP tool list, not a hard fence | PROVEN `opencode debug config` resolves the installed `fleet-worker` agent (prompt loaded from `{file:...}`, bash deny map present); with a neutral prompt and the same permission block, OpenCode logged `pattern="fleet park NOLANE" ... action=deny` and blocked the call even with global `permission: "allow"`, while `echo` ran; `tools` behaviour is UNVERIFIED | PROVEN V3 `permissions.rules` (capability `shell`, effect `deny`): a deny on `fleet park*` is enforced under `--trust-all-tools`, also inside `/goal` workflows and in `cd /tmp && fleet park X` chains; NOT caught: `sh -c "fleet park X"` ran. PROVEN the installed `fleet-worker` lane declined `fleet park NOLANE` from its role text. DOC deny rules in any scope still apply under trust-all. A `file://` prompt path is rejected at runtime and Kiro silently falls back to the default agent (dropping the denies), so `install/kiro.sh` inlines `roles/<role>.md` as the prompt (PROVEN). So a Kiro role is deny rules for direct commands plus role text, not a hard fence | PROVEN a `permissions.deny` `command(fleet stop)` rule in the `--settings` file blocked `fleet stop nothing` under `--dangerously-skip-permissions` (agy logs the loaded deny list at start); worker and decide/watch/learn deny `command(fleet launch)`, `command(fleet park)`, `command(fleet stop)`, `command(fleet reopen)`, route and decide/watch/learn deny `write_file(*)`, `command(git commit)`, `command(git push)` and get no write tools in their agent file. UNVERIFIED: whether the `write_file(*)` deny also covers edit tools and artifacts, and `sh -c` wrappers. So an agy role is deny rules plus role text, not a hard fence |
 
-The launcher warns once and launches without the role when the Codex profile, OpenCode agent, Kiro agent or agy agent is not installed (agy deny rules still apply then, they come from the per-lane settings). The `fleet` role guard is an accident guard, not a security boundary: it trusts `FLEET_ROLE`, which any shell can unset. The per-CLI deny lists (Claude, OpenCode, Kiro, agy) add a second layer; Codex has only the role text, and Kiro's deny misses `sh -c` wrappers.
+The launcher warns once and launches without the role when the Codex profile, OpenCode agent, Kiro agent or agy agent is not installed (agy deny rules still apply then, they come from the per-lane settings). `tafk` is `fleet` under a second name, so every per-CLI deny on `fleet launch`, `fleet park`, `fleet stop` and `fleet reopen` has the same deny on `tafk launch`, `tafk park`, `tafk stop` and `tafk reopen` (`test/test_roles.sh` checks the twins in all four formats). The `fleet` role guard is an accident guard, not a security boundary: it trusts `FLEET_ROLE`, which any shell can unset. The per-CLI deny lists (Claude, OpenCode, Kiro, agy) add a second layer; Codex has only the role text, and Kiro's deny misses `sh -c` wrappers.
 
 ### LEARN: the ledger and the quiz
 
@@ -486,6 +502,7 @@ FLEET_PROBE_ACH=1 test/test_probe_ach.sh                  # the same bar through
 bash test/test_probe_opencode_tools.sh                     # OpenCode offers the fleet-probe verbs to fleet-probe only (FLEET_PROBE_OC_LIVE=1: live)
 bash test/test_goal.sh        # fleet-goal and the desk helper (incl. decisions log), with a broken-file control
 bash test/test_installs.sh    # installers against a throwaway HOME with stubbed CLIs
+bash test/test_update.sh      # fleet update / tafk update: current, newer, dirty, diverged, offline, detached, copied tree (local bare origin, file:// release fixtures)
 bash test/test_lifecycle.sh   # tick, park, reopen, handoff, cleanup (incl. side runs killed on park/stop, ORPHAN-SIDE) against stub CLIs and fixture transcripts
 bash test/test_fleet.sh       # fleet launch (dry run + stub CLIs on a private tmux socket); run with FLEET_* unset
 bash test/test_roles.sh       # role files and launch wiring; run with FLEET_* unset

@@ -7,7 +7,7 @@
 #   - replaces or appends the fleet rules block in ~/.config/opencode/AGENTS.md
 #   - merges roles/<role>.opencode.json into .agent["fleet-<role>"] of opencode.json (the
 #     "{file:./roles/<role>.md}" prompt path is rewritten to the absolute repo path; FLEET_ROLES_DIR overrides)
-#   - symlinks bin/fleet and bin/fleet-goal into <prefix>/bin
+#   - symlinks bin/fleet, bin/fleet-goal and bin/tafk into <prefix>/bin
 # Flags: --dry-run  --no-desks (skip the closing `fleet desks up --cli opencode`)  --prefix DIR (default $HOME/.local)  --bypass
 #   --bypass  set "permission": "allow" in opencode.json (lanes run unattended; off by default)
 # Env: FLEET_OC_GOAL_PLUGIN_URL (default https://github.com/sblattj/opencode-goal-pro-max-complete-plugin)

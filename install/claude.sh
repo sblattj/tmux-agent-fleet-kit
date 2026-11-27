@@ -4,7 +4,7 @@
 #   - replaces or appends the fleet rules block in ~/.claude/CLAUDE.md (between the fleet-rules markers)
 #   - installs no role files: roles are passed per launch (--settings and --append-system-prompt-file
 #     point at roles/<role>.claude.json and roles/<role>.md in this repo)
-#   - symlinks bin/fleet and bin/fleet-goal into <prefix>/bin
+#   - symlinks bin/fleet, bin/fleet-goal and bin/tafk into <prefix>/bin
 # Flags: --dry-run  --no-desks (skip the closing `fleet desks up --cli claude`)  --prefix DIR (default $HOME/.local)  --mesh  --trust DIR  --trust-only
 #   --mesh   also register the fleet-mesh MCP server (needed for mixed fleets: Claude lanes reaching Codex/OpenCode)
 #   --trust  mark DIR as trusted in ~/.claude.json (/goal needs a trusted workspace)

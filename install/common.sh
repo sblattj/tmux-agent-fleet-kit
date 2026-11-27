@@ -126,10 +126,10 @@ fc_copy_skills() {
   done
 }
 
-# Symlink bin/fleet and bin/fleet-goal into $FC_PREFIX/bin.
+# Symlink bin/fleet, bin/fleet-goal and bin/tafk (fleet under a second name) into $FC_PREFIX/bin.
 fc_link_bins() {
   local b link target
-  for b in fleet fleet-goal; do
+  for b in fleet fleet-goal tafk; do
     link=$FC_PREFIX/bin/$b; target=$FC_REPO/bin/$b
     if [ -L "$link" ] && [ "$(readlink "$link")" = "$target" ]; then
       fc_say "unchanged: symlink $link"
