@@ -414,7 +414,7 @@ fleet version                         git describe --tags, else v$(cat VERSION),
 - copied tree: latest = `tag_name` of `$FLEET_UPDATE_API/releases/latest`; update = tarball into `<parent>/.fleet-update.XXXXXX`, its `VERSION` must equal the tag, then `mv ROOT ROOT.prev-vCUR` and `mv new ROOT` (rolled back on failure).
 - Output: `update available: vA -> vB (...)` (--check), `would ...` lines and `dry run: vA -> vB, nothing changed` (--dry-run), `updated: vA -> vB (...)`. Link lines: `unchanged:`, `relinked:`, `linked:`, `would link:`, `would relink:`, `left alone:`, `note: no symlink ...`.
 - Refusals print `fleet update: <why>; nothing changed` on stderr and exit 1, before any write to the tree or branch: dirty (`git status --porcelain` non-empty), diverged (HEAD not an ancestor of the tag; checked before the fetch when the tag is already local, else right after the tag-only fetch), offline (ls-remote, fetch, API or tarball download failed or timed out), bad tarball. Bad arguments exit 2.
-- Links: in `${FLEET_PREFIX:-$HOME/.local}/bin`, names fleet, fleet-goal, tafk: a symlink pointing into `ROOT/bin/` is refreshed; a missing `tafk` is created when `fleet` points at `ROOT/bin/fleet`; anything else is left alone. Never runs an installer, `desks up` or tmux.
+- Links: in `${FLEET_PREFIX:-$HOME/.local}/bin`, names fleet, fleet-goal, tafk: a symlink pointing into `ROOT/bin/` (its target's dir resolved with `pwd -P`, relative targets from the link's dir, so `/tmp/...` matches `/private/tmp/...`) is refreshed; a missing `tafk` is created when `fleet` points at `ROOT/bin/fleet`; anything else is left alone. Never runs an installer, `desks up` or tmux.
 
 ## bin/fleet-remote (`fleet remote ...`, issue #22)
 

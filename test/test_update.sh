@@ -31,7 +31,10 @@ g "$src" push -q origin main v0.8.1
 inst=$tmp/inst; git clone -q "$tmp/origin.git" "$inst"          # the install knows only v0.8.1
 printf '0.9.0\n' > "$src/VERSION"; g "$src" commit -q -am c2; g "$src" tag -a v0.9.0 -m v0.9.0
 g "$src" push -q origin main v0.9.0
-mkdir -p "$PFX/bin"; ln -s "$inst/bin/fleet" "$PFX/bin/fleet"; ln -s "$inst/bin/fleet-goal" "$PFX/bin/fleet-goal"
+# The links go through a symlinked dir ($tmp/alias -> $tmp, like /tmp -> /private/tmp on macOS), and
+# fleet-goal's is relative: they still point into the kit, though they don't spell ROOT's physical path.
+ln -s "$tmp" "$tmp/alias"
+mkdir -p "$PFX/bin"; ln -s "$tmp/alias/inst/bin/fleet" "$PFX/bin/fleet"; ln -s ../../alias/inst/bin/fleet-goal "$PFX/bin/fleet-goal"
 ln -s /usr/bin/true "$PFX/bin/fleet-foreign"
 F=$PFX/bin/fleet
 state() { { g "$1" rev-parse HEAD; g "$1" symbolic-ref -q HEAD; g "$1" for-each-ref; g "$1" status --porcelain
@@ -106,7 +109,8 @@ eq "newer: HEAD is the v0.9.0 commit" "$(g "$inst" rev-parse HEAD)" "$(g "$src" 
 eq "newer: still on branch main" "$(g "$inst" symbolic-ref --short HEAD)" main
 eq "newer: VERSION 0.9.0" "$(cat "$inst/VERSION")" 0.9.0
 eq "newer: tafk linked beside fleet" "$(readlink "$PFX/bin/tafk")" "$inst/bin/tafk"
-eq "newer: fleet link unchanged" "$(readlink "$PFX/bin/fleet")" "$inst/bin/fleet"
+eq "newer: fleet link unchanged (through the alias dir)" "$(readlink "$PFX/bin/fleet")" "$tmp/alias/inst/bin/fleet"
+t "newer: the alias-dir and relative links count as this kit's" bash -c 'has() { case $1 in *"$2"*) return 0;; esac; return 1; }; has "$1" "unchanged: symlink $2/bin/fleet" && has "$1" "unchanged: symlink $2/bin/fleet-goal" && ! has "$1" "not this kit"' _ "$out" "$PFX"
 eq "newer: a link that is not this kit's is left alone" "$(readlink "$PFX/bin/fleet-foreign")" /usr/bin/true
 eq "newer: tafk version through the new link" "$("$PFX/bin/tafk" version 2>&1)" v0.9.0
 

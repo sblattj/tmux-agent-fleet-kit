@@ -65,13 +65,23 @@ ver_gt() {
 
 semver_tag() { [[ $1 =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; }
 
+# A link's target with its directory resolved physically (pwd -P, like ROOT), so a link made
+# through a symlinked dir (/tmp -> /private/tmp on macOS) still counts as pointing here.
+# A relative target is taken from the link's own dir; a target whose dir is gone stays as written.
+link_target() {
+  local t d
+  t=$(readlink "$1")
+  case $t in /*) ;; *) t=$(dirname "$1")/$t ;; esac
+  if d=$(cd "$(dirname "$t")" 2>/dev/null && pwd -P); then echo "$d/$(basename "$t")"; else echo "$t"; fi
+}
+
 # Refresh links in PREFIX_BIN that point into ROOT/bin; add tafk beside a fleet link that points here.
 relink() {
   local dry=$1 n link t found=0
   for n in fleet fleet-goal tafk; do
     link=$PREFIX_BIN/$n
     if [ -L "$link" ]; then
-      t=$(readlink "$link")
+      t=$(link_target "$link")
       case $t in
         "$ROOT"/bin/*) found=1
           if [ "$t" = "$ROOT/bin/$n" ]; then echo "unchanged: symlink $link"
@@ -81,7 +91,7 @@ relink() {
       esac
     elif [ -e "$link" ]; then
       echo "left alone: $link (not a symlink)"
-    elif [ "$n" = tafk ] && [ -L "$PREFIX_BIN/fleet" ] && [ "$(readlink "$PREFIX_BIN/fleet")" = "$ROOT/bin/fleet" ]; then
+    elif [ "$n" = tafk ] && [ -L "$PREFIX_BIN/fleet" ] && [ "$(link_target "$PREFIX_BIN/fleet")" = "$ROOT/bin/fleet" ]; then
       if [ "$dry" = 1 ]; then echo "would link: $link -> $ROOT/bin/tafk"
       else ln -s "$ROOT/bin/tafk" "$link"; echo "linked: $link -> $ROOT/bin/tafk"; fi
     fi
