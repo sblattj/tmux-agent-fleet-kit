@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+LEARN keeps two card stacks: auto (generated) and manual (asked for by the human), and the manual stack comes first.
+
+- Every ledger row and card now has `stack`: `auto` or `manual`. `fleet learn add ... --manual` makes a manual card (never filtered as plumbing: the human asked for it); `fleet learn stack L<a>-L<b> --manual|--auto` moves rows already in the ledger (cards follow in place, cid and schedule kept), and a bare `fleet learn stack` lists the manual stack. LEARN or the human only.
+- Manual cards serve ahead of every auto card in `fleet learn lessons`, a bare `fleet learn lesson`, `due` and `quiz`: the newest manual request (a topic's latest `stackAt`) first, its rows in the order they were made, so a new request goes on top like an unshift. A topic with rows on both stacks is taught as two lessons, the manual batch on its own. `snapshot` adds `byStack` counts.
+- `fleet learn session` no longer needs `--topic`: a bare session takes the first lesson waiting (the manual stack first), else the topic of the first due card.
+- `fleet learn rebuild` keeps the human's manual cards (Q78): `learn/manual.jsonl` records each request; a rebuild re-marks manual rows the sources bring back and re-adds the hand-made ones, and a dropped manual row stays dropped.
+- Manual cards guide auto cards: auto rows that share a topic or work subject with a manual row come before other auto rows, `fleet learn examples` lists the manual cards as few-shot examples (prompt and quote) for LEARN, and an optional `learn.json` `autoPrompt` command (off by default, bounded by `timeoutSec`, run outside the ledger lock) writes questions for new untitled auto rows from those examples; anything that is not a clean question leaves the template prompt.
+- Tests: `test/test_learn_stacks.sh` (65 assertions with controls).
+
 ## v0.8.1 (2026-11-26)
 
 `fleet show` draws real images by default: passthrough is on for the whole fleet server unless you opt out.

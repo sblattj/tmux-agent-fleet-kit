@@ -13,6 +13,8 @@ $FLEET_STATE/learn/
   cards.jsonl     quiz cards with schedule, rewritten atomically
   reviews.jsonl   append-only review results: the record
   proof.json      derived cache per lid; rebuildable from reviews.jsonl + ledger + cards (rebuild_proof())
+  manual.jsonl    append-only record of the human's manual card requests {at, skey, stack: manual|auto|dropped, row};
+                  kept by rebuild (Q78), which re-marks the rows the sources bring back and re-adds the others
   cursors.json    sync cursors {"watch-events": <lines read>, "goals": {lane: "achieved"}}; decisions-log.jsonl is
                   re-read whole each sync (small; idempotent by source ref, so the latest answer per id wins)
   learn.json      optional config {"scheduler": "fsrs"|"fixed" (default fsrs), "cardFormats": [...], "learn": {"minScore": 1}, "fsrs": {...}}
@@ -51,6 +53,24 @@ refused with `Refused`. `export(to=DIR)` is the one exception: the human may exp
 | `supersedes` | lid of the row this one replaces (a newer answer to the same call), or null |
 | `by` | who wrote it: `sync`, `manual`, `decide`, `watch`, `route` |
 | `confirmedBy` | `{source, quote}` when a heard row was confirmed |
+| `stack` | `auto` (sync, sources, rebuild, a plain `add`) or `manual` (a card the human asked for: `add --manual`, `stack --manual`). Missing = `auto`. Manual rows are always teachable |
+| `stackAt` | manual rows only: when the human asked for it (the request time that orders the manual stack) |
+
+## Two stacks (manual ahead of auto)
+
+Lessons (`lessons()`, a bare `lesson`, a bare `session`) and `due()` serve in this order: every manual row first,
+grouped by topic, the topic with the newest `stackAt` first (the batch just asked for goes on top, an unshift), rows
+in lid order inside it; then auto rows that share a topic or a work subject with a manual row (the topic signal);
+then every other auto row, oldest first (lessons) or oldest due first (due). A topic with rows on both stacks is
+listed once per stack, so the manual batch is taught on its own. Moving a row to manual again re-stamps `stackAt`.
+
+Manual cards guide auto ones. `examples()` (`fleet learn examples`) lists the manual stack as few-shot examples
+(prompt and quote), newest request first, for LEARN to title new auto rows the way the human asks. learn.json
+`"autoPrompt": {"run": CMD, "timeoutSec": 10, "max": 10, "examples": 12, "maxTokens": 120}` (off by default, and off
+while the manual stack is empty) runs CMD once per new untitled auto row, outside the lock, killed at `timeoutSec`:
+stdin `{"row": {kind, quote, topic, what, why}, "examples": [...], "maxTokens": N}`, stdout one question. The first
+line that ends in `?`, is 12 to 160 characters and names neither the source ref nor the lane becomes the card's
+prompt (kept as `genPrompt` on the card); anything else leaves the template prompt. A human `--title` always wins.
 
 ## Card (4.3), `cards.jsonl`
 
@@ -62,6 +82,9 @@ refused with `Refused`. `export(to=DIR)` is the one exception: the human may exp
            "fixedStep": 1,
            "state": "review", "step": null, "stability": 2.4, "difficulty": 5.1}}
 ```
+
+Cards also carry `stack` (`auto`|`manual`, copied from the row and refreshed in place, cid and schedule kept) and,
+when an autoPrompt command wrote the question, `genPrompt`.
 
 `sched` keys. Shared: `due`, `reps`, `lapses`, `lastReview` (ISO or null). Phase 3 fixed intervals own
 `fixedStep` (index into 1/3/7/21 d). FSRS (phase 5) owns `state` (`learning|review|relearning`), `step` (its
@@ -120,7 +143,12 @@ add_item(*, kind, origin, quote, source, title="", what="", why="", status="conf
 #                       reviews.jsonl and seen.jsonl, which re-attach by source key (skey) and card key (ckey)
 confirm(lid, *, source, quote, by="manual") -> dict   # heard -> confirmed
 supersede(lid, *, quote, source, by="sync") -> dict   # new row, old one status superseded
-drop(lid, *, reason) -> dict
+drop(lid, *, reason) -> dict     # a manual row's drop is recorded in manual.jsonl, so a rebuild does not bring it back
+set_stack(lids, stack, now=None) -> list   # auto|manual, a new row version per changed lid + a manual.jsonl record;
+                                # LEARN or the human. add_item(..., stack="manual") makes a manual row directly
+stack_of(row) -> "auto"|"manual"
+serve_order(rows=None) -> key fn  # the two-stack sort key lessons and due() use
+examples(topic=None, max_n=20) -> list   # [{lid, topic, kind, prompt, quote}] from the manual stack
 items(*, origin=None, status=None, include_retired=False) -> list   # latest row per lid
 item(lid) -> dict
 sync(now=None) -> dict          # decisions-log.jsonl (absent log = no-op), watch/events.jsonl LEARN-ITEMs,
@@ -150,6 +178,7 @@ export(to=None) -> list[str]
 
 ```json
 {"at": "...", "dir": "$FLEET_STATE/learn",
+ "byStack": {"manual": {"items": 18, "learned": 0, "due": 4}, "auto": {"items": 120, "learned": 9, "due": 3}},
  "byOrigin": {"fleet":   {"items": 15, "confirmed": 12, "heard": 3, "learned": 12, "due": 2},
               "outside": {"items": 20, "confirmed": 20, "heard": 0, "learned": 4,  "due": 5}},
  "topics": [{"topic": "widget", "origin": "fleet", "items": 3, "learned": 2, "pct": 67}],
@@ -162,6 +191,6 @@ Origins are never blended: no top-level total.
 
 ## CLI (`bin/fleet-learn`, `fleet learn` once the lander adds the dispatch line)
 
-`add`, `list`, `show`, `confirm`, `drop`, `sync`, `due`, `quiz`, `review`, `proof`, `snapshot`, `export`, and
+`add` (`--manual`), `stack`, `examples`, `list`, `show`, `confirm`, `drop`, `sync`, `due`, `quiz`, `review`, `proof`, `snapshot`, `export`, and
 `serve` (dispatched to `lib/fleet_learn_serve.py` main(argv) before argparse; phase 7). `fleet-learn -h` is the
 reference. `FLEET_LEARN_NOW=<ISO UTC>` pins the clock for every verb.

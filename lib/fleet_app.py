@@ -215,7 +215,9 @@ def candidates():
         mesh.log("fleet app notify: calls skipped: %s" % e)
     try:
         for t in waiting_lessons():
-            out.append(("lessons:%s" % t["topic"], "LEARN: lesson waiting on %s" % t["topic"], list(t["lids"])))
+            manual = t.get("stack") == "manual"  # a topic can wait on both stacks; the auto id stays as it was
+            out.append(("lessons:%s%s" % ("manual:" if manual else "", t["topic"]),
+                        "LEARN: %slesson waiting on %s" % ("manual " if manual else "", t["topic"]), list(t["lids"])))
     except Exception as e:
         mesh.log("fleet app notify: lessons skipped: %s" % e)
     return out

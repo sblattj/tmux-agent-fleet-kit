@@ -114,7 +114,16 @@ The launcher warns once and launches without the role when the Codex profile, Op
   what/why line its quote does not back is dropped and counted, never reworded. Heard rows show "not decided yet".
   Showing a lesson records it seen (`learn/seen.jsonl`, the human only); only then do that row's cards come due, and
   the 24 h proof clock starts there. `--preview` records nothing. `fleet learn lessons` lists what waits.
-- `fleet learn session --topic T` is the lesson for T, a quiz on T's cards only, and one result line; a first
+- Two card stacks. `auto` is what sync and the sources make; `manual` is the cards the human asked for:
+  `fleet learn add ... --manual`, or `fleet learn stack L3-L9 --manual` for rows already in the ledger
+  (`fleet learn stack` lists the stack, `--auto` moves rows back). Manual cards are served ahead of every auto card,
+  in lessons and in the quiz, the newest request first, and `fleet learn rebuild` keeps them (`learn/manual.jsonl`).
+  They also guide the auto cards: auto rows that share a topic or work subject with a manual row come first among the
+  auto rows, `fleet learn examples` lists the manual cards as few-shot examples for LEARN, and an optional
+  `learn.json` `autoPrompt` command (bounded by `timeoutSec`, off by default) writes questions for untitled auto rows
+  from those examples.
+- `fleet learn session [--topic T]` is the lesson for T, a quiz on T's cards only, and one result line (with no
+  `--topic`, the first lesson waiting: the manual stack first); a first
   exposure is never graded as learned. `fleet learn digest [--since ISO|Nd|Nh]` teaches the rows newer than the last
   digest (default 7 days). `fleet learn brief --for X` is a read-only brief for any role; `learn.json`
   `brief.selector` names an optional command (JSON on stdin, one row id per line out, bounded by
@@ -485,6 +494,7 @@ bash test/test_privacy.sh     # no personal data in the repo (FLEET_PRIVACY_TERM
 python3 -m unittest test/test_contracts.py   # four-desks contracts (WATCH, probe) and the watch|learn|probe dispatch
 bash test/test_learn.sh       # fleet learn: ledger, sync, quiz, 24 h proof with an injected clock, export
 bash test/test_learn_lesson.sh   # teach before test: lesson, session, digest, brief, seen gate, guard, rebuild
+bash test/test_learn_stacks.sh   # two card stacks: manual first, newest request on top, rebuild keeps them, autoPrompt
 python3 -m unittest test/test_learn_sources.py   # whosaid + linear adapters on fakes, sources.json refs-only, rebuild from sources
 python3 -m unittest test.test_fsrs test.test_explain   # FSRS against py-fsrs reference values; explain back grader
 python3 -m unittest test/test_app.py   # Fleet Desk: human-only verbs, deduped notifications, serve, tunnel (same port, Host check), app vs pane parity

@@ -92,17 +92,23 @@ def lesson_model(rows):
 
 
 def unseen_rows(topic=None):
+    """Rows whose lesson is not seen yet, in serve order: the manual stack first (newest request first, then row
+    order), then auto rows near a manual topic, then the rest, oldest first."""
     seen = fl.seen_lids()
-    rows = [r for r in fl.items() if r["lid"] not in seen and (topic is None or fl.on_topic(r, topic))]
-    return sorted(rows, key=lambda r: (r.get("at") or "", fl._idnum(r["lid"])))
+    every = fl.items()
+    rows = [r for r in every if r["lid"] not in seen and (topic is None or fl.on_topic(r, topic))]
+    sk = fl.serve_order(every)
+    return sorted(rows, key=lambda r: sk(r) + (r.get("at") or "", fl._idnum(r["lid"])))
 
 
 def lessons(topic=None):
-    """Topics with unseen rows: [{topic, rows, heard}] in the order their oldest row arrived."""
+    """Topics with unseen rows: [{topic, rows, heard, stack}] in serve order (manual topics first, the newest request
+    on top; then auto topics in the order their oldest row arrived). A topic with rows on both stacks is listed once
+    per stack, so the manual batch is taught on its own."""
     by = {}
     for r in unseen_rows(topic):
         t = fl.topic_of(r) or "(no topic)"
-        d = by.setdefault(t, {"topic": t, "rows": 0, "heard": 0, "lids": []})
+        d = by.setdefault((t, fl.stack_of(r)), {"topic": t, "rows": 0, "heard": 0, "lids": [], "stack": fl.stack_of(r)})
         d["rows"] += 1
         d["heard"] += r.get("status") == "heard"
         d["lids"].append(r["lid"])
@@ -192,11 +198,25 @@ def lesson(topic=None, max_rows=MAX_ROWS, preview=False, out=None, via="lesson",
     return model
 
 
-def session(topic, inp=None, out=None, max_rows=MAX_ROWS, now=None):
-    """The lesson for one topic, then a quiz on that topic only, then one result line."""
+def session(topic=None, inp=None, out=None, max_rows=MAX_ROWS, now=None):
+    """The lesson for one topic, then a quiz on that topic only, then one result line. With no topic: the first
+    topic waiting for a lesson (the manual stack first), else the topic of the first due card."""
     out = out or sys.stdout
     fl.human_only("take a session")
-    m = lesson(topic, max_rows=max_rows, out=out, via="session", now=now)
+    if not topic:
+        ls = lessons()
+        ds = [] if ls else fl.due(now)
+        if not ls and not ds:
+            out.write("no new lessons and nothing due\n")
+            return {"lesson": {}, "reviews": [], "learned": 0, "line": "session: nothing waiting"}
+        if ls:  # the first waiting lesson, the manual batch on its own when the manual stack leads
+            m = lesson(None, max_rows=max_rows, out=out, via="session", now=now)
+            topic = m.get("topic")
+        else:
+            topic = fl.topic_of(fl.item(ds[0]["lid"]))
+            m = lesson(topic, max_rows=max_rows, out=out, via="session", now=now)
+    else:
+        m = lesson(topic, max_rows=max_rows, out=out, via="session", now=now)
     revs = fl.quiz(inp=inp, out=out, topic=topic, now=now)
     pf = fl.rebuild_proof()
     lids = {r["lid"] for r in fl.items() if fl.on_topic(r, topic)}

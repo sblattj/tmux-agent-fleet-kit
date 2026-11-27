@@ -4,10 +4,16 @@
 Python 3.8+ stdlib only. Writes only under $FLEET_STATE/learn/ (export --to DIR by the human aside).
 
   fleet learn add --kind K --origin fleet|outside --source TYPE:REF --quote TEXT [--status confirmed|heard]
-                  [--title T] [--what W] [--why Y] [--topic T] [--tag T ...] [--teach]
+                  [--title T] [--what W] [--why Y] [--topic T] [--tag T ...] [--teach] [--manual]
                                                    add a ledger row; prints "OK added L<n>". A route-done, goal or
                                                    decisions-log row with no question --title that is fleet plumbing or holds
-                                                   no answer prints "SKIP ..." and adds nothing (--teach keeps it)
+                                                   no answer prints "SKIP ..." and adds nothing (--teach keeps it).
+                                                   --manual puts it on the manual stack (a card the human asked for)
+  fleet learn stack [L<n>|L<a>-L<b> ... --manual|--auto] [--json]   list the manual stack, or move rows between
+                                                   stacks. Manual cards serve first, the newest request on top;
+                                                   rebuild keeps them (manual.jsonl)
+  fleet learn examples [--topic T] [--max N] [--json]   the manual stack as few-shot examples (prompt + quote) for
+                                                   titling auto rows; learn.json autoPrompt feeds them to a command
   fleet learn list [--origin O] [--status S] [--all] [--json]   latest row per lid, counts per origin
   fleet learn show <lid> [--json]                  one row, its history and its cards
   fleet learn confirm <lid> --source TYPE:REF --quote TEXT   heard -> confirmed (needs another source and its quote)
@@ -19,7 +25,8 @@ Python 3.8+ stdlib only. Writes only under $FLEET_STATE/learn/ (export --to DIR 
                                                    (the human only; --preview records nothing). Teach before test:
                                                    a card comes due only after its row's lesson was seen
   fleet learn lessons [--topic T] [--json]         topics with unseen rows waiting for a lesson
-  fleet learn session --topic T                    the lesson for T, a quiz on T's cards only, one result line
+  fleet learn session [--topic T]                  the lesson for T, a quiz on T's cards only, one result line;
+                                                   with no --topic, the first topic waiting (manual stack first)
   fleet learn digest [--since ISO|Nd|Nh] [--preview]   lessons for rows newer than the last digest (default 7d)
   fleet learn brief --for X [--max N] [--json]     read-only brief on X for any role (learn.json brief.selector)
   fleet learn curate <lid> [--what W] [--why Y] [--part-of E]   LEARN fills what/why (shown only when quote-backed)
@@ -59,6 +66,7 @@ ORIGINS = ("fleet", "outside")
 KINDS = ("decision", "change", "closed", "doc", "done")  # Q694: "done" was "lesson" (a goal done line), no compat
 STATUSES = ("confirmed", "heard", "superseded", "dropped")
 LIVE = ("confirmed", "heard")
+STACKS = ("auto", "manual")  # manual = a card the human asked for; served ahead of every auto card
 ROUTED_KINDS = ("ask", "task-candidate", "fyi")  # lib/fleet_watch_contract.py KINDS
 RATINGS = ("again", "hard", "good", "easy")
 GENERATIVE = ("recall", "explain", "apply")
@@ -310,8 +318,9 @@ def _next_id(prefix, rows, key):
 
 
 def add_item(kind, origin, quote, source, title="", what="", why="", status="confirmed", links=None, tags=None,
-             topic=None, by="manual", supersedes=None, now=None, edges=None):
-    """Append a new ledger row and return it. Refuses a row with no quote, no source, or a bad origin/kind/status."""
+             topic=None, by="manual", supersedes=None, now=None, edges=None, stack="auto", record=True):
+    """Append a new ledger row and return it. Refuses a row with no quote, no source, or a bad origin/kind/status.
+    stack "manual" marks a card the human asked for (served first); every other row is "auto"."""
     _need(quote, "quote (verbatim from the source)")
     _check_source(source)
     if origin not in ORIGINS:
@@ -322,16 +331,22 @@ def add_item(kind, origin, quote, source, title="", what="", why="", status="con
         raise Refused("kind must be one of %s, got %r" % ("|".join(KINDS), kind))
     if status not in LIVE:
         raise Refused("a new row is confirmed or heard, got %r" % (status,))
+    if stack not in STACKS:
+        raise Refused("stack must be auto or manual, got %r" % (stack,))
     tags = [str(t) for t in (tags or [])]
     with _Lock():
         row = {"lid": _next_id("L", _rows(), "lid"), "at": _iso(_now(now)), "kind": kind, "origin": origin,
                "status": status, "title": title or "", "what": what or "", "why": why or "", "source": source,
                "quote": quote, "links": list(links or []), "tags": tags,
                "topic": topic or (tags[0] if tags else str(source.get("ref"))), "supersedes": supersedes,
-               "by": by, "confirmedBy": None}
+               "by": by, "confirmedBy": None, "stack": stack}
+        if stack == "manual":
+            row["stackAt"] = row["at"]
         if edges:
             row["edges"] = {k: [str(x) for x in v] for k, v in edges.items() if k in EDGES and isinstance(v, list)}
         _append("ledger.jsonl", row)
+        if stack == "manual" and record:
+            _append("manual.jsonl", _manual_record(row, "manual", row["at"]))
     return row
 
 
@@ -367,7 +382,7 @@ def supersede(lid, quote, source, by="sync", now=None):
     new = add_item(old["kind"], old["origin"], quote, source, title=old.get("title"), what=old.get("what"),
                    why=old.get("why"), status="confirmed" if old.get("status") == "confirmed" else "heard",
                    links=old.get("links"), tags=old.get("tags"), topic=old.get("topic"), by=by, supersedes=lid,
-                   now=now)
+                   now=now, stack=stack_of(old))
     _append("ledger.jsonl", dict(old, at=_iso(_now(now)), status="superseded", supersededBy=new["lid"], by=by))
     _retire_cards(lid)
     return new
@@ -379,6 +394,8 @@ def drop(lid, reason, now=None):
     if r.get("status") not in LIVE:
         raise Refused("%s is already %s" % (lid, r.get("status")))
     row = _append("ledger.jsonl", dict(r, at=_iso(_now(now)), status="dropped", dropReason=reason, by="manual"))
+    if stack_of(r) == "manual":
+        _append("manual.jsonl", _manual_record(r, "dropped", row["at"]))
     _retire_cards(lid)
     return row
 
@@ -405,6 +422,187 @@ def curate(lid, what=None, why=None, part_of=None, now=None):
 
 
 DERIVED_BY = ("sync", "watch", "source")
+
+
+# ---------------------------------------------------------------- stacks: manual cards ahead of auto cards
+# Two stacks of cards. auto: what sync, sources and rebuild generate. manual: the cards the human asked for (fleet learn
+# add --manual, fleet learn stack L<n> --manual). Lessons and quizzes serve every manual row ahead of every auto row,
+# the newest manual request (a topic's latest stackAt) first, its rows in the order they were made: the batch the
+# human just asked for goes on top (an unshift). Manual rows also guide auto cards: auto rows that share a topic or a
+# work subject with a manual row come before other auto rows (the topic signal), examples() hands the manual cards to
+# LEARN and to an optional learn.json "autoPrompt" command as few-shot examples for untitled auto rows.
+# manual.jsonl is the record of the human's requests, kept by rebuild (Q78): it replays manual rows the sources do not
+# bring back and re-marks the ones they do.
+
+MANUAL_SPEC = ("kind", "origin", "quote", "source", "title", "what", "why", "status", "links", "tags", "topic",
+               "edges")
+
+
+def stack_of(r):
+    return "manual" if (r or {}).get("stack") == "manual" else "auto"
+
+
+def _manual_record(r, stack, at):
+    spec = {k: r.get(k) for k in MANUAL_SPEC if r.get(k) not in (None, "", [], {})}
+    return {"at": at, "skey": skey(r), "stack": stack, "row": spec}
+
+
+def manual_records():
+    """skey -> the latest manual.jsonl record for it (stack manual, auto or dropped)."""
+    out = {}
+    for rec in mesh._parse_lines(_p("manual.jsonl")):
+        if isinstance(rec, dict) and rec.get("skey"):
+            out[rec["skey"]] = rec
+    return out
+
+
+def parse_lids(args):
+    """L3 L5 or ranges L3-L9 (L3-9) -> [L3, L5, ...] in the order given, no repeats."""
+    out = []
+    for a in args or []:
+        for part in str(a).split(","):
+            part = part.strip()
+            m = re.match(r"^L(\d+)-L?(\d+)$", part)
+            ids = ["L%d" % n for n in range(int(m.group(1)), int(m.group(2)) + 1)] if m else [part]
+            for i in ids:
+                if not LID_RE.match(i):
+                    raise Refused("bad row id %r (want L<n> or L<a>-L<b>)" % i)
+                if i not in out:
+                    out.append(i)
+    return out
+
+
+def set_stack(lids, stack, now=None, record=True):
+    """Move live rows to the manual or auto stack: a new version of each row (same lid) plus a manual.jsonl record.
+    Moving to manual stamps stackAt = now, so the rows serve first as the newest manual request. Rows already on that
+    stack are left alone. Cards follow on the next make_cards(). LEARN or the human. -> the changed rows."""
+    learn_or_human("move rows between card stacks")
+    if stack not in STACKS:
+        raise Refused("stack must be auto or manual, got %r" % (stack,))
+    now = _iso(_now(now))
+    out = []
+    with _Lock():
+        latest = {r["lid"]: r for r in items(include_retired=True)}
+        missing = [l for l in lids if l not in latest]
+        if missing:
+            raise Refused("no row %s" % ", ".join(missing))
+        for lid in lids:
+            r = latest[lid]
+            if r.get("status") not in LIVE:
+                raise Refused("%s is %s; only a live row moves between stacks" % (lid, r.get("status")))
+        for lid in lids:
+            r = latest[lid]
+            if stack_of(r) == stack:
+                continue
+            new = dict(r, stack=stack)
+            if stack == "manual":
+                new["stackAt"] = now
+            else:
+                new.pop("stackAt", None)
+            _append("ledger.jsonl", new)
+            if record:
+                _append("manual.jsonl", _manual_record(new, stack, now))
+            out.append(new)
+    return out
+
+
+def _ts_num(s):
+    dt = _parse_ts(s)
+    return dt.timestamp() if dt else 0.0
+
+
+def serve_order(rows=None):
+    """A sort key for rows: manual first (newest request, then lid), then auto rows near a manual topic or work
+    subject, then the other auto rows. Callers append their own tie-breaks (due, at, cid)."""
+    rows = items() if rows is None else rows
+    groups, msubj = {}, set()
+    for r in rows:
+        if stack_of(r) != "manual":
+            continue
+        t = topic_of(r).lower()
+        groups[t] = max(groups.get(t, 0.0), _ts_num(r.get("stackAt") or r.get("at")))
+        msubj |= _row_subjects(r)
+
+    def key(r):
+        if stack_of(r) == "manual":
+            return (0, -groups.get(topic_of(r).lower(), 0.0), _idnum(r["lid"]))
+        near = topic_of(r).lower() in groups or bool(msubj and _row_subjects(r) & msubj)
+        return (1, 0 if near else 1, 0)
+    return key
+
+
+def examples(topic=None, max_n=20):
+    """The manual stack as few-shot examples, newest request first: [{lid, topic, kind, prompt, quote}]. LEARN reads
+    them (fleet learn examples) to title new auto rows the way the human asks; an autoPrompt command gets them too."""
+    rows = [r for r in items(status="confirmed") if stack_of(r) == "manual"
+            and (topic is None or on_topic(r, topic))]
+    rows.sort(key=serve_order())
+    return [{"lid": r["lid"], "topic": topic_of(r), "kind": r.get("kind"), "prompt": card_prompt(r),
+             "quote": r.get("quote")} for r in rows[:max_n]]
+
+
+AUTO_PROMPT_TIMEOUT = 10
+AUTO_PROMPT_MAX = 10
+
+
+def _auto_prompt_cfg():
+    cfg = _read_json("learn.json", {})
+    a = cfg.get("autoPrompt") if isinstance(cfg, dict) else None
+    return a if isinstance(a, dict) and str(a.get("run") or "").strip() else None
+
+
+def _auto_prompts(rows, have_lids):
+    """{lid: question} for untitled auto rows that have no card yet, from learn.json autoPrompt {"run": CMD,
+    "timeoutSec": 10, "max": 10, "examples": 12}. CMD reads {"row", "examples", "maxTokens"} JSON on stdin and prints
+    one question; the first line ending in "?" (12 to 160 chars, not naming the source ref or lane) is kept. Off when
+    unset or when the manual stack is empty; a failure or a bad line leaves the template prompt. Runs outside the lock."""
+    cfg = _auto_prompt_cfg()
+    if not cfg:
+        return {}
+    ex = examples(max_n=int(cfg.get("examples") or 12))
+    if not ex:
+        return {}
+    import fleet_learn_explain as fx
+    timeout = float(cfg.get("timeoutSec") or AUTO_PROMPT_TIMEOUT)
+    todo = [r for r in rows if r.get("status") == "confirmed" and stack_of(r) == "auto" and r["lid"] not in have_lids
+            and not (r.get("title") or "").strip() and teachable(r)[0] == "teach"]
+    out = {}
+    for r in todo[:int(cfg.get("max") or AUTO_PROMPT_MAX)]:
+        payload = {"row": {k: r.get(k) for k in ("kind", "quote", "topic", "what", "why")}, "examples": ex,
+                   "maxTokens": int(cfg.get("maxTokens") or 120)}
+        ok, lines, _err, _ms = fx.run_bounded(cfg["run"], payload, timeout)
+        if not ok:
+            continue
+        ref, lane = str((r.get("source") or {}).get("ref") or ""), row_lane(r) or ""
+        for ln in lines:
+            q = " ".join(ln.split())
+            if q.endswith("?") and 12 <= len(q) <= 160 and not (ref and ref in q) and not (lane and lane in q):
+                out[r["lid"]] = q
+                break
+    return out
+
+
+def _replay_manual(now):
+    """rebuild: re-mark manual rows the sources brought back, re-add the ones they did not (Q78)."""
+    res = {"marked": [], "added": []}
+    km = _key_map(include_retired=False)
+    for k, rec in sorted(manual_records().items(), key=lambda kv: kv[1].get("at") or ""):
+        if rec.get("stack") != "manual":
+            continue
+        at = _parse_ts(rec.get("at")) or now
+        if k in km:
+            res["marked"] += [r["lid"] for r in set_stack([km[k]], "manual", now=at, record=False)]
+            continue
+        spec = dict(rec.get("row") or {})
+        try:
+            r = add_item(spec.pop("kind", None), spec.pop("origin", None), spec.pop("quote", None),
+                         spec.pop("source", None), by="manual", now=at, stack="manual", record=False,
+                         **{x: spec[x] for x in spec if x in MANUAL_SPEC})
+        except (Refused, TypeError):
+            continue
+        res["added"].append(r["lid"])
+        km[k] = r["lid"]
+    return res
 
 
 def parse_source(text):
@@ -881,12 +1079,15 @@ _ASK_PLAIN = {"decision": "What was decided here, and why?", "change": "What cha
               "done": "What did we learn here?"}
 
 
-def card_prompt(r):
-    """The question a card asks. A row's title is the prompt, verbatim. With no title: a plain question about the
-    row's work subject (ticket, PR, release). Never names the source or the lane; those show after grading."""
+def card_prompt(r, gen=None):
+    """The question a card asks. A row's title is the prompt, verbatim. With no title: the autoPrompt question made
+    from the manual stack's examples (gen), else a plain question about the row's work subject (ticket, PR, release).
+    Never names the source or the lane; those show after grading."""
     t = (r.get("title") or "").strip()
     if t and (r.get("by") != "sync" or t.endswith("?")):
         return t  # a human's --title, verbatim (an old sync-made title that is not a question is not used)
+    if gen:
+        return gen
     subj = subjects(r.get("quote") or "") or subjects(r.get("topic") or "")
     kind = r.get("kind") if r.get("kind") in _ASK else "decision"
     return _ASK[kind] % subj[0] if subj else _ASK_PLAIN[kind]
@@ -912,6 +1113,8 @@ def teachable(r):
     """("teach"|"skip", reason) for a ledger row, the same rules sync uses. A row whose title is a question is a
     curated card and is always taught; manual, decide-learn-this and watch rows are not filtered."""
     s = r.get("source") or {}
+    if stack_of(r) == "manual":
+        return "teach", "manual"
     if _curated(r):
         return "teach", "curated"
     if s.get("type") not in FILTERED_SOURCES:
@@ -984,6 +1187,7 @@ def make_cards(now=None, formats=None):
     (plumbing, answerless) has its cards retired."""
     now = _now(now)
     formats = _formats(formats)
+    gen = _auto_prompts(items(), {c.get("lid") for c in _cards()})  # a bounded command, so outside the lock
     with _Lock():
         cs = _cards()
         rows = items()
@@ -1004,7 +1208,10 @@ def make_cards(now=None, formats=None):
                 c["retired"] = True
                 changed = True
                 continue
-            want = _card_prompt_for(c.get("format"), r)
+            if c.get("stack", "auto") != stack_of(r):
+                c["stack"] = stack_of(r)
+                changed = True
+            want = _card_prompt_for(c.get("format"), r, c.get("genPrompt"))
             if want and c.get("prompt") != want:
                 c["prompt"] = want
                 changed = True
@@ -1037,9 +1244,11 @@ def make_cards(now=None, formats=None):
                 if fmt not in formats or (r["lid"], fmt) in have:
                     continue
                 c = {"cid": _next_id("C", cs + new, "cid"), "lid": r["lid"], "skey": skey(r), "format": fmt,
-                     "origin": r["origin"],
-                     "prompt": _card_prompt_for(fmt, r), "answer": answer, "grounding": grounding,
-                     "sched": dict(sched)}
+                     "origin": r["origin"], "stack": stack_of(r),
+                     "prompt": _card_prompt_for(fmt, r, gen.get(r["lid"])), "answer": answer,
+                     "grounding": grounding, "sched": dict(sched)}
+                if gen.get(r["lid"]):
+                    c["genPrompt"] = gen[r["lid"]]
                 if opts:
                     c["options"] = opts
                 new.append(c)
@@ -1049,8 +1258,8 @@ def make_cards(now=None, formats=None):
     return new
 
 
-def _card_prompt_for(fmt, r):
-    q = card_prompt(r)
+def _card_prompt_for(fmt, r, gen=None):
+    q = card_prompt(r, gen)
     if fmt == "explain":
         return "In your own words: %s" % q
     if fmt == "apply":
@@ -1073,14 +1282,18 @@ def _idnum(i):
 
 
 def due(now=None, topic=None):
-    """Cards due now, oldest due first; topic narrows to rows on_topic() (a ticket, PR, release or topic name, or an
-    entity whose subtree holds the row). Teach-first: a card is due only after its row's lesson was seen."""
+    """Cards due now: the manual stack first (newest request first, then row order), then auto cards near a manual
+    topic, then the rest, each oldest due first; topic narrows to rows on_topic() (a ticket, PR, release or topic
+    name, or an entity whose subtree holds the row). Teach-first: a card is due only after its row's lesson was seen."""
     now = _now(now)
     seen_l = seen_lids()
-    live = {r["lid"] for r in items(status="confirmed") if (topic is None or on_topic(r, topic)) and r["lid"] in seen_l}
-    out = [c for c in _cards() if not c.get("retired") and c.get("lid") in live
+    rows = items()
+    by_lid = {r["lid"]: r for r in rows if r.get("status") == "confirmed"
+              and (topic is None or on_topic(r, topic)) and r["lid"] in seen_l}
+    out = [c for c in _cards() if not c.get("retired") and c.get("lid") in by_lid
            and (_parse_ts((c.get("sched") or {}).get("due")) or now) <= now]
-    out.sort(key=lambda c: ((c.get("sched") or {}).get("due") or "", _idnum(c["cid"])))
+    sk = serve_order(rows)
+    out.sort(key=lambda c: sk(by_lid[c["lid"]]) + ((c.get("sched") or {}).get("due") or "", _idnum(c["cid"])))
     return out
 
 
@@ -1397,13 +1610,14 @@ def children(eid):
 # ---------------------------------------------------------------- rebuild from sources (Q694)
 
 DERIVED_FILES = ("ledger.jsonl", "cards.jsonl", "entities.jsonl", "proof.json", "cursors.json")
-KEPT_FILES = ("reviews.jsonl", "seen.jsonl")  # Q703 (b): the human's own results, nothing else
+KEPT_FILES = ("reviews.jsonl", "seen.jsonl", "manual.jsonl")  # Q703 (b) the human's results; Q78 their manual cards
 
 
 def rebuild(now=None, source_events=None):
     """Regenerate every derived LEARN file from the sources: the decisions log, WATCH events, achieved goal files
     and the configured sources (sources.json, Q702). Keeps only the human's own results (reviews.jsonl,
-    seen.jsonl, Q703 b), which re-attach by source key; card schedules are restored by replaying the reviews through
+    seen.jsonl, Q703 b), which re-attach by source key, and the human's manual cards (manual.jsonl, Q78): manual rows
+    the sources bring back are re-marked manual, the others are re-added from the record; card schedules are restored by replaying the reviews through
     the scheduler. Sources are polled into memory first, so a failing source aborts with the old state intact. The
     old derived files move to learn/rebuild-prev/. LEARN or the human only."""
     learn_or_human("rebuild LEARN state")
@@ -1424,6 +1638,7 @@ def rebuild(now=None, source_events=None):
     for k in ("added", "superseded", "confirmed", "decisionsLog", "watchEvents", "sources", "skipped", "folded"):
         if k in sres:
             res[k] = sres[k]
+    res["manual"] = _replay_manual(now)
     make_cards(now)
     orphan_reviews = 0
     with _Lock():
@@ -1440,6 +1655,7 @@ def rebuild(now=None, source_events=None):
     write_proof()
     res["counts"] = {"rows": len(items()), "cards": len([c for c in _cards() if not c.get("retired")]),
                      "entities": len(entities()), "reviews": len(reviews()), "seen": len(seen_rows()),
+                     "manual": len([r for r in items() if stack_of(r) == "manual"]),
                      "orphanedReviews": orphan_reviews,
                      "orphanedSeen": len([r for r in seen_rows(include_orphans=True) if not r.get("lid")])}
     res["prev"] = prev
@@ -1466,6 +1682,11 @@ def snapshot(now=None):
                         "heard": sum(1 for r in mine if r["status"] == "heard"),
                         "learned": sum(1 for r in mine if (pf.get(r["lid"]) or {}).get("learned")),
                         "due": sum(1 for c in ds if c.get("origin") == o)}
+    by_stack = {}
+    for st in STACKS:
+        mine = [r for r in rows if stack_of(r) == st]
+        by_stack[st] = {"items": len(mine), "learned": sum(1 for r in mine if (pf.get(r["lid"]) or {}).get("learned")),
+                        "due": sum(1 for c in ds if c.get("stack", "auto") == st)}
     topics = {}
     for r in rows:
         k = (r.get("topic") or "", r.get("origin"))
@@ -1478,9 +1699,9 @@ def snapshot(now=None):
     recent = [{"cid": rv.get("cid"), "lid": rv.get("lid"), "at": rv.get("at"), "grade": rv.get("grade"),
                "format": rv.get("format"), "origin": rv.get("origin")}
               for rv in reviews()[-20:]]
-    return {"at": _iso(now), "dir": learn_dir(), "byOrigin": by_origin, "topics": tl,
+    return {"at": _iso(now), "dir": learn_dir(), "byOrigin": by_origin, "byStack": by_stack, "topics": tl,
             "due": [{"cid": c["cid"], "lid": c["lid"], "format": c["format"], "prompt": c["prompt"],
-                     "origin": c.get("origin")} for c in ds],
+                     "origin": c.get("origin"), "stack": c.get("stack", "auto")} for c in ds],
             "heard": [{"lid": r["lid"], "quote": r["quote"], "source": r.get("source")} for r in rows
                       if r["status"] == "heard"],
             "recent": recent}
@@ -1646,6 +1867,17 @@ def _parser():
         a.add_argument("--" + f, default="")
     a.add_argument("--tag", action="append", default=[])
     a.add_argument("--teach", action="store_true")
+    a.add_argument("--manual", action="store_true")
+    st = sp.add_parser("stack")
+    st.add_argument("lids", nargs="*")
+    g = st.add_mutually_exclusive_group()
+    g.add_argument("--manual", dest="to", action="store_const", const="manual")
+    g.add_argument("--auto", dest="to", action="store_const", const="auto")
+    st.add_argument("--json", action="store_true")
+    xs = sp.add_parser("examples")
+    xs.add_argument("--topic")
+    xs.add_argument("--max", type=int, default=20)
+    xs.add_argument("--json", action="store_true")
     ls = sp.add_parser("list")
     ls.add_argument("--origin")
     ls.add_argument("--status")
@@ -1690,7 +1922,7 @@ def _parser():
     lz.add_argument("--topic")
     lz.add_argument("--json", action="store_true")
     se = sp.add_parser("session")
-    se.add_argument("--topic", required=True)
+    se.add_argument("--topic")
     se.add_argument("--max", type=int, default=8)
     dg = sp.add_parser("digest")
     dg.add_argument("--since")
@@ -1745,16 +1977,46 @@ def main(argv=None):
             cand = {"kind": args.kind, "quote": args.quote, "title": args.title, "source": src,
                     "topic": args.topic, "by": "manual"}
             verdict, why = teachable(cand) if args.quote.strip() else ("teach", "")
-            if verdict == "skip" and not args.teach:
+            if verdict == "skip" and not (args.teach or args.manual):
                 print("SKIP %s (%s): not added; pass --teach, a question --title, or 'learn: teach' in the quote"
                       % (args.source, why))
                 return 0
             subj = subjects(args.quote)
             r = add_item(args.kind, args.origin, args.quote, src, title=args.title, what=args.what, why=args.why,
-                         status=args.status, tags=args.tag,
+                         status=args.status, tags=args.tag, stack="manual" if args.manual else "auto",
                          topic=args.topic or (subj[0] if subj and src.get("type") in FILTERED_SOURCES else None))
             make_cards()
-            print("OK added %s (%s, %s)" % (r["lid"], r["origin"], r["status"]))
+            print("OK added %s (%s, %s%s)" % (r["lid"], r["origin"], r["status"], ", manual" if args.manual else ""))
+        elif args.cmd == "stack":
+            if not args.to:
+                rows = sorted([r for r in items() if stack_of(r) == "manual"], key=serve_order())
+                if args.json:
+                    print(json.dumps(rows, indent=1, sort_keys=True))
+                else:
+                    for r in rows:
+                        print(_one_line(r))
+                    print("%d manual row(s), served first; %d auto" % (len(rows), len(items()) - len(rows)))
+                return 0
+            lids = parse_lids(args.lids)
+            if not lids:
+                raise Refused("stack --%s needs row ids (L3 L5 or L3-L9)" % args.to)
+            changed = set_stack(lids, args.to)
+            make_cards()
+            if args.json:
+                print(json.dumps({"stack": args.to, "changed": [r["lid"] for r in changed]}, sort_keys=True))
+            else:
+                print("OK %d row(s) to the %s stack%s; %d already there" % (
+                    len(changed), args.to, (": " + ", ".join(r["lid"] for r in changed)) if changed else "",
+                    len(lids) - len(changed)))
+        elif args.cmd == "examples":
+            ex = examples(topic=args.topic, max_n=args.max)
+            if args.json:
+                print(json.dumps(ex, indent=1, sort_keys=True))
+            else:
+                for e in ex:
+                    print("%-5s %-24s %s" % (e["lid"], (e["topic"] or "")[:24], e["prompt"]))
+                    print("      quote: \"%s\"" % " ".join(str(e["quote"] or "").split())[:140])
+                print("%d manual example(s)" % len(ex))
         elif args.cmd == "list":
             if args.origin and args.origin not in ORIGINS:
                 raise Refused("origin must be fleet or outside")
@@ -1852,8 +2114,8 @@ def main(argv=None):
                 print(json.dumps(ls, indent=1, sort_keys=True))
             else:
                 for d in ls:
-                    print("%-30s %d row(s)%s" % (d["topic"], d["rows"], ", %d heard" % d["heard"] if d["heard"]
-                                                else ""))
+                    print("%-30s %d row(s)%s%s" % (d["topic"], d["rows"], ", %d heard" % d["heard"] if d["heard"]
+                                                  else "", ", manual" if d.get("stack") == "manual" else ""))
                 print("%d topic(s) waiting for a lesson" % len(ls))
         elif args.cmd == "session":
             les.session(args.topic, max_rows=args.max)

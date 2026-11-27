@@ -19,6 +19,17 @@ are on T, and end with one line `session T: N lesson(s), M card(s), P pass, F fa
 - **WHEN** another topic has due cards
 - **THEN** the session asks none of them
 
+### Requirement: A bare session serves the manual stack first
+`fleet learn session` with no `--topic` SHALL teach the first lesson waiting in serve order (the manual stack first,
+the newest manual request on top, at most `--max` rows), then quiz that topic's due cards (manual cards first), then
+print the result line. With no lesson waiting it SHALL take the topic of the first due card; with nothing waiting
+it SHALL print `no new lessons and nothing due` and exit 0.
+
+#### Scenario: A manual request leads a fresh session
+- **WHEN** auto rows wait for a lesson and the human then asks for ten manual cards on one topic
+- **THEN** a bare session teaches the first eight manual rows in the order they were made, no auto row, and the
+  next bare session teaches the remaining two before any auto row
+
 ### Requirement: First exposure is never graded as learned
 Passes in the same session as a row's first lesson SHALL be recorded but SHALL NOT make the row learned.
 
