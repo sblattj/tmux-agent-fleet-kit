@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.9.1 (2026-11-27)
+
+`tafk update` recognizes bin links that reach the kit through a symlinked directory.
+
+- `fleet update` compared each link's target to the kit's physical path as a plain string, so a link made through a symlinked dir (on macOS, `/tmp/...` for a kit under `/private/tmp`) or a relative link counted as "not this kit": nothing was relinked and `tafk` was not added. Link targets now have their directory resolved (`pwd -P`) before the compare. Links the installers make were already physical and are unaffected. Found by the v0.9.0 end-to-end run.
+- Tests: `test/test_update.sh` links its fixture through an alias dir, one link relative (64 assertions; 6 FAIL on the v0.9.0 updater).
+
 ## v0.9.0 (2026-11-27)
 
 `tafk` is a second name for `fleet`, and `tafk update` (or `fleet update`) moves the kit to the latest release.
