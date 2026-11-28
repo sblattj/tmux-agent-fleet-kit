@@ -174,7 +174,7 @@ fleet decisions pick <id> <letter|--text T|--edit T|--refuse [why]>   exit 0 rel
 fleet decisions retry <id> | snooze <id> [minutes] | state [--json] | find "<text>" | report <id> ok|fail [note]
 fleet decisions ask "<q>" [--options a,b] [--allow ...] [--wait] [--timeout 30m] [--new]   exit 0 picked, 1 refused/own/changes, 2 no answer
 fleet decisions refresh [--json] | refresh choose <id> A|B | refresh confirm <id>   confirm needs a prior "choose B"
-fleet decisions intake ["<lines>"|-]      WATCH TASK-CANDIDATE/FYI lines -> task calls / fyi forward (role decide or none; exit 4 otherwise)
+fleet decisions intake ["<lines>"|-]      WATCH TASK-CANDIDATE/FYI/STALE/RECHECK lines -> task calls / fyi forward / stale list / asker ping (role decide or none; exit 4 otherwise)
 fleet decisions forward                  forward each task call the desk answered yes with decision_answer (log row by == $FLEET_DECIDE), once
 fleet decisions learn [<id>]             one LEARN row with the human's verbatim answer (newest answered call by default); exit 3 if already learned
 ```
@@ -189,6 +189,13 @@ fleet decisions learn [<id>]             one LEARN row with the human's verbatim
   event to LEARN (`add_learn_item`). A probe call also calls `fleet_probe.on_pick(cid, choice, meta)`; its errors are
   logged and noted, never raised. A task call answered outside a pick forwards (via `fleet decisions forward`) only when
   its log row's `by` is `$FLEET_DECIDE`; anything else is reported `unverified` and sends nothing.
+- Stale calls (issue #63): cards carry `age` (open for, e.g. `27h`), `ageSec`, `recheckAfter`, `recheck` (true past
+  it) and `stale` ([{claim, ref, type, at, eid, url}] from `watch/stale.jsonl`); the page and TUI print a `recheck:`
+  and a `stale: claim c1 ref <ref> changed (<type>)` line. `refresh` adds a built-in source after the configured ones
+  and the exact-repeat check: a stale row has `b.kind` `stale`, grounded in the ledger line; choose B + confirm sends
+  the asker a request to `decision_revise` and leaves the call unchanged and open. `intake` lists `STALE` lines under
+  `stale` and pings the asker once per `RECHECK` line (`decide/recheck-pinged.jsonl`), only while the call is open
+  with the same `recheckAfter`.
 - `FYI` intake delivers `FYI <n> events: <eids> decidedBy: decide:probe` to ROUTE once per eid set
   (`decide/fyi-forwarded.json`) and logs a `fleet_probe_contract.log_row("fyi-forward", ...)` row. Rows with an `action`
   key are not Called answers.
@@ -300,6 +307,8 @@ MCP tools: `peer_list {}`, `peer_send {to, text, from?}`, `peer_inbox {name?, al
 `decision_open {question, options?: [str], from?}` (appends decisions.jsonl and delivers to $FLEET_DECIDE),
 `decision_list {status?}`, `decision_answer {id, answer}` (marks answered, delivers to the asker only; see Messaging routing),
 `decision_report {id, ok, note?}`, `decision_find {text}` (see DECISIONS UI). `decision_open` also takes `allow?: [pick|edit|own|snooze|refuse]`.
+`decision_open` also takes `recheckAfter?`: an ISO 8601 time or a duration (`30m`, `4h`, `2d`), stored as ISO UTC;
+anything else refuses the call (issue #63).
 Sender = `from` arg, else `$FLEET_NAME`, else error.
 Delivery (`deliver(frm, to, text)`): always append to inbox/<to>.jsonl, then wake by the target's roster `cli`:
 - codex: `$FLEET_CODEX_BIN queue --thread <to> --message "[fleet message from <frm>] <text>"` (PROVEN wakes an idle TUI)
@@ -816,6 +825,16 @@ State files are listed in docs/design/four-desks.md section 6. Rate: `ratePerMin
 `fleet watch run --json` lists those under `deferred`. LEARN-ITEMs go to `$FLEET_LEARN`, else `LEARN`; the
 engine's send refuses `ROUTE` and the `orch_name()` value. Every ask's `decision_open` carries
 `watch: {sourceKind, source, ref, url (http/https only), eid}`.
+
+Stale open calls (issue #63, lib/fleet_stale.py):
+- Each run joins every event that passed scrub and dedupe (filter drops included, secret events never) against the
+  `claims[].refs` of open decisions.jsonl rows: a claim ref matches when it equals the event's `ref` or `url` after
+  trimming. No substring or free-text matching; a bare `#12` matches nothing. Only events at or after the call's `at`.
+- One `STALE <Qn> claim <claim id>: ref <ref> changed (<type>) <eid>` line per (call, claim, ref, eid), ledger
+  `watch/stale.jsonl`; one `RECHECK <Qn> from <asker>: recheckAfter <iso> passed` line per (call, recheckAfter),
+  ledger `watch/recheck.jsonl`. All of a run's lines go to DECIDE in one message; `run --json` adds `stale` and
+  `recheck` counts. `python3 lib/fleet_stale.py scan` prints what would match now; `... candidates` prints refresh
+  candidates as JSON lines.
 
 ### WATCH sources: per-kind config keys and change types
 

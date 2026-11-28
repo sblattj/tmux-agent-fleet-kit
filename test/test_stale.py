@@ -7,6 +7,8 @@ import importlib.util
 import json
 import os
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -160,6 +162,163 @@ class Ledgers(unittest.TestCase):
         self.assertIn(json.dumps(c["quote"])[1:-1], raw)
         self.assertIn("decision_revise", c["text"])
         self.assertEqual(S.candidates(self.lp["stale"], set()), [])
+
+
+# ---------------------------------------------------------------- end to end on a temp FLEET_STATE
+
+LIB = os.path.join(ROOT, "lib")
+FLEET = os.path.join(ROOT, "bin", "fleet")
+if LIB not in sys.path:
+    sys.path.insert(0, LIB)
+
+
+def _jsonl(path):
+    if not os.path.exists(path):
+        return []
+    with open(path) as f:
+        return [json.loads(x) for x in f if x.strip()]
+
+
+def _iso(dt):
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+class Fleet(unittest.TestCase):
+    """decision_open with claims and recheckAfter, a WATCH run, the card, refresh and intake, on one temp state."""
+
+    def setUp(self):
+        self.state = tempfile.mkdtemp(prefix="stale-e2e-")
+        self._env = {k: os.environ.get(k) for k in ("FLEET_STATE", "FLEET_DECIDE", "FLEET_ROUTE", "FLEET_LEARN",
+                                                     "FLEET_NAME", "TMUX")}
+        os.environ["FLEET_STATE"] = self.state
+        for k in ("FLEET_DECIDE", "FLEET_ROUTE", "FLEET_LEARN", "FLEET_NAME", "TMUX"):
+            os.environ.pop(k, None)
+        import fleet_mesh
+        import fleet_decisions
+        self.mesh, self.dec = fleet_mesh, fleet_decisions
+
+    def tearDown(self):
+        for k, v in self._env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        shutil.rmtree(self.state, ignore_errors=True)
+
+    def p(self, *parts):
+        return os.path.join(self.state, *parts)
+
+    def open_call(self, refs=("acme/widget#333",), **kw):
+        args = {"from": "lane-a", "question": "Merge the widget fix before the release?", "options": ["yes", "no"],
+                "claims": [{"id": "c1", "text": "the widget fix PR is still open", "source": "gh pr view 333",
+                            "options": ["a"], "refs": list(refs)}]}
+        args.update(kw)
+        res = self.mesh.t_decision_open(args)
+        return res.split()[1].rstrip(";")
+
+    def watch_run(self, events):
+        path = self.p("events-in.jsonl")
+        with open(path, "w") as f:
+            for e in events:
+                f.write(json.dumps(e) + "\n")
+        with open(self.p("watch.json"), "w") as f:
+            json.dump({"sources": [{"name": "oss", "kind": "command", "argv": ["cat", path], "timeoutSec": 10}],
+                       "filters": [{"kind": "fyi", "when": {"any": True}}]}, f)
+        env = {k: v for k, v in os.environ.items() if not k.startswith("FLEET_")}
+        env["FLEET_STATE"] = self.state
+        r = subprocess.run([FLEET, "watch", "run", "--once", "--force", "--json"], env=env, capture_output=True,
+                           text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        return json.loads(r.stdout.strip().splitlines()[-1])
+
+    def event(self, ref="acme/widget#333", type_="pr.merged", n=1):
+        at = _iso(datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=n))
+        return {"actor": "Bob_Example", "at": at, "eid": "command:oss:%s:%s:%s" % (ref, at, type_), "fields": {},
+                "quote": "merged", "ref": ref, "tags": [], "title": "widget fix", "type": type_,
+                "url": "https://example.test/acme/widget/pull/333"}
+
+    def desk_lines(self):
+        return [ln for m in _jsonl(self.p("inbox", "DECIDE.jsonl")) for ln in (m.get("text") or "").split("\n")]
+
+    def test_recheck_after_is_stored_as_iso_and_junk_refused(self):
+        cid = self.open_call(recheckAfter="4h")
+        row = self.mesh.get_decision(cid)
+        t = datetime.datetime.strptime(row["recheckAfter"], "%Y-%m-%dT%H:%M:%SZ")
+        delta = t.replace(tzinfo=datetime.timezone.utc) - datetime.datetime.now(datetime.timezone.utc)
+        self.assertTrue(3.9 * 3600 < delta.total_seconds() <= 4 * 3600, delta)
+        with self.assertRaises(ValueError):
+            self.open_call(recheckAfter="next tuesday")
+        self.assertNotIn("recheckAfter", self.mesh.get_decision(self.open_call()))
+
+    def test_watch_flags_a_changed_claim_ref_once_and_refresh_asks_the_asker(self):
+        cid = self.open_call()
+        other = self.open_call(refs=["other/repo#333"], question="Unrelated call on another repo?")
+        merged = self.event()
+        res = self.watch_run([merged])
+        self.assertEqual(res.get("stale"), 1, res)
+        stale_lines = [ln for ln in self.desk_lines() if ln.startswith("STALE")]
+        self.assertEqual(len(stale_lines), 1)
+        self.assertTrue(stale_lines[0].startswith("STALE %s claim c1: ref acme/widget#333 changed (pr.merged) "
+                                                  % cid), stale_lines)
+        self.assertFalse(any(other + " " in ln for ln in stale_lines))
+        self.assertFalse(os.path.exists(self.p("inbox", "ROUTE.jsonl")))
+        # a second run with the same event: dedupe (seen) and the ledger keep it at one line
+        self.watch_run([merged])
+        self.assertEqual(len([ln for ln in self.desk_lines() if ln.startswith("STALE")]), 1)
+        # the card carries it, with the call's age
+        cards, _ = self.dec.open_cards()
+        card = [c for c in cards if c["id"] == cid][0]
+        self.assertEqual([(r["claim"], r["ref"]) for r in card["stale"]], [("c1", "acme/widget#333")])
+        self.assertTrue(card["age"])
+        self.assertFalse(card["recheck"])
+        self.assertIn("stale: claim c1 ref acme/widget#333 changed (pr.merged)",
+                      "\n".join(self.dec.stale_card_lines(card)))
+        self.assertEqual([c for c in cards if c["id"] == other][0]["stale"], [])
+        # refresh offers it as a grounded stale row; B + confirm pings the asker and leaves the call as it was
+        out = self.dec.refresh_all({"refreshSources": []})
+        rows = {r["id"]: r for r in out["rows"]}
+        self.assertEqual(rows[cid]["b"]["kind"], "stale")
+        self.assertNotIn(other, rows)
+        q_before = self.mesh.get_decision(cid)["question"]
+        self.dec.refresh_choose(cid, "B")
+        got = self.dec.refresh_confirm(cid)
+        self.assertEqual(got["asked"], "lane-a")
+        asked = _jsonl(self.p("inbox", "lane-a.jsonl"))
+        self.assertTrue(any("decision_revise" in m["text"] and cid in m["text"] for m in asked), asked)
+        row = self.mesh.get_decision(cid)
+        self.assertEqual((row["status"], row["question"]), ("open", q_before))
+
+    def test_answered_calls_are_not_flagged(self):
+        cid = self.open_call()
+        self.mesh.mark_decision(cid, "yes")
+        res = self.watch_run([self.event()])
+        self.assertEqual(res.get("stale"), 0)
+        self.assertFalse(any(ln.startswith("STALE") for ln in self.desk_lines()))
+
+    def test_recheck_due_goes_to_decide_once_and_intake_pings_the_asker_once(self):
+        past = _iso(datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=5))
+        cid = self.open_call(recheckAfter=past)
+        later = self.open_call(recheckAfter="2d", question="A call with a later recheck time?")
+        self.watch_run([])
+        self.watch_run([])
+        rl = [ln for ln in self.desk_lines() if ln.startswith("RECHECK")]
+        self.assertEqual(rl, ["RECHECK %s from lane-a: recheckAfter %s passed" % (cid, past)])
+        cards, _ = self.dec.open_cards()
+        by = {c["id"]: c for c in cards}
+        self.assertTrue(by[cid]["recheck"])
+        self.assertFalse(by[later]["recheck"])
+        out = self.dec.intake(rl[0])
+        self.assertEqual([r["id"] for r in out.get("recheck", [])], [cid])
+        out2 = self.dec.intake(rl[0])
+        self.assertEqual(out2.get("recheck"), None)
+        self.assertTrue(any("already pinged" in s for s in out2["skipped"]))
+        pings = [m for m in _jsonl(self.p("inbox", "lane-a.jsonl")) if "recheck time" in m["text"]]
+        self.assertEqual(len(pings), 1)
+
+    def test_intake_lists_stale_lines_without_skipping_them(self):
+        out = self.dec.intake("STALE Q4 claim c1: ref acme/widget#333 changed (pr.merged) command:oss:x")
+        self.assertEqual([h["id"] for h in out["stale"]], ["Q4"])
+        self.assertEqual(out["skipped"], [])
 
 
 if __name__ == "__main__":

@@ -5,6 +5,8 @@
   ask            -> decision_open (from WATCH, to DECIDE), held during quiet hours
   task-candidate -> one TASK-CANDIDATE message to DECIDE per run
   fyi            -> one FYI message to DECIDE per run
+  claim refs     -> one STALE line per open call claim whose ref matched an event, one RECHECK line per call past
+                    its recheckAfter, in one message to DECIDE per run (#63)
   score >= learn.minScore -> one LEARN-ITEM message to LEARN per run (origin as the event)
 
 WATCH never addresses ROUTE: every delivery goes through _send(), which refuses ROUTE and the ROUTE desk name.
@@ -18,6 +20,8 @@ decision_open):
   stats.json     cumulative counts per kind and dropped per rule (fleet watch stats)
   held.jsonl     asks held during quiet hours, opened as one batch after
   watch.log      one line per run and per failure; counts and names only, never event text
+  stale.jsonl    open calls whose claim ref matched an event (#63), once per (call, claim, ref, eid)
+  recheck.jsonl  open calls past their recheckAfter (#63), once per (call, recheckAfter)
 
 Verbs shared by the status pane and `fleet watch serve` (same function, same state):
   snapshot(state, now=None)      read-only, the contract shape
@@ -62,6 +66,7 @@ def _load(name):
 
 
 mesh = _load("fleet_mesh")
+stale = _load("fleet_stale")  # issue #63: open calls whose claim refs changed, or whose recheck time passed
 _listen = None
 
 
@@ -543,6 +548,7 @@ class Engine:
         finally:
             seen.close()
         self._route(routed, min_score, hold, result)
+        self._stale(result.pop("_stale_pool", []), now, result)
         if not quiet:
             ids = release_held(self.state, now=now, _locked_already=True)
             if ids:
@@ -710,6 +716,7 @@ class Engine:
                 drop("duplicate")
                 continue
             batch_eids.add(ev.eid)
+            result.setdefault("_stale_pool", []).append(ev)  # #63: filter drops still count as a changed ref
             kind, label = classify(filters, ev, self.me)
             if kind == C.KIND_DROP:
                 drop(label)
@@ -735,6 +742,17 @@ class Engine:
             bursts[bk] = (ev, at)
             out.append(ev)
         return out
+
+    def _stale(self, pool, now, result):
+        """#63: open calls whose claim refs match an event of this run, and calls past their recheckAfter, go to
+        DECIDE as STALE / RECHECK lines, each once (ledgers in watch/). Exact ref or url match only."""
+        calls = [d for d in mesh.decisions() if stale.is_open(d)]
+        hits = stale.new_stale(os.path.join(self.p["dir"], "stale.jsonl"), stale.match(calls, pool), now)
+        due = stale.new_recheck(os.path.join(self.p["dir"], "recheck.jsonl"), stale.recheck_due(calls, now), now)
+        lines = [stale.stale_line(h) for h in hits] + [stale.recheck_line(c) for c in due]
+        result["stale"], result["recheck"] = len(hits), len(due)
+        if lines:
+            _send(mesh.desk_name(), "\n".join(lines))
 
     def _route(self, routed, min_score, hold, result):
         desk = mesh.desk_name()

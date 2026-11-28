@@ -43,6 +43,7 @@ import urllib.parse
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import fleet_mesh as mesh  # noqa: E402
+import fleet_stale as stale  # noqa: E402  issue #63: claim refs that changed, recheck times
 
 ROOT = os.path.dirname(HERE)
 DESK_SH = os.path.join(ROOT, "skills", "running-the-decisions-desk", "desk.sh")
@@ -289,6 +290,7 @@ def open_cards(include_snoozed=False):
             n_snoozed += 1
             continue
         card["snoozedUntil"] = snoozed.get(prim["id"])
+        card.update(stale_fields(prim))
         cards.append(card)
     cards.sort(key=lambda c: (c.get("at") or "", _idnum(c["id"])), reverse=True)
     return cards, n_snoozed
@@ -711,6 +713,7 @@ def refresh_all(cfg=None):
             lograw = f.read()
     except OSError:
         lograw = ""
+    _stale_candidates(cards, found)
     for card in cards:
         if card["id"] in found:
             continue
@@ -771,7 +774,9 @@ def refresh_confirm(cid):
     finally:
         lk.close()
     b = r["b"]
-    if b["kind"] == "revise":
+    if b["kind"] == "stale":
+        res = ask_revise(cid, b)
+    elif b["kind"] == "revise":
         res = revise(cid, b["text"])
     else:
         res = pick(cid, text=b["quote"], kind="found", extra={"source": b["source"], "quoteAt": b.get("at")})
@@ -783,6 +788,104 @@ def refresh_confirm(cid):
     finally:
         lk.close()
     return res
+
+
+# ---------------------------------------------------------------- stale calls (issue #63)
+#
+# WATCH writes watch/stale.jsonl (an open call's claim ref matched an event) and watch/recheck.jsonl (a call is past
+# its recheckAfter) and sends DECIDE one STALE / RECHECK line each. Cards show the call's age, the stale claims and a
+# recheck flag. A stale row joins refresh as kind "stale": choose B + confirm asks the asker to decision_revise (it
+# never rewrites the call). A RECHECK line pings the asker once per recheckAfter value.
+
+def _stale_paths():
+    return stale.ledger_paths(mesh.state_dir())
+
+
+def _age(at):
+    t = _parse_at(at)
+    if not t:
+        return None, ""
+    sec = max(0, int((datetime.datetime.now(datetime.timezone.utc) - t).total_seconds()))
+    if sec < 3600:
+        return sec, "%dm" % (sec // 60)
+    if sec < 172800:
+        return sec, "%dh" % (sec // 3600)
+    return sec, "%dd" % (sec // 86400)
+
+
+def stale_fields(call):
+    """Card fields: age (open for, e.g. 27h), ageSec, recheckAfter, recheck (past it), stale [{claim, ref, type}]."""
+    row = mesh.get_decision(call["id"]) or {}
+    sec, age = _age(call.get("at"))
+    ra = row.get("recheckAfter")
+    t = _parse_at(ra)
+    rows = stale.stale_by_call(_stale_paths()["stale"], {call["id"]}).get(call["id"], [])
+    return {"age": age, "ageSec": sec, "recheckAfter": ra,
+            "recheck": bool(t and t <= datetime.datetime.now(datetime.timezone.utc)), "stale": rows}
+
+
+def stale_card_lines(c):
+    out = []
+    if c.get("recheck"):
+        out.append("    recheck: open %s, recheck time %s passed" % (c.get("age") or "?", c.get("recheckAfter")))
+    for r in c.get("stale") or []:
+        out.append("    stale: claim %s ref %s changed (%s)" % (r.get("claim"), r.get("ref"), r.get("type")))
+    return out
+
+
+def _stale_candidates(cards, found):
+    """The built-in refresh source for claim refs: a stale row for an open call no other source answered."""
+    lp = _stale_paths()["stale"]
+    for cand in stale.candidates(lp, {c["id"] for c in cards}):
+        if cand["id"] in found:
+            continue
+        try:
+            with open(cand["path"]) as f:
+                ground = f.read()
+        except OSError:
+            ground = ""
+        if not _in_source(cand["quote"], ground):
+            continue
+        found[cand["id"]] = {"kind": "stale", "quote": cand["quote"], "text": cand["text"], "at": cand.get("at"),
+                             "source": "WATCH claim refs", "claim": cand.get("claim"), "ref": cand.get("ref")}
+
+
+def ask_revise(cid, b):
+    """Confirmed stale row: ask the asker (not the human) to decision_revise. The call stays open and unchanged."""
+    row = mesh.get_decision(cid)
+    if not row or row.get("status") != "open":
+        raise AlreadyAnswered("%s is no longer open" % cid)
+    asker = row.get("from")
+    if not asker:
+        raise ValueError("%s has no asker to ping" % cid)
+    res = mesh.deliver(sender(), asker, b["text"])
+    return {"ok": True, "id": cid, "asked": asker, "result": res}
+
+
+def _stale_intake(line, out, desk):
+    """STALE lines are listed (the card and refresh carry them); a RECHECK line pings the asker once."""
+    h = stale.parse_stale_line(line)
+    if h:
+        out.setdefault("stale", []).append(h)
+        return True
+    r = stale.parse_recheck_line(line)
+    if not r:
+        return False
+    row = mesh.get_decision(r["id"]) or {}
+    lp = _stale_paths()["pinged"]
+    key = stale.recheck_key(r)
+    if row.get("status") != "open" or row.get("recheckAfter") != r["recheckAfter"]:
+        out["skipped"].append("%s (no longer open or recheck time changed)" % line[:80])
+        return True
+    if key in {stale.recheck_key(x) for x in stale.read_jsonl(lp)}:
+        out["skipped"].append("%s (already pinged)" % line[:80])
+        return True
+    asker = row.get("from")
+    res = mesh.deliver(desk, asker, stale.recheck_text(row)) if asker else "no asker"
+    stale.append_jsonl(lp, [{"at": mesh.now(), "id": r["id"], "recheckAfter": r["recheckAfter"], "to": asker,
+                             "result": res}])
+    out.setdefault("recheck", []).append({"id": r["id"], "to": asker, "result": res})
+    return True
 
 
 # ---------------------------------------------------------------- role guard
@@ -1060,6 +1163,8 @@ def _intake_lines(text, out, desk, orch, probe_c):
                                json.dumps(seen, indent=2, sort_keys=True) + "\n")
             out["fyi"].append({"eids": fresh, "result": res})
             continue
+        if _stale_intake(line, out, desk):
+            continue
         out["skipped"].append(line[:120])
 
 
@@ -1175,7 +1280,8 @@ class Hub:
     def files(self):
         return [mesh._decisions_path(), mesh.decisions_log_path(), mesh.reports_path(), goal_path(),
                 state_path("decisions-ui-state.json"), state_path("decisions-refresh.json"),
-                state_path("roster.json"), _meta_path(), state_path(os.path.join("learn", "ledger.jsonl"))]
+                state_path("roster.json"), _meta_path(), state_path(os.path.join("learn", "ledger.jsonl")),
+                _stale_paths()["stale"]]
 
     def signature(self):
         out = []
@@ -1438,6 +1544,7 @@ class Tui:
                                           ("  " + w["url"]) if w.get("url") else ""))
         if c.get("conflict"):
             lines.append("    !! %s; answer it in the desk pane" % c["conflict"])
+        lines.extend(stale_card_lines(c))
         for o in c["options"]:
             lines.append("    [%s%s] %s%s" % (o["letter"], ", rec" if o["rec"] else "", o["text"],
                                              ("   (downside: %s)" % o["downside"]) if o["downside"] else ""))

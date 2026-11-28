@@ -1303,8 +1303,15 @@ def _clean_verified(verified, rec):
 
 
 def _clean_recheck(at, rec):
-    """Issue #63: recheckAfter (ISO UTC). Accepted as given until #63 lands."""
-    return at if isinstance(at, str) and at.strip() else None
+    """Issue #63: recheckAfter, when the asker wants the call re-checked: an ISO 8601 time or a duration from now
+    (30m, 4h, 2d), stored as ISO UTC. Past it the card says "recheck" and WATCH has DECIDE ping the asker once."""
+    if at is None or at == "":
+        return None
+    here = os.path.dirname(os.path.abspath(__file__))
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    import fleet_stale  # lazy: pure helpers, no mesh import at load
+    return fleet_stale.parse_recheck(at)
 
 
 def t_decision_open(args):
@@ -1477,6 +1484,8 @@ TOOLS = [
     ("decision_open", "Open a decision and deliver it to the decisions desk.",
      _schema({"question": _S, "options": {"type": "array", "items": _S}, "from": _S,
               "allow": {"type": "array", "items": {"type": "string", "enum": list(ALLOW_TYPES)}},
+              "recheckAfter": {"type": "string", "description": "optional: re-check this call after an ISO 8601 "
+                               "time or a duration (30m, 4h, 2d); past it the card says recheck and you are pinged"},
               "watch": {"type": "object", "description": "WATCH source of the call: sourceKind, source, ref, url "
                         "(http/https only), eid. Other keys are dropped.",
                         "properties": {k: _S for k in WATCH_KEYS}}}, ["question"]),
