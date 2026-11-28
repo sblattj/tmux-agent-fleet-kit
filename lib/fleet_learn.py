@@ -674,6 +674,17 @@ def answer_bearing(quote):
     return len(kept) >= ANSWER_MIN_WORDS
 
 
+def _with_option_text(did, verbatim, calls):
+    """Issue #59: a bare letter ("b") answer takes its option text from the call's stored options ("b: retry once"),
+    so it bears an answer on its own; anything else, or an id with no stored option of that letter, is unchanged."""
+    if answer_bearing(verbatim):
+        return verbatim
+    if calls[0] is None:
+        calls[0] = mesh.decisions()
+    row = mesh._find_row(calls[0], did)
+    return mesh.answer_with_text(row, verbatim) if row else verbatim
+
+
 def _plumbing_lane(name):
     if not name:
         return False
@@ -792,6 +803,7 @@ def _sync_decisions(res, now):
     if not st["present"]:
         return []
     answers, heard = {}, []
+    calls = [None]  # decisions.jsonl rows, read once on the first bare letter (#59)
     for n, ln in enumerate(mesh._read_lines(path), 1):
         st["read"] += 1
         try:
@@ -803,6 +815,7 @@ def _sync_decisions(res, now):
             st["skipped"] += 1
             continue
         if r.get("id"):
+            r["verbatim"] = _with_option_text(str(r["id"]), r["verbatim"], calls)
             answers[str(r["id"])] = (n, r)
         elif r.get("kind") == "decided-on-call":
             heard.append((n, r))

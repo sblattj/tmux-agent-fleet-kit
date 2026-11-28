@@ -26,6 +26,7 @@ One session (the desk, `$FLEET_DECIDE`, default DECIDE) is the only place the hu
 - Calls can also arrive through the mesh: a lane's `decision_open` lands in your inbox (`peer_inbox`) and in `decisions.jsonl`. Close those with `decision_answer {id, answer}` (marks `decisions.jsonl`, delivers to the asker) as well as `desk.sh answer` (goal file).
 
 ## Rules of the desk
+- Option letters are fixed when a call opens, in the asker's order; `(rec)` is a flag, never a position. Show and relay a pick as the letter plus its text (`b: retry once`), never a bare letter.
 - One call at a time, few words. Number calls continuously across the session (shown number = fixed offset from the Q id) instead of renumbering each list. Keep a map of shown number to Q id before mapping "1a2a3a"; a bare "3" followed by text is a free-form answer.
 - "What's the difference", "are they approved", "check how X deploys first" mean look it up (gh, git, the repo's CI file), answer in a few lines, then re-ask the same call. Never answer for the human.
 - Duplicates: ROUTE may forward a call the asker already sent. Match on content and say "already item N"; do not add a second id.

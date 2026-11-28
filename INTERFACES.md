@@ -198,8 +198,13 @@ fleet decisions learn [<id>]             one LEARN row with the human's verbatim
   is primary, the rest are `dupIds`; askers = each id's `from` + `relayTo`, unique, in order. An id whose two stores
   hold different questions (normalized, neither containing the other) is not one call: the card carries `conflict`,
   offers no answer buttons, and `pick` refuses it (exit 1, "ambiguous"); answer it in the desk pane.
-- Options come from `decision_open.options` or, for goal-file items, inline `(a, rec) x (b) y` markers. `(rec)` / `(a, rec)` /
-  `[rec]` marks rec; `(downside: ...)` is split off. Rec options sort first; letters are assigned after sorting.
+- Options come from `decision_open.options` or, for goal-file items, inline `(a, rec) x (b) y` markers. `decision_open`
+  stores them as `[{letter, text, rec}]` (plus `downside`), letters fixed at open (`fleet_mesh._clean_options`); every
+  reader goes through `fleet_mesh.option_list(row)`, which also reads old plain-string rows. A plain string's `(rec)` /
+  `(c, rec)` / `[rec]` sets the rec flag, a leading `(c)` / `c)` is the asker's letter, `(downside: ...)` is split off.
+  The asker's letters are kept when every option has one and none repeats; otherwise a, b, c in the asker's order.
+  Nothing is reordered: rec is a flag and a badge, never a position. A relayed pick is `<letter>: <text>`, never a bare
+  letter (`fleet_mesh.answer_with_text(row, answer)` expands one).
 - `pick`, under `$FLEET_STATE/.decisions-pick.lock`: `fleet_mesh.mark_decision(id, verbatim, only_open=True)` for every
   mesh id of the card (the commit point; raises `AlreadyAnswered`), then `deliver()` "[answer <id>] <verbatim>" to each
   asker, plus "[DECISIONS UI copy] ..." to `$FLEET_ROUTE` when `copyOrchestrator` and it is not an asker, then the

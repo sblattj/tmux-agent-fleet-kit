@@ -131,26 +131,14 @@ def _idnum(i):
 
 # ---------------------------------------------------------------- options
 
-_DOWN = re.compile(r"\s*[\(\[]?\s*downside:\s*(.+?)\s*[\)\]]?\s*$", re.I)
-_REC = re.compile(r"\(\s*(?:[a-z]\s*,\s*)?rec(?:ommended)?\s*\)|\[\s*(?:[a-z]\s*,\s*)?rec(?:ommended)?\s*\]", re.I)
-_LETTER = re.compile(r"^\s*\(?[a-z]\)\s+", re.I)
 _INLINE = re.compile(r"\(([a-z])(\s*,\s*rec(?:ommended)?)?\)\s*", re.I)
 
 
 def parse_option(o):
-    if isinstance(o, dict):
-        return {"text": str(o.get("text") or ""), "rec": bool(o.get("rec")), "downside": o.get("downside") or None}
-    s = str(o)
-    down = None
-    m = _DOWN.search(s)
-    if m:
-        down = m.group(1).strip()
-        s = s[:m.start()]
-    rec = bool(_REC.search(s))
-    s = _REC.sub(" ", s)
-    s = _LETTER.sub("", s)
-    s = " ".join(s.split()).strip(" ,;-")
-    return {"text": s, "rec": rec, "downside": down}
+    """{text, rec, downside, letter}; letter is the asker's own, or None (parsing lives in fleet_mesh, issue #59)."""
+    p = mesh.parse_option(o)
+    p.setdefault("downside", None)
+    return p
 
 
 def split_inline(question):
@@ -166,12 +154,11 @@ def split_inline(question):
 
 
 def build_options(raw):
-    parsed = [parse_option(o) for o in raw]
-    parsed = [p for p in parsed if p["text"]]
-    ordered = [p for p in parsed if p["rec"]] + [p for p in parsed if not p["rec"]]
-    for i, p in enumerate(ordered):
-        p["letter"] = chr(ord("a") + i)
-    return ordered
+    """Card options: the stored letters in the asker's order; rec is a flag and a badge, never a position (#59)."""
+    opts = mesh.option_list({"options": list(raw or [])})
+    for o in opts:
+        o.setdefault("downside", None)
+    return opts
 
 
 # ---------------------------------------------------------------- reading state

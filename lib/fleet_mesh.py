@@ -1261,28 +1261,76 @@ def _open_fields(args, rec):
 
 
 def _clean_options(opts):
-    """decision_open options -> [{letter, text, rec}], letters fixed in the asker's order (issue #59 refines)."""
+    """decision_open options -> [{letter, text, rec}], letters fixed at open in the asker's order (issue #59).
+
+    Plain strings parse their markers: "(rec)" / "[rec]" / "(c, rec)" set the rec flag, a leading "(c)" or "c)" is the
+    asker's own letter, "(downside: ...)" is split off. Rec is a flag, never a position: nothing is reordered."""
     if opts is None:
         return []
-    if not isinstance(opts, list):
-        raise ValueError("`options` must be a list")
-    return option_list({"options": opts})
+    if not isinstance(opts, list) or not all(isinstance(o, (str, dict)) for o in opts):
+        raise ValueError("`options` must be a list of strings or {letter, text, rec} objects")
+    out = option_list({"options": opts})
+    if not out and opts:
+        raise ValueError("`options` has no option text")
+    return out
+
+
+_OPT_DOWN = re.compile(r"\s*[\(\[]?\s*downside:\s*(.+?)\s*[\)\]]?\s*$", re.I)
+_OPT_REC = re.compile(r"\(\s*(?:[a-z]\s*,\s*)?rec(?:ommended)?\s*\)|\[\s*(?:[a-z]\s*,\s*)?rec(?:ommended)?\s*\]", re.I)
+_OPT_LETTER = re.compile(r"^\s*\(?([a-z])(?:\s*,\s*rec(?:ommended)?)?\)\s+", re.I)
+
+
+def parse_option(o):
+    """One stored or typed option -> {letter (as the asker wrote it, or None), text, rec, downside?}."""
+    if isinstance(o, dict):
+        letter = str(o.get("letter") or "").strip().lower()
+        item = {"letter": letter if len(letter) == 1 and letter.isalpha() else None,
+                "text": " ".join(str(o.get("text") or "").split()), "rec": bool(o.get("rec"))}
+        if o.get("downside"):
+            item["downside"] = o["downside"]
+        return item
+    s, down = str(o), None
+    m = _OPT_DOWN.search(s)
+    if m:
+        down, s = m.group(1).strip(), s[:m.start()]
+    lm = _OPT_LETTER.match(s)
+    letter = lm.group(1).lower() if lm else None
+    if lm:
+        s = s[lm.end():]
+    rec = bool(_OPT_REC.search(s)) or bool(lm and "rec" in lm.group(0).lower())
+    s = " ".join(_OPT_REC.sub(" ", s).split()).strip(" ,;-")
+    item = {"letter": letter, "text": s, "rec": rec}
+    if down:
+        item["downside"] = down
+    return item
 
 
 def option_list(row):
-    """A row's options as [{letter, text, rec}]: stored letters kept; plain strings lettered a, b, c in order."""
-    out = []
-    for i, o in enumerate(row.get("options") or []):
-        if isinstance(o, dict):
-            letter = str(o.get("letter") or chr(ord("a") + i)).lower()
-            item = {"letter": letter, "text": str(o.get("text") or ""), "rec": bool(o.get("rec"))}
-            for k in ("downside",):
-                if o.get(k):
-                    item[k] = o[k]
-        else:
-            item = {"letter": chr(ord("a") + i), "text": str(o), "rec": False}
-        out.append(item)
+    """A row's options as [{letter, text, rec}] in stored order; never reordered (issue #59).
+
+    The asker's letters are kept when every option has one and none repeats; otherwise a, b, c in order."""
+    out = [p for p in (parse_option(o) for o in (row.get("options") or [])) if p["text"]]
+    given = [p["letter"] for p in out]
+    if not (all(given) and len(set(given)) == len(given)):
+        for i, p in enumerate(out):
+            p["letter"] = chr(ord("a") + i)
     return out
+
+
+def rec_option(opts):
+    """The first option flagged rec, or None."""
+    return next((o for o in opts or [] if isinstance(o, dict) and o.get("rec")), None)
+
+
+def answer_with_text(row, answer):
+    """A bare letter naming one of the row's options becomes '<letter>: <text>', so a relay never carries a bare
+    letter (issue #59). Anything else comes back unchanged."""
+    a = (answer or "").strip().lower()
+    if len(a) == 1 and a.isalpha() and row:
+        for o in option_list(row):
+            if o["letter"] == a:
+                return "%s: %s" % (o["letter"], o["text"])
+    return answer
 
 
 def option_text(o):
