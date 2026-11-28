@@ -374,9 +374,8 @@ class Wired(unittest.TestCase):
         self.assertEqual(c["rev"], 2)
         self.assertEqual(c["revSummary"], "rev 2, changed: question")
         self.assertIn(["+", "attempts with jitter,"], c["diff"]["question"])
-        lines = self.dec.Tui.render_card(None, c, False) if hasattr(self.dec, "Tui") else None
-        if lines is not None:
-            self.assertIn("    rev 2, changed: question (why: jitter)", lines)
+        lines = self.dec.Tui.render_card(None, c, False)
+        self.assertIn("    rev 2, changed: question (why: jitter)", lines)
 
     def test_pick_against_older_rev_warns(self):
         self.dec.revise("Q1", question=Q_REWORD, why="jitter", by="lane-a")
