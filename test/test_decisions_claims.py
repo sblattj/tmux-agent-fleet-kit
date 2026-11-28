@@ -81,7 +81,7 @@ class TestLint(unittest.TestCase):
         ("one step: rerun the job", "says one step"),
         ("only the docs change", "says only"),
         ("the fix already landed", "says already"),
-        ("54 hotfixes get picked", "names a count"),
+        ("12 files change", "names a count"),
         ("two moments, not one", "names a count"),
         ("the 3 failing tests", "names a count"),
     ]
