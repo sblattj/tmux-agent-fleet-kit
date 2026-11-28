@@ -7,7 +7,7 @@ Placeholders: {{HUMAN}} is the person who answers calls, {{DECIDE}} is the decis
 - **{{ROUTE}}** owns launch, park, reopen and cleanup, and never edits files itself. It hands work to the live lanes, routes by the scope in each lane's name, and relays replies. It reads the decisions log (`$FLEET_STATE/decisions-log.jsonl`) to stay current. It never asks {{HUMAN}} anything. Only {{ROUTE}} (or {{HUMAN}} in their own shell) runs `fleet launch|park|stop|reopen|cleanup --apply`; other roles are refused.
 - **{{DECIDE}}** is the only place {{HUMAN}} answers questions. Every question for {{HUMAN}} (lanes' and {{ROUTE}}'s own) goes to {{DECIDE}}. It asks one numbered list and relays each typed answer directly to the asker only (no copy to {{ROUTE}}). Every answer is also appended to the decisions log, which {{ROUTE}} reads, and recorded in the desk's own goal file. It never runs `/goal`: a standing desk can never meet one, so the stop hook would loop.
 - **Lanes** do the work. Status reports go to {{ROUTE}}; questions go to {{DECIDE}}. New work, a scope change, or a request to launch or park a lane goes through {{ROUTE}}, never by launching or parking lanes yourself.
-- **WATCH** only watches and reports, to {{DECIDE}}; **LEARN** keeps the ledger of what the fleet decided and did; **workers** run a goal. The standing desks ({{ROUTE}}, {{DECIDE}}, WATCH, LEARN) are never parked.
+- **WATCH** only watches and reports, to {{DECIDE}}; **LEARN** keeps the ledger of what the fleet decided and did; **AUTH** owns every login and auth problem and is the only session that runs interactive sign-ins as {{HUMAN}}; **workers** run a goal. The standing desks ({{ROUTE}}, {{DECIDE}}, WATCH, LEARN, AUTH) are never parked.
 
 ### No blocking questions
 - Interactive ask-the-user tools are off for every session (the launcher disallows them). Ask in plain text through {{DECIDE}}: one numbered "your calls" list, recommended option first, each item standing alone. Then keep working on everything that does not depend on the answer.
@@ -16,8 +16,14 @@ Placeholders: {{HUMAN}} is the person who answers calls, {{DECIDE}} is the decis
 ### Every lane starts inside a goal
 - Write a living goal file (`fleet-goal new <goal.json> --goal "<text>" --report-to {{ROUTE}}`), edit it, validate it (`fleet-goal check <goal.json>`), then turn it into a condition (`fleet-goal condition <goal.json> > cond.txt`) and start the lane with `fleet launch --cli <claude|codex|opencode> <name> goal cond.txt`.
 - The goal file is the state. If a prompt, memory or a summary disagrees with it, the file wins. Plain-prompt launches are only for a successor started with `resume`.
-- `fleet desks up` starts the four standing desks: window `deskA` ({{ROUTE}} left, {{DECIDE}} right) and window `deskB` (WATCH left, LEARN right). One launcher starts every other lane: `fleet launch <name> goal|prompt|resume`. Never hand-write launch scripts.
+- `fleet desks up` starts the five standing desks: window `deskA` ({{ROUTE}} left, {{DECIDE}} top right, AUTH under {{DECIDE}}) and window `deskB` (WATCH left, LEARN right). One launcher starts every other lane: `fleet launch <name> goal|prompt|resume`. Never hand-write launch scripts.
 - {{DECIDE}} starts with `fleet desks up` and never gets a `/goal`.
+
+### Sign-ins and auth
+- Every login or auth failure (expired SSO session, CLI or tracker token, git host account, PAT, MFA, keychain prompt) goes to AUTH: `fleet auth ask --what "<what failed>"` (or `peer_send` to AUTH). Then keep working on what does not need it; AUTH tells you when it is fixed. Silent cached-token reads stay allowed for everyone.
+- Only AUTH runs interactive sign-ins as {{HUMAN}}, one at a time, each with a one-line heads-up to {{DECIDE}} first (plus any number to match) and a row in the append-only auth log. `fleet auth trace <time>` shows who asked for a surprise MFA prompt.
+- AUTH sits under {{DECIDE}} so {{HUMAN}} sees it while approving a push or typing a number: it prints any number to match big at once and logs it. A push during an announced sign-in is expected; one nobody announced is an anomaly AUTH logs and routes to {{DECIDE}}. Sign-in order: a cached token first, then {{HUMAN}}'s own signed-in browser (device-code confirm or portal, no MFA), and only then a fresh-profile injector sign-in through AUTH. Never sign in as {{HUMAN}} from a fresh or empty browser profile otherwise. A sign-in passes only when {{HUMAN}} confirms the prompts were the announced ones, never on a log flag.
+- Rotatable tokens are piped, never printed or put in argv. Hard-to-rotate passwords stay with {{HUMAN}}, typed into hidden-prompt scripts they run themselves.
 
 ### Lane lifecycle
 - {{ROUTE}} parks a worker lane when its goal is achieved, or its goal has been stopped for more than 10 minutes. An unread inbox message younger than 1 hour blocks a park. A goal-less worker is parked or kept only by {{ROUTE}}'s decision.

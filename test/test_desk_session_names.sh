@@ -31,10 +31,10 @@ hasnt() { ! printf '%s' "$1" | grep -qF -- "$2"; }
 printf '%s\n' 'Do the thing.' > "$T/prompt.txt"
 V=CLAUDE_CODE_DISABLE_BG_EXIT_HANDOFF=1
 
-# ---- (1) the export, shown in --dry-run: desk mode and the four standing roles get it, a worker does not
+# ---- (1) the export, shown in --dry-run: desk mode and the five standing roles get it, a worker does not
 out=$("$FLEET" launch --dry-run --cli claude --dir "$T" D1 desk 2>&1)
 t "dry-run desk mode exports $V" has "$out" "$V"
-for r in route decide watch learn; do
+for r in route decide watch learn auth; do
   out=$("$FLEET" launch --dry-run --cli claude --role $r --dir "$T" "R_$r" prompt "$T/prompt.txt" 2>&1)
   t "dry-run --role $r exports $V" has "$out" "$V"
 done

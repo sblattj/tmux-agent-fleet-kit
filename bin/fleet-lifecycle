@@ -24,7 +24,8 @@
 # on disk (issue #31; FLEET_TICK_NO_MESH_SCAN=1 skips the ps scan).
 # ACTION: park = worker AND (goal achieved OR goal stopped > 600 s) AND no unread inbox line under 3600 s old;
 # orchestrator-decides = worker with goal none; forget = a row with a retired role (orchestrator, desk, listener,
-# replaced by the four desks): `fleet forget` it; - = nothing. Only workers are parked: route/decide/watch/learn never are.
+# replaced by the four desks): `fleet forget` it; - = nothing. Only workers are parked: route/decide/watch/learn/auth never are,
+# and `fleet park` refuses a standing desk (retire one with `fleet handoff NAME` then `fleet stop NAME`).
 # Stopped-since time, in order: roster goalStoppedAt (epoch secs or ISO), the transcript record's timestamp
 # (claude), the goals db row's updated_at else db mtime (codex), session time.updated (opencode), else file mtime.
 # kiro (Kiro CLI): transcript ${KIRO_HOME:-~/.kiro}/sessions/*/<sid>/{session.json,messages.jsonl}; goal = the
@@ -588,12 +589,12 @@ def print_chrome_tabs():
 
 
 def desks_line(r):
-    """'WARN desks down: ...' when window deskA (ROUTE|DECIDE) or deskB (WATCH|LEARN) has a dead or missing desk pane
+    """'WARN desks down: ...' when window deskA (ROUTE|DECIDE over AUTH) or deskB (WATCH|LEARN) has a dead or missing desk pane
     (issue #9: lanes report to ROUTE and ask DECIDE, so a fleet without them runs unanswered), else ''."""
     rc, out = tm("list-panes", "-a", "-F", "#{pane_id} #{pane_dead}")
     live = set(ln.split()[0] for ln in (out.splitlines() if rc == 0 else []) if ln.endswith(" 0"))
     bad = []
-    for win, desks in (("deskA", ("ROUTE", "DECIDE")), ("deskB", ("WATCH", "LEARN"))):
+    for win, desks in (("deskA", ("ROUTE", "DECIDE", "AUTH")), ("deskB", ("WATCH", "LEARN"))):
         why = []
         for d in desks:
             e = r.get(d) if isinstance(r.get(d), dict) else None
@@ -1075,6 +1076,9 @@ cmd_park() {
   role_guard park
   need jq; need python3
   has_lane "$name" || die "no lane named $name in the roster"
+  case $(roster_get "$name" role) in  # standing desks are never parked (fleet-rules); a desk retires by handoff + stop
+    route|decide|watch|learn|auth) die "$name is a standing desk (role $(roster_get "$name" role)) and is never parked; to retire it: fleet handoff $name, then fleet stop $name" ;;
+  esac
   case $(roster_get "$name" status) in parked|archived) echo "OK $name already $(roster_get "$name" status)"; return 0 ;; esac
   pane=$(roster_get "$name" pane); cli=$(roster_get "$name" cli); pid=$(roster_get "$name" pid)
   facts=$(pyh facts "$name")

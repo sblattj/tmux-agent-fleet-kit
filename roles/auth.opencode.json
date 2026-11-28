@@ -1,0 +1,23 @@
+{
+  "description": "Fleet AUTH desk: owns every login and auth problem, the only session that runs interactive sign-ins",
+  "mode": "primary",
+  "prompt": "{file:./roles/auth.md}",
+  "tools": {
+    "write": false,
+    "edit": false
+  },
+  "permission": {
+    "bash": {
+      "fleet launch*": "deny",
+      "tafk launch*": "deny",
+      "fleet park*": "deny",
+      "tafk park*": "deny",
+      "fleet stop*": "deny",
+      "tafk stop*": "deny",
+      "fleet reopen*": "deny",
+      "tafk reopen*": "deny",
+      "git commit*": "deny",
+      "git push*": "deny"
+    }
+  }
+}

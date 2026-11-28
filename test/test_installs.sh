@@ -176,7 +176,7 @@ check "opencode: agent fleet-probe denies bash and edit, all other tools off" jq
 check "opencode: control: agent fleet-worker does not deny bash" jq -e '.agent["fleet-worker"].tools.bash != false' "$cdir/opencode.json"
 # the global tools deny is overridden by permission "allow" (last match wins), so each agent but fleet-probe denies
 # fleet-probe_* in its own permission; a live opencode 1.19 run showed the worker offered all 8 verbs without it
-check "opencode: every fleet agent but fleet-probe denies fleet-probe_* itself" jq -e '[.agent | to_entries[] | select(.key | startswith("fleet-")) | select(.key != "fleet-probe") | .value.permission["fleet-probe_*"]] | length == 5 and all(. == "deny")' "$cdir/opencode.json"
+check "opencode: every fleet agent but fleet-probe denies fleet-probe_* itself" jq -e '[.agent | to_entries[] | select(.key | startswith("fleet-")) | select(.key != "fleet-probe") | .value.permission["fleet-probe_*"]] | length == 6 and all(. == "deny")' "$cdir/opencode.json"
 check "opencode: built-in build, plan and general deny fleet-probe_*" jq -e '[.agent.build, .agent.plan, .agent.general | .permission["fleet-probe_*"]] == ["deny","deny","deny"]' "$cdir/opencode.json"
 check "opencode: control: agent fleet-probe does not deny its own verbs" jq -e '.agent["fleet-probe"].permission | has("fleet-probe_*") | not' "$cdir/opencode.json"
 check "opencode: the worker keeps its bash deny map next to the probe deny" jq -e '.agent["fleet-worker"].permission.bash["fleet park*"] == "deny"' "$cdir/opencode.json"
@@ -417,17 +417,17 @@ check "kiro: existing mcp server preserved" jq -e '.mcpServers.other.url == "htt
 eq "kiro: steering begin marker once" "$(count 'fleet-rules:begin' "$kh/steering/fleet-rules.md")" 1
 eq "kiro: steering has no unreplaced placeholders" "$(count '{{' "$kh/steering/fleet-rules.md")" 0
 check "kiro: steering placeholder substituted" grep -q 'DESKY\|DESKX' "$kh/steering/fleet-rules.md"
-for r in route decide watch worker; do
+for r in route decide watch auth worker; do
   af=$kh/agents/fleet-$r.json
   check "kiro: agent fleet-$r valid JSON named fleet-$r" jq -e --arg n "fleet-$r" '.name == $n and .tools == ["*"] and .includeMcpJson == true' "$af"
   check "kiro: agent fleet-$r prompt is the inline text of roles/$r.md" jq -e --rawfile p "$ROOT/roles/$r.md" '.prompt == $p and (.prompt | startswith("file:") | not)' "$af"
 done
-for r in worker decide watch; do
+for r in worker decide watch auth; do
   for v in launch park stop reopen; do
     check "kiro: fleet-$r denies shell 'fleet $v*'" jq -e --arg g "fleet $v*" '[.permissions.rules[] | select(.capability=="shell" and .effect=="deny" and (.match | index($g)))] | length == 1' "$kh/agents/fleet-$r.json"
   done
 done
-for r in route decide watch; do
+for r in route decide watch auth; do
   check "kiro: fleet-$r denies fs_write **" jq -e '[.permissions.rules[] | select(.capability=="fs_write" and .effect=="deny" and .match == ["**"])] | length == 1' "$kh/agents/fleet-$r.json"
   check "kiro: fleet-$r denies git commit and git push" jq -e '([.permissions.rules[] | select(.capability=="shell" and .effect=="deny") | .match[]] | index("git commit*") != null and index("git push*") != null)' "$kh/agents/fleet-$r.json"
 done
@@ -508,7 +508,7 @@ check "agy: mcp_config.json fleet server is python3 <repo>/lib/fleet_mesh.py ser
 check "agy: existing mcp server preserved" jq -e '.mcpServers.other.serverUrl == "http://127.0.0.1:1/mcp"' "$ah/config/mcp_config.json"
 eq "agy: rules file starts with always_on frontmatter" "$(head -3 "$ah/config/rules/fleet-rules.md" | tr '\n' '|')" "---|trigger: always_on|---|"
 eq "agy: rules have no unreplaced placeholders" "$(count '{{' "$ah/config/rules/fleet-rules.md")" 0
-for r in route decide watch learn worker; do
+for r in route decide watch learn auth worker; do
   af=$ah/config/agents/fleet-$r.md
   check "agy: agent fleet-$r frontmatter parses with name fleet-$r, mainAgent, inheritMcp" python3 -c '
 import sys, yaml

@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+AUTH, a fifth standing desk, owns every login and auth problem for the fleet (#45).
+
+- `fleet desks up` starts five desks. AUTH sits in window deskA, always open right below DECIDE (ROUTE | DECIDE over AUTH), so the human reads and types the numbers there while DECIDE shows the heads-up. Adding AUTH to a four-desk fleet leaves the other panes alone; a dead DECIDE comes back above AUTH. Why there: `docs/design/auth-desk.md`.
+- `fleet auth` (`lib/fleet_auth.py`): lanes hand auth failures over with `ask` and keep working. Only AUTH (or the human's own shell) runs `begin`, `number` and `end`. One sign-in at a time, under a lock; a stale slot is broken after `FLEET_AUTH_SLOT_SECS` (900). `begin` posts a one-line heads-up to DECIDE before it logs `started`, and nothing starts if that can't be written. Sign-in order, the same for every tool: a cached token first, then the human's own signed-in browser over its debug port (device-code confirm or portal, `--flow session`, no MFA), and only then a fresh-profile injector sign-in (`--flow password`) that waits on the push or number page, with the stored TOTP code as the fallback. A fresh or empty profile never signs in as the human outside that last step.
+- `fleet auth number NN` prints the number to match as a big block banner in AUTH's pane, logs it (time, sign-in, who asked) and copies it to DECIDE. A push during an announced sign-in is expected; `fleet auth unexpected-push` logs one nobody announced, with the log rows around it, and routes it to DECIDE.
+- An append-only auth log (`$FLEET_STATE/auth/auth-log.jsonl`) with `log`, `trace TIME` (who asked for the sign-in behind a prompt) and `status`. Secret-looking text is refused everywhere. A sign-in passes only on the human's confirmation that the prompts were the announced ones, never on a log flag. `freeze` / `thaw` (human, ROUTE, DECIDE). `helpers` lists the human's own sign-in scripts by reference; the kit ships none.
+- Role files for AUTH on every CLI (no Edit or Write, no git commit or push, no lifecycle verbs, no `/goal`), and hand-off lines in the worker, ROUTE, DECIDE, WATCH and LEARN roles. The fleet-rules block has a "Sign-ins and auth" section.
+- `fleet park` refuses every standing desk (route, decide, watch, learn, auth); `fleet tick` names a missing AUTH in `WARN desks down:`.
+- Tests: `test/test_auth.py` (33 tests), plus five-desk layout, four-desk upgrade, park refusal and role checks in `test/test_roles.sh`, `test/test_desks_default.sh` and `test/test_installs.sh`.
+
 ## v0.9.1 (2026-11-27)
 
 `tafk update` recognizes bin links that reach the kit through a symlinked directory.

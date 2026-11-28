@@ -65,7 +65,7 @@ out=$(fl launch --dry-run --no-desks --dir "$T" W0 prompt "$T/prompt.txt" 2>&1)
 t "launch --dry-run --no-desks prints no desks step" hasnot "$out" "desks up"
 out=$(fl launch --no-proof --dir "$T" W1 prompt "$T/prompt.txt" 2>&1); rc=$?
 t "launch into a fleet with no desks exits 0 and launches the lane" bash -c 'test "$1" = 0 && printf "%s" "$2" | grep -q "^OK W1 "' _ "$rc" "$out"
-t "launch brought all four desks up first (live panes)" bash -c 'for d in ROUTE DECIDE WATCH LEARN; do p=$(jq -r --arg d $d ".[\$d].pane // empty" "$1/roster.json"); tmux -L "$2" list-panes -a -F "#{pane_id} #{pane_dead}" | grep -qx "$p 0" || exit 1; done' _ "$L" "$LS"
+t "launch brought all five desks up first (live panes)" bash -c 'for d in ROUTE DECIDE AUTH WATCH LEARN; do p=$(jq -r --arg d $d ".[\$d].pane // empty" "$1/roster.json"); tmux -L "$2" list-panes -a -F "#{pane_id} #{pane_dead}" | grep -qx "$p 0" || exit 1; done' _ "$L" "$LS"
 t "launch: desks at windows 0 deskA and 1 deskB, the lane at 2 (got: $(wins "$LS" lsess))" test "$(wins "$LS" lsess)" = "0:deskA 1:deskB 2:W1 "
 t "launch says why it brought the desks up" has "$out" "no live ROUTE or DECIDE: bringing the desks up first"
 r1=$(rget "$L" ROUTE pane); d1=$(rget "$L" DECIDE pane)
@@ -94,10 +94,10 @@ t "the failed guard launched no lane" bash -c '! jq -e ".W1" "$1/roster.json"' _
 K=$T/kstate; KS=$(sock tick-$$); mkdir -p "$K"
 fk() { env FLEET_STATE=$K FLEET_TMUX_SOCKET=$KS FLEET_TMUX_SESSION=ksess "$FLEET" "$@"; }
 tk=$(fk tick 2>/dev/null)
-t "tick on a fleet with no lanes and no desks flags both windows" has "$tk" "WARN desks down: deskA (ROUTE missing, DECIDE missing); deskB (WATCH missing, LEARN missing); run fleet desks up"
+t "tick on a fleet with no lanes and no desks flags both windows" has "$tk" "WARN desks down: deskA (ROUTE missing, DECIDE missing, AUTH missing); deskB (WATCH missing, LEARN missing); run fleet desks up"
 fk desks up --no-proof --dir "$T" >/dev/null 2>&1
 tk=$(fk tick 2>/dev/null)
-t "tick with all four desks live: no desks warning" hasnot "$tk" "desks down"
+t "tick with all five desks live: no desks warning" hasnot "$tk" "desks down"
 tmux -L "$KS" kill-pane -t "$(rget "$K" LEARN pane)"
 tk=$(fk tick 2>/dev/null)
 t "tick names a dead desk pane in its window" bash -c 'printf "%s" "$1" | grep -qx "WARN desks down: deskB (LEARN dead); run fleet desks up"' _ "$tk"

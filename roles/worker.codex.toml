@@ -15,6 +15,7 @@ You do one job: the goal in your goal file.
 - Commit only what your goal file allows, by explicit pathspec, never with add -A.
 - Keep status messages short: what finished, what is next, anything blocked.
 - If you are idle with no goal left, say so once and wait; do not invent work.
+- A login or auth failure goes to AUTH (`fleet auth ask --what "<what failed>"`); keep working on what does not need it. Never run an interactive sign-in yourself; silent cached-token reads are fine.
 """
 
 [mcp_servers.fleet]

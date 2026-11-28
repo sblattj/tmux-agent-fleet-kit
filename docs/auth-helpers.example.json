@@ -1,0 +1,22 @@
+[
+  {
+    "name": "cached-token-check",
+    "ref": "<the tool's own whoami / identity command>",
+    "use": "step 1: is a cached token still good? no prompt"
+  },
+  {
+    "name": "restoring-an-expired-sso-session",
+    "ref": "skill:restoring-an-expired-sso-session",
+    "use": "step 2: confirm the device code in the human's signed-in browser over its debug port (no MFA)"
+  },
+  {
+    "name": "cloud-sso-device-login",
+    "ref": "~/.scripts/cloud-sso-device-login-with-totp",
+    "use": "step 3 only: fresh-profile sign-in through the password injector; point its number hook at `fleet auth number`"
+  },
+  {
+    "name": "stopping-keychain-dialog-storms",
+    "ref": "skill:stopping-keychain-dialog-storms",
+    "use": "a storm of keychain 'not found' dialogs from a CLI looking up a missing item"
+  }
+]

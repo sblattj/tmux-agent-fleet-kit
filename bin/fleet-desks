@@ -1,16 +1,21 @@
 #!/usr/bin/env bash
-# fleet-desks: bring up the four standing desks in two split windows (docs/design/four-desks.md section 5.1). Dispatched as `fleet desks`.
+# fleet-desks: bring up the five standing desks in two split windows (docs/design/four-desks.md section 5.1,
+# docs/design/auth-desk.md). Dispatched as `fleet desks`.
 #
 #   fleet desks up [--cli C] [--model M] [--dir D] [--handoff DIR] [--no-proof] [--dry-run]
 #
 # Builds two split windows in the fleet session, each desk an LLM lane (mode desk, never parked):
-#   deskA   ROUTE (left, role route) | DECIDE (right, role decide)
+#   deskA   ROUTE (left, role route) | DECIDE (right top, role decide) over AUTH (right bottom, role auth, 40%)
+#           AUTH sits under DECIDE because the human acts in both: DECIDE shows AUTH's heads-up and number to match,
+#           and the human runs hidden-prompt scripts in AUTH's pane; deskB already holds three panes, and a third
+#           window would move lanes off index 2.
 #   deskB   WATCH (left, role watch) | LEARN (right, role learn); WATCH and LEARN get a read-only look-for-work brief
 #           plus a non-LLM pane under WATCH running `fleet watch status` (tagged @fleet-watch-status 1). It opens
 #           only with a WATCH desk this run launched, once per session (a live one is left alone), so a fleet whose
 #           desks are all live already is not touched.
 # Every desk pane is tagged @fleet-desk <role>. Idempotent: a desk whose roster pane is live is left alone, so a rerun
-# on a live fleet prints '<D> already live' four times and launches nothing. Every run (live desks too) then puts
+# on a live fleet prints '<D> already live' five times and launches nothing; a fleet from before AUTH gets AUTH split
+# under its live DECIDE and nothing else moves. Every run (live desks too) then puts
 # window deskA at tmux index 0 and deskB at 1: a window already there swaps to the desk's old index, and no pane or
 # window id changes. Lanes open at index 2 and up (fleet launch). A dead desk is relaunched into its
 # pair's window: a dead right desk splits right of the live left one, a dead left desk splits beside the live right
@@ -77,12 +82,13 @@ lopts=(--cli "$cli" --dir "$dir")
 
 run() { if [ "$dry" = 1 ]; then printf 'would run:'; printf ' %q' "$@"; printf '\n'; else "$@"; fi; }
 
-created=0 watch_launched=0
+created=0 watch_launched=0 deska_launched=0
 if ! tm has-session -t "=$SESSION" 2>/dev/null; then created=1; fi
 
 brief_ROUTE="You are ROUTE, the standing routing desk for $HUMAN. Follow your role file: route work, own the lane lifecycle, never edit files. Never set a /goal."
 brief_DECIDE="You are DECIDE, the standing decisions desk for $HUMAN. Load the running-the-decisions-desk skill and run it. Never set a /goal."
 brief_WATCH="You are WATCH, a standing desk for $HUMAN. Follow your role file. Look for work, read-only: peer_list for lanes that look stuck or quiet, peer_inbox for events nobody picked up. Report each finding to DECIDE in one short message (peer_send, or decision_open for an ask). Never edit files, never message ROUTE. Never set a /goal."
+brief_AUTH="You are AUTH, the standing auth desk for $HUMAN. Follow your role file: you own every login and auth problem and are the only session that runs interactive sign-ins, each through fleet auth begin/end. Start with fleet auth status and peer_inbox. Never edit files. Never set a /goal."
 brief_LEARN="You are LEARN, a standing desk for $HUMAN. Follow your role file. Look for work, read-only: read $STATE/decisions-log.jsonl and finished lanes' goal files and list what you would card, each with its source and a verbatim quote, in your pane of window deskB. Never edit files. Never set a /goal."
 
 handoff_for() { # desk -> its predecessor's handoff file in --handoff DIR, or nothing
@@ -104,13 +110,16 @@ launch_desk() { # desk [extra fleet launch args...]
   fi
   run "$FLEET" launch "${lopts[@]}" --role "$r" "$@" "$d" desk "$text"
   [ "$d" != WATCH ] || watch_launched=1
+  case $d in ROUTE|DECIDE|AUTH) deska_launched=1 ;; esac
   [ "$dry" = 1 ] || tm set-option -p -t "$(roster_get "$d" pane)" @fleet-desk "$r"
 }
 
-pair() { # window left right: one split window, left desk | right desk
+pair() { # window left right [below-right]: one split window, left desk | right desk (a live below-right desk keeps the column)
   local w=$1 l=$2 r=$3 changed=0
   [ "$dry" = 0 ] || echo "window $w: $l (left) | $r (right)"
   if live "$l"; then echo "$l already live (pane $(roster_get "$l" pane))"
+  elif [ -n "${4:-}" ] && live "$4" && ! live "$r"; then  # only the below-right desk is live: open left of it
+    launch_desk "$l" --split left --of "$4"; changed=1
   elif live "$r"; then  # half-dead pair: open the left desk beside the live right one, then swap it to the left
     launch_desk "$l" --split-right-of "$r"
     [ "$dry" = 1 ] || tm swap-pane -d -s "$(roster_get "$l" pane)" -t "$(roster_get "$r" pane)"
@@ -118,9 +127,39 @@ pair() { # window left right: one split window, left desk | right desk
   else launch_desk "$l"; changed=1
   fi
   if live "$r"; then echo "$r already live (pane $(roster_get "$r" pane))"
+  elif [ -n "${4:-}" ] && live "$4"; then launch_desk "$r" --split above --of "$4"; changed=1  # keep the column: over AUTH
   else launch_desk "$r" --split-right-of "$l"; changed=1
   fi
   [ "$dry" = 1 ] || [ "$changed" = 0 ] || tm rename-window -t "$(roster_get "$l" pane)" "$w"
+}
+
+under() { # window top bottom: the bottom desk split under the top one (AUTH under DECIDE, 40% of the column)
+  local w=$1 t=$2 b=$3
+  [ "$dry" = 0 ] || echo "window $w: $b (under $t)"
+  if live "$b"; then echo "$b already live (pane $(roster_get "$b" pane))"; return 0; fi
+  if [ "$dry" = 0 ] && ! live "$t"; then echo "no live $t: $b not launched"; return 0; fi
+  launch_desk "$b" --split below --of "$t" --size 40
+}
+
+tidy_deska() { # after a deskA repair: ROUTE full height left, DECIDE over AUTH right (AUTH 40% of the column)
+  local wid ids want i cur
+  [ "$deska_launched" = 1 ] || return 0
+  if [ "$dry" = 1 ]; then echo "window deskA: tidy layout ROUTE | DECIDE over AUTH (after a launch)"; return 0; fi
+  for d in ROUTE DECIDE AUTH; do live "$d" || return 0; done
+  wid=$(tm display-message -p -t "$(roster_get ROUTE pane)" '#{window_id}')
+  for d in DECIDE AUTH; do
+    [ "$(tm display-message -p -t "$(roster_get "$d" pane)" '#{window_id}')" = "$wid" ] || { echo "WARN deskA: $d is not in ROUTE's window; layout left alone"; return 0; }
+  done
+  [ "$(tm list-panes -t "$wid" -F x | wc -l | tr -d ' ')" = 3 ] || { echo "WARN deskA has panes beyond its three desks; layout left alone"; return 0; }
+  want=("$(roster_get ROUTE pane)" "$(roster_get DECIDE pane)" "$(roster_get AUTH pane)")
+  for i in 0 1 2; do  # pane order ROUTE, DECIDE, AUTH: main-vertical puts the first pane on the left
+    cur=$(tm list-panes -t "$wid" -F '#{pane_id}' | sed -n "$((i+1))p")
+    [ "$cur" = "${want[$i]}" ] || tm swap-pane -d -s "${want[$i]}" -t "$cur"
+  done
+  tm set-option -w -t "$wid" main-pane-width 50% 2>/dev/null || true
+  tm select-layout -t "$wid" main-vertical
+  tm resize-pane -t "${want[2]}" -y 40% 2>/dev/null || true
+  echo "OK deskA layout: ROUTE | DECIDE over AUTH"
 }
 
 status_pane() { # the WATCH window's non-LLM pane: `fleet watch status`, split under the WATCH desk
@@ -164,7 +203,9 @@ passthrough_desks() { # FLEET_DESK_PASSTHROUGH unset or 1 (default): allow-passt
   fi
 }
 
-pair deskA ROUTE DECIDE
+pair deskA ROUTE DECIDE AUTH
+under deskA DECIDE AUTH
+tidy_deska
 pair deskB WATCH LEARN
 status_pane
 passthrough_desks
@@ -179,4 +220,4 @@ active=
 slot deskA ROUTE 0
 slot deskB WATCH 1
 [ -z "$active" ] || tm select-window -t "$active" 2>/dev/null || true
-[ "$dry" = 1 ] || echo "OK desks up: deskA ROUTE=$(roster_get ROUTE pane) | DECIDE=$(roster_get DECIDE pane), deskB WATCH=$(roster_get WATCH pane) | LEARN=$(roster_get LEARN pane)"
+[ "$dry" = 1 ] || echo "OK desks up: deskA ROUTE=$(roster_get ROUTE pane) | DECIDE=$(roster_get DECIDE pane) / AUTH=$(roster_get AUTH pane), deskB WATCH=$(roster_get WATCH pane) | LEARN=$(roster_get LEARN pane)"

@@ -626,7 +626,7 @@ def _norm(text):
 # tooling installs) and rows whose quote answers nothing on its own are skipped by default. Override per line with
 # "learn: teach" / "learn: skip" in the quote or done line, or per lane with {"learn": "teach"|"skip"} in its goal.
 
-DESKS = ("ROUTE", "DECIDE", "WATCH", "LEARN", "DECISIONS", "ORCHESTRATOR")
+DESKS = ("ROUTE", "DECIDE", "WATCH", "LEARN", "AUTH", "DECISIONS", "ORCHESTRATOR")
 FILTERED_SOURCES = ("decisions-log", "goal", "route-done")  # manual, decide-learn-this and watch rows are not filtered
 _NOT_TICKETS = {"UTF", "ISO", "SHA", "RFC", "HTTP", "TLS", "AES", "IPV", "GPT", "PEP", "CVE"}
 _TICKET_RE = re.compile(r"\bAB#\d+\b|\b[A-Z][A-Z0-9]{1,9}-\d+\b")

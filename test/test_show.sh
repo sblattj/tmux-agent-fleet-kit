@@ -245,13 +245,13 @@ rget() { jq -r --arg n "$2" --arg f "$3" '.[$n][$f] // empty' "$1/roster.json" 2
 D1S=$T/d1; mkdir -p "$D1S"
 fd1() { env FLEET_STATE=$D1S FLEET_TMUX_SOCKET=$D1 FLEET_TMUX_SESSION=dsess "$@" "$FLEET" desks up --no-proof 2>&1; }
 out=$(fd1 env FLEET_DESK_PASSTHROUGH=0); rc=$?
-t "desks up, =0: exit 0 and four desks" bash -c 'test "$1" = 0 && printf "%s" "$2" | grep -q "^OK desks up"' _ "$rc" "$out"
+t "desks up, =0: exit 0 and five desks" bash -c 'test "$1" = 0 && printf "%s" "$2" | grep -q "^OK desks up"' _ "$rc" "$out"
 t "desks up, =0: no passthrough line in the output" hasnot "$out" "allow-passthrough"
 t "desks up, =0: no allow-passthrough set anywhere, global still the tmux default off (got: $(anyset "$D1" | tr '\n' ' '))" test "$(anyset "$D1")" = "global=off"
 out=$(fd1 env); rc=$?
 t "desks rerun, unset (default): exit 0, live desks left alone, one OK global line" bash -c 'test "$1" = 0 && printf "%s" "$2" | grep -q "^ROUTE already live" && test "$(printf "%s\n" "$2" | grep -c "^OK allow-passthrough on (global, every fleet pane)$")" = 1' _ "$rc" "$out"
 t "desks rerun, unset: global on, no window- or pane-level value (got: $(anyset "$D1" | tr '\n' ' '))" test "$(anyset "$D1")" = "global=on"
-for d in ROUTE DECIDE WATCH LEARN; do
+for d in ROUTE DECIDE AUTH WATCH LEARN; do
   p=$(rget "$D1S" "$d" pane)
   t "desks rerun, unset: live $d pane $p sees allow-passthrough on (inherited)" test "$(tmux -L "$D1" show -Apv -t "$p" allow-passthrough 2>/dev/null | tail -1)" = on
 done

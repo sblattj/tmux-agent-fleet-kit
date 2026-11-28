@@ -443,7 +443,7 @@ fleet remote attach-line [--read-only] [--ip ADDR]               exactly one lin
 ## v2 addendum (roles, lifecycle, routing)
 
 ### Roles
-- `fleet launch --role route|decide|watch|learn|worker` (default `worker`; `desk` mode defaults to role `decide`).
+- `fleet launch --role route|decide|watch|learn|auth|worker` (default `worker`; `desk` mode defaults to role `decide`).
   `--role orchestrator|desk|listener` exits 1 with `FAIL role <old> is renamed <new>` in every mode, `resume`
   included, so `fleet reopen` of a lane whose roster role is an old name is refused. `fleet tick` gives such a row
   the action `forget` once its pane is dead (a live one shows `-`); they are not standing desks.
@@ -513,16 +513,22 @@ fleet remote attach-line [--read-only] [--ip ADDR]               exactly one lin
 
 ### fleet desks up (bin/fleet-desks)
 - `fleet desks up [--cli C] [--model M] [--dir D] [--no-proof] [--dry-run]`, role-guarded like launch.
-  Builds two split windows, all four desks in desk mode: `deskA` = ROUTE (role route, left) | DECIDE (role decide,
-  split right of ROUTE), `deskB` = WATCH (role watch, left) | LEARN (role learn, split right of WATCH). No separate
+  Builds two split windows, all five desks in desk mode: `deskA` = ROUTE (role route, left) | DECIDE (role decide,
+  split right of ROUTE) over AUTH (role auth, split below DECIDE at 40% of the column; docs/design/auth-desk.md), `deskB` = WATCH (role watch, left) | LEARN (role learn, split right of WATCH). No separate
   WATCH or LEARN window. Every desk pane is tagged `@fleet-desk <role>`. WATCH and LEARN get a read-only "look for
   work" first prompt. Drops the `home` window when it created the session. `--dry-run` prints
   `window deskA: ROUTE (left) | DECIDE (right)` and `window deskB: WATCH (left) | LEARN (right)` before the launches it
-  would run. Last line: `OK desks up: deskA ROUTE=%N | DECIDE=%N, deskB WATCH=%N | LEARN=%N`.
-- Idempotent: a desk whose roster pane is live is left alone (`<NAME> already live (pane %N)`); when all four are live
+  would run, plus `window deskA: AUTH (under DECIDE)`. Last line:
+  `OK desks up: deskA ROUTE=%N | DECIDE=%N / AUTH=%N, deskB WATCH=%N | LEARN=%N`.
+- Idempotent: a desk whose roster pane is live is left alone (`<NAME> already live (pane %N)`); when all five are live
   nothing changes (no launch, rename or tag). A dead right desk is relaunched split right of the live left one; a dead
   left desk is split beside the live right one and swapped to the left. The window is renamed `deskA`/`deskB` only
   when something in it was launched.
+- AUTH on a four-desk fleet: AUTH is split under the live DECIDE and the other panes keep their ids. A dead DECIDE
+  beside a live AUTH comes back above AUTH; a dead ROUTE with only AUTH live comes back left of it. After any deskA
+  launch, when deskA holds exactly ROUTE, DECIDE and AUTH, it is tidied once (`OK deskA layout: ROUTE | DECIDE over
+  AUTH`): pane order ROUTE, DECIDE, AUTH, `main-vertical` at 50%, AUTH 40% of the right column. Otherwise the layout
+  is left alone with a WARN.
 - Window slots: every run, live desks included, ends with window `deskA` at tmux index 0 and `deskB` at 1. A desk
   window elsewhere is moved there with `move-window`, or `swap-window` with the window at that index (which takes the
   desk's old index); pane and window ids never change, and the session's current window is selected back.
@@ -1064,3 +1070,31 @@ fleet bootstrap ...                                                             
 - Root script: `$FLEET_STATE/bootstrap-root.sh` (default state `~/.local/state/fleet`); bootstrap prints
   `! sudo bash <path>` and `fleet bootstrap --verify`. `--verify` execs `fleet remote verify`.
 - Env: `FLEET_BIN` (the fleet binary to call), `FLEET_NO_DESKS`, `FLEET_KIRO_BIN`, `FLEET_AGY_BIN`, `FLEET_BOOTSTRAP_OS`.
+
+## AUTH desk (docs/design/auth-desk.md, v0.10.0)
+- `fleet auth <verb>` (`bin/fleet-auth` -> `lib/fleet_auth.py`). State under `$FLEET_STATE/auth/`: `auth-log.jsonl`
+  (append-only, one JSON row per event, ids `A<n>`), `slot.json` (the one sign-in in progress), `freeze.json`,
+  optional `helpers.json` (the human's, never written by the kit; `FLEET_AUTH_HELPERS` overrides the path). Writes
+  hold a `flock` on `auth/.lock`. Text that looks like a secret (`fleet_listen.is_secret`) is refused with `FAIL`
+  before anything is written; an unwritable inbox or state file is `FAIL` too, never a traceback.
+- `ask --what W [--why Y]` (anyone): logs `requested` and tells AUTH (`fleet_mesh.deliver`). Prints the id.
+- `begin --what W [--flow session|password] [--for LANE] [--match NN] [--ask A<n>]` (role auth or unset): refused
+  (exit 1) when frozen or while another slot is held. A slot older than `FLEET_AUTH_SLOT_SECS` (900) is broken first
+  (`slot-broken` row, `WARN`). Sends DECIDE `AUTH heads-up: sign-in A<n>, <what> for <lane>, starting now (<flow>);
+  ...` before it logs `started` (with `flow`). `--flow session` reuses an already signed-in browser session and is
+  preferred; `password` (default) is a fresh sign-in. With `--match`, prints the big-digit banner too.
+- `number NN [A<n>]` (auth or unset): prints `MATCH THIS NUMBER (...)` and a 5-row block banner of the digits, logs
+  `number-shown` (id, at, for, match), sends DECIDE `AUTH A<n>: match NN now (...)`. Refused with no open sign-in.
+- `end A<n> --result ok|failed|cancelled [--note N]` (auth or unset): logs `ended`, frees the slot, tells the lane.
+  `ok` is `ok-unconfirmed` until the human confirms.
+- `unexpected-push [--at TIME] [--note N] [--quote Q]` (anyone; decide needs `--quote`): logs `push-unexpected` with
+  `near` (the rows within 10 min of TIME) and sends DECIDE `AUTH ANOMALY A<n>: ...`. A push during an announced
+  sign-in is expected and needs no verb.
+- `confirm A<n> --as-expected|--unexpected [--quote Q]` (unset, or role decide with `--quote` carrying the human's
+  typed words). `--unexpected` also runs `unexpected-push` for that sign-in.
+- `freeze --reason R` / `thaw` (route, decide or unset). `log [--json]`, `trace TIME [--window MIN] [--json]`,
+  `status [--json]` (slot, freeze, openAsks, verdicts, numbers, anomalies), `helpers` (anyone).
+- Verdict per sign-in: `open` (started), `broken` (slot broken), `ok-unconfirmed` / `fail` (ended), `pass` (confirmed
+  as expected), `fail` (an unexpected prompt).
+- `fleet park` refuses a standing desk (roster role route, decide, watch, learn or auth): `FAIL <NAME> is a standing
+  desk (role R) and is never parked; to retire it: fleet handoff <NAME>, then fleet stop <NAME>`, exit 1.

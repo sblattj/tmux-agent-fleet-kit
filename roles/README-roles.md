@@ -1,7 +1,8 @@
 # Roles
 
-One set of files per role: the four desks `route`, `decide`, `watch`, `learn` (docs/design/four-desks.md) and `worker`.
-`route` has the orchestrator's old deny list; `decide`, `watch` and `learn` have the desk's. The old names
+One set of files per role: the five desks `route`, `decide`, `watch`, `learn` (docs/design/four-desks.md), `auth`
+(docs/design/auth-desk.md) and `worker`. `route` has the orchestrator's old deny list; `decide`, `watch`, `learn` and
+`auth` have the desk's. The old names
 `orchestrator`, `desk` and `listener` have no files: they were removed once the pre-rename sessions retired, and
 `fleet launch` refuses them in every mode, resume included (docs/design/four-desks.md section 5.3).
 `probe` is a reserved name with no files until phase 4.

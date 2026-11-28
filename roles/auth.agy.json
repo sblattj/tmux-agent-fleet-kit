@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "deny": [
+      "command(fleet launch)",
+      "command(tafk launch)",
+      "command(fleet park)",
+      "command(tafk park)",
+      "command(fleet stop)",
+      "command(tafk stop)",
+      "command(fleet reopen)",
+      "command(tafk reopen)",
+      "write_file(*)",
+      "command(git commit)",
+      "command(git push)"
+    ]
+  }
+}
