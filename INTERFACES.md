@@ -300,6 +300,20 @@ MCP tools: `peer_list {}`, `peer_send {to, text, from?}`, `peer_inbox {name?, al
 `decision_open {question, options?: [str], from?}` (appends decisions.jsonl and delivers to $FLEET_DECIDE),
 `decision_list {status?}`, `decision_answer {id, answer}` (marks answered, delivers to the asker only; see Messaging routing),
 `decision_report {id, ok, note?}`, `decision_find {text}` (see DECISIONS UI). `decision_open` also takes `allow?: [pick|edit|own|snooze|refuse]`.
+Revisions (issue #60, `lib/fleet_revisions.py`):
+- `decision_revise {id, question?, options?, why, source?, from?}`: the asker (or the desk) revises an open call. It appends
+  `revisions[] {rev, at, by, why, source?, old, new, changed}` to the row and bumps `rev` (absent = 1); `old`/`new` hold only
+  the changed fields, `changed` names them for display (`question`, `option a`, `claim 1`). Never overwrites, never a new line.
+  `desk.sh revise`, `fleet decisions revise` and the UI take the same path (`fleet_decisions.revise`), which mirrors the result
+  onto the desk's copy and tells the other side (`[revised Q<n> rev N by <who>] changed: ...; why: ...; now: ...`).
+- Refused: no `why`, nothing changed, a call no longer open, and a new question sharing too few content words with the rev 1
+  question (a different topic is a new call). Options-only revisions skip the topic check. `desk.sh amend` refuses an open call.
+- `decision_answer` takes `rev?` (the rev the answer was given against, default the current one) and records `answeredRev` on the
+  row; an older rev also adds `answeredRev` and `warning: "answered rev 1, now rev 2"` to the log line, and the note to the relay. The UI sends the
+  rev its card showed. Cards carry `rev`, `revSummary` ("rev 2, changed: question, option a"), `changed`, `diff` (word ops
+  `[["=",..],["-",..],["+",..]]` per field) and `revision {rev, at, by, why, source}`.
+- `fleet learn revisions [--days N] [--json]`: revisions per asker lane (the call's `from`) per day; a day at 3 or more and above
+  twice the lane's usual (median) count is flagged. A coaching signal, never a block.
 Sender = `from` arg, else `$FLEET_NAME`, else error.
 Delivery (`deliver(frm, to, text)`): always append to inbox/<to>.jsonl, then wake by the target's roster `cli`:
 - codex: `$FLEET_CODEX_BIN queue --thread <to> --message "[fleet message from <frm>] <text>"` (PROVEN wakes an idle TUI)

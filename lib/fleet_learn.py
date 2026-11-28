@@ -14,6 +14,9 @@ Python 3.8+ stdlib only. Writes only under $FLEET_STATE/learn/ (export --to DIR 
                                                    rebuild keeps them (manual.jsonl)
   fleet learn examples [--topic T] [--max N] [--json]   the manual stack as few-shot examples (prompt + quote) for
                                                    titling auto rows; learn.json autoPrompt feeds them to a command
+  fleet learn revisions [--days N] [--json]        call revisions per asker lane per day (default the last 7 days),
+                                                   from decisions.jsonl and the desk goal file; a lane above its
+                                                   usual rate is flagged as a coaching signal, never a block
   fleet learn list [--origin O] [--status S] [--all] [--json]   latest row per lid, counts per origin
   fleet learn show <lid> [--json]                  one row, its history and its cards
   fleet learn confirm <lid> --source TYPE:REF --quote TEXT   heard -> confirmed (needs another source and its quote)
@@ -783,6 +786,19 @@ def _lane_override(name):
 
 def _skip(res, why, ref, reason):
     res.setdefault("skipped", {}).setdefault(why, []).append({"ref": ref, "reason": reason})
+
+
+def _revisions():
+    here = os.path.dirname(os.path.abspath(__file__))
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    import fleet_revisions  # issue #60
+    return fleet_revisions
+
+
+def revision_counts(days=7):
+    """Issue #60: revisions per asker lane per day, with the lanes above their usual rate (a signal, not a block)."""
+    return _revisions().report(days, state=mesh.state_dir())
 
 
 def _sync_decisions(res, now):
@@ -1878,6 +1894,9 @@ def _parser():
     xs.add_argument("--topic")
     xs.add_argument("--max", type=int, default=20)
     xs.add_argument("--json", action="store_true")
+    rvs = sp.add_parser("revisions")  # issue #60
+    rvs.add_argument("--days", type=int, default=7)
+    rvs.add_argument("--json", action="store_true")
     ls = sp.add_parser("list")
     ls.add_argument("--origin")
     ls.add_argument("--status")
@@ -2008,6 +2027,9 @@ def main(argv=None):
                 print("OK %d row(s) to the %s stack%s; %d already there" % (
                     len(changed), args.to, (": " + ", ".join(r["lid"] for r in changed)) if changed else "",
                     len(lids) - len(changed)))
+        elif args.cmd == "revisions":
+            rep = revision_counts(days=args.days)
+            print(json.dumps(rep, indent=1, sort_keys=True) if args.json else _revisions().format_report(rep))
         elif args.cmd == "examples":
             ex = examples(topic=args.topic, max_n=args.max)
             if args.json:

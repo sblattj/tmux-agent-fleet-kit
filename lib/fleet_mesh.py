@@ -1380,15 +1380,51 @@ def t_decision_answer(args):
     did, answer = args.get("id"), args.get("answer")
     if not did or not answer:
         raise ValueError("`id` and `answer` are required")
-    target = mark_decision(did, answer)
+    rv = _revisions()  # issue #60: record the rev the answer was given against (`rev` arg, else the current one)
+    arev = rv.answered_rev(args.get("rev"), get_decision(did) or {})
+    target = mark_decision(did, answer, extra={"answeredRev": arev})
     did = target.get("id") or did  # issue #58: an alias answers the one row, logged under its id
     frm = os.environ.get("FLEET_NAME") or desk_name()
     asker = target.get("from")
-    _append_line(decisions_log_path(), json.dumps(
-        {"id": did, "at": now(), "asker": asker, "verbatim": answer, "relayedTo": [asker] if asker else [], "by": frm}))
+    stale = rv.stale_note(arev, target)
+    line = {"id": did, "at": now(), "asker": asker, "verbatim": answer, "relayedTo": [asker] if asker else [], "by": frm}
+    if stale:  # issue #60: the row always records answeredRev; the log line only when it is behind
+        line.update(answeredRev=arev, warning=stale)
+    _append_line(decisions_log_path(), json.dumps(line))
     if not asker:
         return "answered %s; no asker to deliver to" % did
-    return "answered %s; %s" % (did, deliver(frm, asker, "[answer %s] %s" % (did, answer)))
+    return "answered %s%s; %s" % (did, " (%s)" % stale if stale else "", deliver(
+        frm, asker, "[answer %s]%s %s" % (did, " (%s)" % stale if stale else "", answer)))
+
+
+def _revisions():
+    here = os.path.dirname(os.path.abspath(__file__))
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    import fleet_revisions  # issue #60: pure revision logic (lazy, stdlib only)
+    return fleet_revisions
+
+
+def t_decision_revise(args):
+    """Issue #60: the asker revises an open call. Appends revisions[] {rev, at, by, why, source, old, new} and bumps
+    rev in decisions.jsonl and the desk's copy (one path: fleet_decisions.revise), then tells the other side."""
+    side_refuse("revise")
+    did, why = args.get("id"), args.get("why")
+    if not did or not isinstance(why, str) or not why.strip():
+        raise ValueError("`id` and `why` are required")
+    here = os.path.dirname(os.path.abspath(__file__))
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    import fleet_decisions  # lazy: it imports this module
+    by = _sender(args)
+    row = get_decision(did)
+    if row is not None and by not in (row.get("from"), desk_name()):
+        raise ValueError("%s is %s's call: only its asker or the desk revises it; send %s the correction"
+                         % (row.get("id"), row.get("from"), row.get("from")))
+    res = fleet_decisions.revise(did, question=args.get("question"), options=args.get("options"),
+                                 claims=args.get("claims"), why=why, source=args.get("source"), by=by)
+    return "revised %s to rev %d (changed: %s); %s" % (res["id"], res["rev"], ", ".join(res["changed"]),
+                                                       res.get("delivery") or "no one to tell")
 
 
 def t_decision_report(args):
@@ -1484,7 +1520,14 @@ TOOLS = [
     ("decision_list", "List decisions, optionally filtered by status (open|answered).",
      _schema({"status": {"type": "string", "enum": ["open", "answered"]}}), t_decision_list),
     ("decision_answer", "Answer a decision; delivers to the asker only and appends decisions-log.jsonl.",
-     _schema({"id": _S, "answer": _S}, ["id", "answer"]), t_decision_answer),
+     _schema({"id": _S, "answer": _S, "rev": {"type": "integer", "description": "the rev the answer was given "
+              "against (default: the current one); an older rev is relayed with a warning"}}, ["id", "answer"]),
+     t_decision_answer),
+    ("decision_revise", "Revise your open call: new question wording and/or options, with a reason. Keeps the old "
+     "text as a revision; a different topic is refused (open a new call).",
+     _schema({"id": _S, "question": _S, "options": {"type": "array", "items": _S}, "why": _S,
+              "source": {"type": "string", "description": "what changed the facts: a command, file:line, URL or "
+                         "quote id"}, "from": _S}, ["id", "why"]), t_decision_revise),
     ("decision_report", "Report whether you acted on an answer (ok=true acted on, false act failed).",
      _schema({"id": _S, "ok": {"type": "boolean"}, "note": _S, "from": _S}, ["id", "ok"]), t_decision_report),
     ("decision_find", "Search past answered decisions before opening a call; an exact repeat returns its quote.",

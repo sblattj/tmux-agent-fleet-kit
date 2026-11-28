@@ -57,6 +57,10 @@
   .ab .side.sel { border-color:var(--info); }
   .quote { font-style:italic; white-space:pre-wrap; }
   .err { color:var(--bad); }
+  .rev { font-size:13px; color:var(--warn); margin:2px 0 6px; }
+  .rev .why { color:var(--dim); }
+  .diff { font-size:13px; margin:2px 0 6px; white-space:pre-wrap; color:var(--dim); }
+  .diff del { color:var(--bad); } .diff ins { color:var(--rec); text-decoration:none; }
   nav a { color:var(--info); margin-right:14px; cursor:pointer; text-decoration:none; }
   nav a.on { color:var(--fg); font-weight:700; }
 </style>
@@ -146,7 +150,7 @@ function card(c) {
     if (pending[c.id]) return;          // idempotent on the client too: one click, one request
     pending[c.id] = true; lock(label);
     try {
-      const r = await api("/api/pick", Object.assign({ id: c.id }, body));
+      const r = await api("/api/pick", Object.assign({ id: c.id, rev: c.rev }, body));
       clear(status); status.textContent = "sent: " + r.verbatim + "  [" + r.status + "]";
     } catch (e) {
       clear(status); status.appendChild(el("span", { class: "err", text: String(e.message) }));
@@ -161,6 +165,7 @@ function card(c) {
     c.dupIds.length ? el("span", { text: "(dups: " + c.dupIds.join(", ") + ")" }) : null));
   if (c.watch && c.watch.ref) node.appendChild(el("div", { class: "src" }, srcLink(c.watch)));
   node.appendChild(el("div", { class: "q", text: c.question }));
+  if (c.revSummary) node.appendChild(revBlock(c));
   if (c.conflict) node.appendChild(el("div", { class: "err", text: c.conflict + "; answer it in the desk pane" }));
   if (allow.has("pick")) for (const o of c.options) {
     const b = el("button", { class: "opt" + (o.rec ? " rec" : ""), onclick: () => send({ option: o.letter }, "relaying " + o.letter + "...") },
@@ -188,6 +193,26 @@ function card(c) {
   node.appendChild(row); node.appendChild(status);
   if (pending[c.id]) lock("relaying...");
   return node;
+}
+
+// Issue #60: "rev 2, changed: question, option a", the reason, and a word diff per changed field. Text nodes only.
+function diffLine(label, ops) {
+  const d = el("div", { class: "diff" }, el("span", { text: label + ": " }));
+  for (const [op, t] of ops || []) {
+    d.appendChild(op === "-" ? el("del", { text: t }) : op === "+" ? el("ins", { text: t }) : document.createTextNode(t));
+    d.appendChild(document.createTextNode(" "));
+  }
+  return d;
+}
+function revBlock(c) {
+  const r = c.revision || {}, box = el("div", {});
+  box.appendChild(el("div", { class: "rev" }, el("span", { text: c.revSummary }),
+    el("span", { class: "why", text: "  why: " + (r.why || "?") + (r.source ? "  (source: " + r.source + ")" : "") })));
+  const d = c.diff || {};
+  if (d.question) box.appendChild(diffLine("question", d.question));
+  for (const o of d.options || []) box.appendChild(diffLine("option " + o.letter, o.diff));
+  for (const o of d.claims || []) box.appendChild(diffLine("claim " + o.n, o.diff));
+  return box;
 }
 
 function calledRow(c) {

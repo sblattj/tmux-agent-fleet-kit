@@ -9,6 +9,8 @@ desk.sh answer/revise), so the desk pane and the UI end in the same state.
   fleet decisions tui [--one] [--plain]                           terminal / tmux fallback (also a display-popup)
   fleet decisions pick <id> <letter|--text "..."|--edit "..."|--refuse ["why"]>
   fleet decisions retry <id>                                      re-wake the targets whose relay failed or queued
+  fleet decisions revise <id> [--question Q] [--options-json JSON] --why W [--source S] [--by NAME]
+                                                                  new rev of an open call (old text kept, same topic)
   fleet decisions snooze <id> [minutes]                           hide a call for N minutes (default 30)
   fleet decisions state [--json]                                  open cards and the Called list
   fleet decisions ask "<q>" [--options a,b] [--allow pick,own] [--wait] [--timeout 30m] [--new]
@@ -275,6 +277,7 @@ def open_cards(include_snoozed=False):
                if (_parse_at(v) or datetime.datetime.min.replace(tzinfo=datetime.timezone.utc))
                > datetime.datetime.now(datetime.timezone.utc)}
     cards, n_snoozed = [], 0
+    rows = _rev_rows()
     for key in order:
         prim, dups = groups[key][0], groups[key][1:]
         askers = _uniq([prim["from"]] + prim["relayTo"] + [x for d in dups for x in [d["from"]] + d["relayTo"]])
@@ -285,6 +288,7 @@ def open_cards(include_snoozed=False):
                 "conflict": prim.get("conflict"),
                 "askerOf": {d["id"]: _uniq([d["from"]] + d["relayTo"]) for d in [prim] + dups},
                 "watch": watch_of(prim["id"], prim, meta), "task": (meta.get(prim["id"]) or {}).get("kind")}
+        card.update(_rev_fields(prim["id"], rows))
         if prim["id"] in snoozed and not include_snoozed:
             n_snoozed += 1
             continue
@@ -292,6 +296,22 @@ def open_cards(include_snoozed=False):
         cards.append(card)
     cards.sort(key=lambda c: (c.get("at") or "", _idnum(c["id"])), reverse=True)
     return cards, n_snoozed
+
+
+def _rev_rows():
+    """Issue #60: id -> the row that carries rev/revisions (decisions.jsonl first, then the desk's copy)."""
+    rows = {}
+    for g in goal_items():
+        if g.get("id"):
+            rows[g["id"]] = g
+    for d in mesh.decisions():
+        rows[d["id"]] = d
+    return rows
+
+
+def _rev_fields(cid, rows):
+    """Card fields rev, revSummary, changed, diff, revision for one call (rev 1: rev only)."""
+    return mesh._revisions().card_view(rows.get(cid) or {})
 
 
 def classify(result):
@@ -397,7 +417,7 @@ def find_open(cid):
     raise NotFound("no such call: %s" % cid)
 
 
-def pick(cid, option=None, text=None, kind=None, refuse=False, via="ui", extra=None, frontend="web"):
+def pick(cid, option=None, text=None, kind=None, refuse=False, via="ui", extra=None, frontend="web", rev=None):
     """Answer one call: mark it, relay at once to every asker (+ the orchestrator copy), record one log line.
 
     Idempotent on the call id: a second pick (any front end) raises AlreadyAnswered and relays nothing."""
@@ -418,7 +438,10 @@ def pick(cid, option=None, text=None, kind=None, refuse=False, via="ui", extra=N
             st = ui_state()  # desk.sh answer below can never let a second click relay again
             st.setdefault("closed", {}).update({i: verbatim for i in goal_only})
             _save_ui_state(st)
-        fields = {"answerKind": kind, "via": via}
+        rv = mesh._revisions()  # issue #60: the rev this answer was given against (the card the front end showed)
+        arev = rv.answered_rev(rev, card)
+        stale = rv.stale_note(arev, card)
+        fields = {"answerKind": kind, "via": via, "answeredRev": arev}
         for i in ids:  # the commit point: a racing desk-pane decision_answer makes this raise for the primary
             if i in mesh_ids:
                 try:
@@ -431,7 +454,8 @@ def pick(cid, option=None, text=None, kind=None, refuse=False, via="ui", extra=N
         for i in ids:
             for to in card["askerOf"].get(i, []):
                 if to not in delivery:
-                    delivery[to] = mesh.deliver(frm, to, "[answer %s] %s" % (i, verbatim))
+                    delivery[to] = mesh.deliver(frm, to, "[answer %s]%s %s" % (
+                        i, " (%s)" % stale if stale else "", verbatim))
         copied = []
         orch = mesh.orch_name()
         tmeta = calls_meta().get(card["id"]) or {}
@@ -445,6 +469,8 @@ def pick(cid, option=None, text=None, kind=None, refuse=False, via="ui", extra=N
                 card["id"], card["from"], ", ".join(card["askers"]), verbatim))
             copied.append(orch)
         rec_extra = {"via": via, "frontend": frontend, "kind": kind, "copiedTo": copied, "delivery": delivery}
+        if stale:  # issue #60: the row always records answeredRev; the log line only when it is behind
+            rec_extra.update(answeredRev=arev, warning=stale)
         if forwarded:
             rec_extra["forwarded"] = orch
         rec_extra.update(extra or {})
@@ -463,6 +489,8 @@ def pick(cid, option=None, text=None, kind=None, refuse=False, via="ui", extra=N
                 line.update(rec_extra)
                 mesh._append_line(mesh.decisions_log_path(), json.dumps(line))
         mesh.log("decisions-ui pick %s kind=%s via=%s badge=%s" % (card["id"], kind, via, badge_of(delivery)))
+        if stale:
+            notes.append(stale)
         return {"ok": True, "id": card["id"], "ids": ids, "verbatim": verbatim, "kind": kind, "delivery": delivery,
                 "status": badge_of(delivery), "copiedTo": copied, "notes": notes,
                 "forwarded": orch if forwarded else None}
@@ -518,28 +546,56 @@ def snooze(cid, minutes=30):
     return {"ok": True, "id": cid, "snoozedUntil": s["snoozed"][cid]}
 
 
-def revise(cid, new_q):
-    """Change a call's question in both stores (desk.sh revise for the goal file)."""
-    path = mesh._decisions_path()
-    if os.path.exists(path):
-        with open(path, "a+") as f:
-            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-            try:
-                f.seek(0)
-                rows = [json.loads(x) for x in f.read().split("\n") if x.strip()]
-                for r in rows:
-                    if r.get("id") == cid:
-                        r["question"] = new_q
-                f.seek(0)
-                f.truncate()
-                f.write("".join(json.dumps(r) + "\n" for r in rows))
-            finally:
-                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-    if any(g.get("id") == cid for g in goal_items()):
-        ok, out = _desk_sh(["revise", cid, new_q])
+def _goal_item(cid):
+    for g in goal_items():
+        if g.get("id") == cid or cid in (g.get("aliases") or []):
+            return g
+    return None
+
+
+def revise(cid, new_q=None, question=None, options=None, claims=None, why=None, source=None, by=None):
+    """Issue #60: the one revise path (decision_revise, desk.sh revise, the UI, refresh). Appends a revisions[] entry
+    {rev, at, by, why, source, old, new, changed} and bumps rev on the decisions.jsonl row, mirrors the result onto
+    the desk's copy (desk.sh _revised), then tells the other side (the desk when the asker revised, else the asker).
+    Refuses (ValueError): no why, nothing changed, a call no longer open, a different topic from rev 1."""
+    rv = mesh._revisions()
+    changes = {}
+    q = question if question is not None else new_q
+    if q is not None:
+        changes["question"] = q
+    if options is not None:
+        changes["options"] = mesh._clean_options(options)
+    if claims is not None:
+        changes["claims"] = mesh._clean_claims(claims, {}) or []
+    by = by or sender()
+    gi = _goal_item(cid)
+    if mesh.get_decision(cid) is not None:
+        got = {}
+        row = mesh.update_decision(cid, lambda r: got.update(e=rv.apply_revision(r, changes, why, by, source)))
+    elif gi is not None:  # a desk-only item from before #58's one store
+        row = json.loads(json.dumps(gi))
+        got = {"e": rv.apply_revision(row, changes, why, by, source)}
+    else:
+        raise NotFound("no such call: %s" % cid)
+    entry = got["e"]
+    if gi is not None:
+        fields = {k: row[k] for k in ("question", "options", "claims", "rev", "revisions") if k in row}
+        ok, out = _desk_sh(["_revised", gi["id"], json.dumps(fields)])
         if not ok:
-            raise ValueError("desk.sh revise failed: %s" % out)
-    return {"ok": True, "id": cid, "question": new_q}
+            raise ValueError("desk.sh _revised %s failed: %s" % (gi["id"], out))
+    asker = row.get("from")
+    to = mesh.desk_name() if by == asker else asker
+    text = "[revised %s rev %d by %s] changed: %s; why: %s%s; now: %s" % (
+        row.get("id") or cid, entry["rev"], by, ", ".join(entry["changed"]), entry["why"],
+        ("; source: " + entry["source"]) if entry.get("source") else "", row.get("question"))
+    opts = mesh.option_list(row)
+    if opts:
+        text += " options: " + " | ".join(mesh.option_text(o) for o in opts)
+    delivery = mesh.deliver(by, to, text) if to and to != by else None
+    mesh.log("decisions revise %s rev=%d by=%s changed=%s" % (row.get("id") or cid, entry["rev"], by,
+                                                               ",".join(entry["changed"])))
+    return {"ok": True, "id": row.get("id") or cid, "question": row.get("question"), "rev": entry["rev"],
+            "changed": entry["changed"], "why": entry["why"], "summary": rv.summary(row), "delivery": delivery}
 
 
 # ---------------------------------------------------------------- find / ask / report
@@ -772,7 +828,8 @@ def refresh_confirm(cid):
         lk.close()
     b = r["b"]
     if b["kind"] == "revise":
-        res = revise(cid, b["text"])
+        res = revise(cid, b["text"], why="refresh: a grounded source changed the call",
+                     source=b.get("source") or b.get("quote"))
     else:
         res = pick(cid, text=b["quote"], kind="found", extra={"source": b["source"], "quoteAt": b.get("at")})
     lk = _lock()
@@ -1318,7 +1375,7 @@ def make_handler(token, hub, allowed_hosts):
             try:
                 if path == "/api/pick":
                     res = pick(body.get("id"), option=body.get("option"), text=body.get("text"),
-                               kind=body.get("kind"), refuse=bool(body.get("refuse")), via="ui")
+                               kind=body.get("kind"), refuse=bool(body.get("refuse")), via="ui", rev=body.get("rev"))
                 elif path == "/api/retry":
                     res = retry(body.get("id"))
                 elif path == "/api/learn":
@@ -1432,6 +1489,9 @@ class Tui:
                                           ("   also asked by: " + ", ".join(c["alsoAskedBy"])) if c["alsoAskedBy"]
                                           else "")]
         lines.append("    " + c["question"])
+        if c.get("revSummary"):  # issue #60
+            r = c.get("revision") or {}
+            lines.append("    %s (why: %s)" % (c["revSummary"], r.get("why") or "?"))
         w = c.get("watch")
         if w:
             lines.append("    [%s] %s%s" % (w.get("sourceKind") or "watch", w.get("ref") or "",
@@ -1734,6 +1794,20 @@ def main(argv):
             human_only("retry relays")
             res = retry(rest[0])
             print("%s %s: %s" % (res["id"], res["status"], json.dumps(res["delivery"])))
+            return 0
+        if cmd == "revise":  # issue #60: the one revise path; desk.sh revise calls this
+            if not rest:
+                raise ValueError("usage: revise <id> [--question Q] [--options-json JSON] --why W [--source S] [--by NAME]")
+            cid, kw, i = rest[0], {}, 1
+            flags = {"--question": "question", "--options-json": "options", "--claims-json": "claims", "--why": "why",
+                     "--source": "source", "--by": "by"}
+            while i < len(rest):
+                if rest[i] not in flags or i + 1 >= len(rest):
+                    raise ValueError("revise: unknown or empty flag %s" % rest[i])
+                k, v = flags[rest[i]], rest[i + 1]
+                kw[k] = json.loads(v) if k in ("options", "claims") else v
+                i += 2
+            _print(revise(cid, **kw))
             return 0
         if cmd == "snooze":
             human_only("snooze calls")

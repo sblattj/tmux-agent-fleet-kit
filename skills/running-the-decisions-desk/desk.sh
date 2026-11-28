@@ -5,10 +5,13 @@
 #   desk.sh add  <id> <from> <question> [relayTo...]   new open call (openCalls[], or the file's legacy openForHuman[])
 #   desk.sh answer <id> <answer> [relayTo...]          close item + append decision D<n> + a line in $FLEET_STATE/decisions-log.jsonl
 #   desk.sh elsewhere <id> <answer-with-source>        answered in another session: close, no decision
-#   desk.sh amend <id> <addendum>                      the human added to an answer already given
-#   desk.sh revise <id> <new question text>            recommendation changed mid-call
+#   desk.sh amend <id> <addendum>                      the human added to an answer already given (refuses an open call)
+#   desk.sh revise <id> <new question text> [why]      facts changed the call: a new rev, old text kept (issue #60);
+#                                                      runs `fleet decisions revise`, so decisions.jsonl and this file
+#                                                      get the same revisions[] entry. A different topic is refused.
 #   desk.sh relayto <id> add|set <session...>          second asker (add), or asker stopped (set ROUTE)
 # Env: FLEET_DESK_GOAL  the desk goal file (default: $FLEET_STATE/desk.goal.json)
+#      FLEET_BIN        the fleet CLI for revise when not in a kit checkout (../../bin/fleet wins), else fleet on PATH
 #      FLEET_DECISION_EXTRA  JSON object merged into the answer's decisions-log line (default none)
 #      FLEET_GOAL_BIN   the validator (default: fleet-goal on PATH, else ../../bin/fleet-goal next to this repo)
 #      FLEET_STATE      default ${XDG_STATE_HOME:-$HOME/.local/state}/fleet
@@ -69,14 +72,25 @@ case $cmd in
         apply --arg id "$id" --arg a "$a" --arg chg "$id closed: answered in another session" --arg why "not re-asked" \
           "(.[\$k][]|select(.id==\$id)) |= (.status=\"answered-elsewhere\"|.answer=\$a|.answeredAt=\$now) $log" ;;
   amend) id=$1 a=$2
+        st=$(jq -r --arg id "$id" --arg k "$k" '(.[$k] // [])[]|select(.id==$id or ((.aliases // [])|index($id)))|.status // "open"' "$f" | head -1)
+        [ -n "$st" ] || { echo "no desk item $id" >&2; exit 2; }
+        # issue #60: amend adds to an answer already given; on an open call it would write an answer nobody gave
+        [ "$st" != open ] || { echo "$id is open: amend adds to an answer already given; use revise or answer" >&2; exit 2; }
         apply --arg id "$id" --arg a "$a" --arg chg "Amended $id" --arg why "human added to an earlier answer" \
           "(.[\$k][]|select(.id==\$id)) |= (.answer=((.answer // \"\")+\" | amended: \"+\$a)) | (.decisions[]|select(.item==\$id)) |= (.decision=(.decision+\" | amended: \"+\$a)) $log" ;;
-  revise) id=$1 q=$2
-        apply --arg id "$id" --arg q "$q" --arg chg "Revised $id" --arg why "new facts or call moved the pick" \
-          "(.[\$k][]|select(.id==\$id)) |= (.question=\$q) $log" ;;
+  revise) id=$1 q=$2 w=${3:-desk revise: new facts or the call moved the pick}
+        if [ -x "$here/../../bin/fleet" ]; then fb=$here/../../bin/fleet  # a kit checkout: its own CLI
+        elif [ -n "${FLEET_BIN:-}" ]; then fb=$FLEET_BIN
+        elif command -v fleet >/dev/null 2>&1; then fb=fleet
+        else echo "fleet not found: install the kit or set FLEET_BIN" >&2; exit 2; fi
+        out=$(FLEET_DESK_GOAL=$f FLEET_GOAL_BIN=$v "$fb" decisions revise "$id" --question "$q" --why "$w" 2>&1) || { echo "$out" >&2; exit 1; }
+        echo OK ;;
+  _revised) id=$1 fields=$2  # internal: `fleet decisions revise` mirrors its result here; never call it by hand
+        apply --arg id "$id" --argjson x "$fields" --arg chg "Revised $id" --arg why "rev $(jq -r '.rev' <<<"$fields"): $(jq -r '.revisions[-1].why // "?"' <<<"$fields")" \
+          "(.[\$k][]|select(.id==\$id)) |= (. + \$x) $log" ;;
   relayto) id=$1 mode=$2; shift 2; rt=$(to_json "$@")
         case $mode in add) expr='.relayTo=((.relayTo//[])+$rt|unique)';; set) expr='.relayTo=$rt';; *) echo "mode must be add|set"; exit 2;; esac
         apply --arg id "$id" --argjson rt "$rt" --arg chg "Relay targets for $id: $mode $*" --arg why "duplicate asker or stopped session" \
           "(.[\$k][]|select(.id==\$id)) |= ($expr) $log" ;;
-  *) sed -n '2,13p' "$0"; exit 2 ;;
+  *) sed -n '2,17p' "$0"; exit 2 ;;
 esac
