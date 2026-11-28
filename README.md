@@ -685,6 +685,13 @@ Token rules:
 
 The default classifier is keyword rules (`classifier.rulesFile` adds regexes per `ask|action|decided|question`). A `command` classifier or watcher reads one JSON request on stdin (`utterances`, `tail` bounded to `tailChars`, `speakers`, `me`, `maxTokens`) and prints one item per line: `ASK:`, `ACTION:`, `SAY:`, `DECIDED:` or `NOTE:`, then the text, then optional ` | owner: X`, ` | due: Y`, ` | source: S`, ` | options: a; b`, ` | rec: a`, ` | uncertain`. Other lines are ignored and counted; a run that exits non-zero or times out routes nothing. It runs at most once per `minIntervalSec` (lines in between are batched into the next call), is killed after `timeoutSec`, and its latency shows in the status bar; any model call behind it needs its own token cap and deadline. Watcher triggers: `every Ns`, `on speaker X`, `on keyword K`; `routeTo: "say"` keeps only SAY and NOTE items.
 
+## Contributing: issue first
+
+Every change to the kit starts as an issue on this repo, and the commit that lands it references the issue
+(`fixes #N` or `refs #N`). Issues are scrubbed before filing: no employer or customer names, people, ticket ids,
+account ids, hostnames, URLs or local paths; describe the problem and the change in the kit's own terms. A change
+that landed without one gets a backfilled issue, closed with a link to its commit.
+
 ## License
 
 MIT, see [LICENSE](LICENSE).
