@@ -1292,9 +1292,152 @@ def option_text(o):
     return "%s: %s%s" % (o.get("letter"), o.get("text"), " (rec)" if o.get("rec") else "")
 
 
+# ---- claims (#61): what a call rests on, each with a source; unsourced ones are kept and marked, never refused
+CLAIM_TEXT_MAX, CLAIM_SOURCE_MAX, CLAIM_REF_MAX, CLAIM_REFS_MAX, CLAIMS_MAX = 500, 500, 300, 20, 30
+
+
+CLAIMS_SCHEMA = {
+    "type": "array", "description": "What the call rests on: each claim with its source (a command, file:line, URL or "
+    "quote id; leave it empty and the card shows the claim as unsourced), the option letters it backs (none = the whole "
+    "call) and refs (exact ids later checks match: owner/repo#12, PROJ-1, a URL). Add one whenever an option says "
+    "\"no X\", \"only\", \"one step\", \"already\" or names a count.",
+    "items": {"type": "object", "properties": {"text": {"type": "string"}, "source": {"type": "string"},
+                                               "options": {"type": "array", "items": {"type": "string"}},
+                                               "refs": {"type": "array", "items": {"type": "string"}}},
+              "required": ["text"]}}
+
+
+def _one_line(v, cap, what):
+    if v is None:
+        return None
+    if not isinstance(v, str):
+        raise ValueError("%s must be a string" % what)
+    s = " ".join(v.split())
+    if len(s) > cap:
+        raise ValueError("%s is longer than %d characters" % (what, cap))
+    return s or None
+
+
 def _clean_claims(claims, rec):
-    """Issue #61: claims [{id, text, source, options, refs}]. Accepted as given until #61 lands."""
-    return claims if isinstance(claims, list) and claims else None
+    """Validate decision_open's `claims` into [{id, text, source, options, refs}] (None when absent or empty).
+
+    A claim is a dict (or a bare string = its text). `id` is assigned by position (c1, c2, ...); an asker's own id is
+    ignored so ids stay unique. `source` (a command, file:line, URL or quote id) may be empty: the claim is stored with
+    source null and shown as unsourced. `options` are letters of the call's own stored options (option_list(rec) when
+    `rec` is the new row, or a plain list of letters); an unknown letter refuses the call. An empty `options` list
+    means the claim backs the whole call. `refs` are exact machine ids in WATCH's ref form (owner/repo#12, PROJ-1, a
+    URL) that later checks match on; blanks, ids with spaces and repeats are dropped."""
+    if claims is None:
+        return None
+    if not isinstance(claims, list):
+        raise ValueError("`claims` must be a list of {text, source, options, refs}")
+    if len(claims) > CLAIMS_MAX:
+        raise ValueError("`claims` holds at most %d claims" % CLAIMS_MAX)
+    letters = [o["letter"] for o in option_list(rec)] if isinstance(rec, dict) else list(rec or [])
+    known = [str(x).lower() for x in letters]
+    out = []
+    for c in claims:
+        n = len(out) + 1
+        if isinstance(c, str):
+            c = {"text": c}
+        if not isinstance(c, dict):
+            raise ValueError("claim c%d must be an object {text, source, options, refs}" % n)
+        text = _one_line(c.get("text"), CLAIM_TEXT_MAX, "claim c%d text" % n)
+        if not text:
+            raise ValueError("claim c%d needs a text" % n)
+        source = _one_line(c.get("source"), CLAIM_SOURCE_MAX, "claim c%d source" % n)
+        opts = c.get("options") or []
+        if isinstance(opts, str):
+            opts = [opts]
+        if not isinstance(opts, list):
+            raise ValueError("claim c%d options must be a list of option letters" % n)
+        cited = []
+        for o in opts:
+            letter = str(o).strip().strip("()").strip().lower()
+            if letter not in known:
+                raise ValueError("claim c%d cites option %r; the call's options are %s" % (
+                    n, o, ", ".join(known) or "none"))
+            if letter not in cited:
+                cited.append(letter)
+        refs = c.get("refs") or []
+        if isinstance(refs, str):
+            refs = [refs]
+        if not isinstance(refs, list):
+            raise ValueError("claim c%d refs must be a list of ids" % n)
+        clean_refs = []
+        for r in refs:
+            r = _one_line(r if isinstance(r, str) else str(r), CLAIM_REF_MAX, "claim c%d ref" % n)
+            if r and " " not in r and r not in clean_refs:
+                clean_refs.append(r)
+        if len(clean_refs) > CLAIM_REFS_MAX:
+            raise ValueError("claim c%d holds at most %d refs" % (n, CLAIM_REFS_MAX))
+        out.append({"id": "c%d" % n, "text": text, "source": source, "options": cited, "refs": clean_refs})
+    return out or None
+
+
+# An option that states a fact a person could check: absence, "only", "one step", "already", or a count. Cheap on
+# purpose: it never refuses a call, it asks for a claim (preference calls stay free).
+_NUM_WORDS = r"(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|dozen|single|half a dozen)"
+_ASSERTS = (
+    ("asserts absence", re.compile(
+        r"\b(?:there (?:is|are|'s) no|there (?:isn't|aren't) any|no such|does(?:n't| not) exist|do(?:n't| not) exist|"
+        r"is(?:n't| not) (?:there|any)|not found|missing|no (?!thanks?\b|change\b|changes\b|action\b|rush\b|"
+        r"preference\b|need\b|one\b)[a-z0-9#][\w#.-]*)", re.I)),
+    ("says only", re.compile(r"\bonly\b", re.I)),
+    ("says one step", re.compile(r"\b(?:one|a single|1) (?:step|ask|change|call|command|line|click|move|pass|"
+                                 r"shot|place|thing|pr|commit|fix|run)\b", re.I)),
+    ("says already", re.compile(r"\balready\b", re.I)),
+    ("names a count", re.compile(r"(?<![#\w.:/@-])\d+(?:[.,]\d+)?\s*%?\s+(?!of\b)[a-z]|\b" + _NUM_WORDS +
+                                 r"\s+(?!of\b|more\b|or\b|by\b)[a-z]{3,}", re.I)),
+)
+
+
+def claims_lint(options, claims):
+    """Options that assert a checkable fact with no claim behind them.
+
+    `options` is the dict form [{letter, text, ...}]; `claims` the cleaned claims (or None). A claim backs the options
+    it cites, or every option when it cites none. Returns [{letter, text, why}], why = the first assertion matched
+    ("asserts absence", "says only", "says one step", "says already", "names a count"). Non-blocking by contract:
+    decision_open opens the call anyway and reports the lint; the card shows it."""
+    claims = claims or []
+    whole = any(not c.get("options") for c in claims)
+    backed = {o for c in claims for o in (c.get("options") or [])}
+    out = []
+    for o in options or []:
+        letter, text = str(o.get("letter") or "").lower(), str(o.get("text") or "")
+        if whole or letter in backed:
+            continue
+        for why, rx in _ASSERTS:
+            if rx.search(text):
+                out.append({"letter": letter, "text": text, "why": why})
+                break
+    return out
+
+
+def claims_segment(claims):
+    """The `claims:` segment of the delivered [decision ...] text ('' with no claims)."""
+    if not claims:
+        return ""
+    return " claims: " + " | ".join("%s%s %s [%s]" % (
+        c["id"], (" (%s)" % ", ".join(c["options"])) if c.get("options") else "", c["text"],
+        ("source: " + c["source"]) if c.get("source") else "unsourced") for c in claims)
+
+
+def unsourced_claims(claims):
+    """Ids of claims with no source, in order."""
+    return [c["id"] for c in claims or [] if not c.get("source")]
+
+
+def claims_note(claims, lint):
+    """One line for decision_open's result and the desk delivery: unsourced claims and lint asks ('' when clean)."""
+    parts = []
+    bad = unsourced_claims(claims)
+    if bad:
+        parts.append("unsourced claims: " + ", ".join(bad))
+    for x in lint or []:
+        parts.append("lint: option %s %s with no claim; add claims [{text, source, options: [%s]}]" % (
+            x["letter"], x["why"], x["letter"]))
+    return "; ".join(parts)
 
 
 def _clean_verified(verified, rec):
@@ -1329,8 +1472,10 @@ def t_decision_open(args):
     text = "[decision %s from %s] %s" % (rec["id"], asker, q)
     if rec["options"]:
         text += " options: " + " | ".join(option_text(o) for o in rec["options"])
-    res = deliver(asker, desk_name(), text)
-    return "opened %s; %s" % (rec["id"], res)
+    text += claims_segment(rec.get("claims"))
+    note = claims_note(rec.get("claims"), claims_lint(rec["options"], rec.get("claims")))
+    res = deliver(asker, desk_name(), text + ((" (" + note + ")") if note else ""))
+    return "opened %s; %s%s" % (rec["id"], res, ("; " + note) if note else "")
 
 
 def t_decision_list(args):
@@ -1479,7 +1624,8 @@ TOOLS = [
               "allow": {"type": "array", "items": {"type": "string", "enum": list(ALLOW_TYPES)}},
               "watch": {"type": "object", "description": "WATCH source of the call: sourceKind, source, ref, url "
                         "(http/https only), eid. Other keys are dropped.",
-                        "properties": {k: _S for k in WATCH_KEYS}}}, ["question"]),
+                        "properties": {k: _S for k in WATCH_KEYS}},
+              "claims": CLAIMS_SCHEMA}, ["question"]),
      t_decision_open),
     ("decision_list", "List decisions, optionally filtered by status (open|answered).",
      _schema({"status": {"type": "string", "enum": ["open", "answered"]}}), t_decision_list),
