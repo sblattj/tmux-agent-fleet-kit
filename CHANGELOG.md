@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.11.0 (2026-11-27)
 
 The fleet rules are now a layer on top of your home instructions (#55), the way a subclass extends a base class.
 
