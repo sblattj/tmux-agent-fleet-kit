@@ -65,7 +65,7 @@ for f in "$ROOT"/roles/*.json; do
   grep -q 'fleet \(launch\|park\|stop\|reopen\)' "$f" || continue
   nt=$((nt + 1)); t "$(basename "$f") has a tafk twin for every fleet launch/park/stop/reopen deny" twins_ok "$f"
 done
-t "tafk twin check covered 16 role files (claude, kiro, opencode, agy x decide, watch, learn, worker)" test "$nt" = 16
+t "tafk twin check covered 20 role files (claude, kiro, opencode, agy x decide, watch, learn, auth, worker)" test "$nt" = 20
 t "control: a worker.kiro.json without its tafk park rule fails the twin check" bash -c 'jq '"'"'.permissions.rules|=map(select((.match//[])|index("tafk park*")|not))'"'"' "$1" > "$2/k.json" || exit 1; '"$(declare -f twins_ok)"'; ! twins_ok "$2/k.json"' _ "$ROOT/roles/worker.kiro.json" "${TMPDIR:-/tmp}"
 t "control: an opencode file without its tafk stop key fails the twin check" bash -c 'jq '"'"'del(.permission.bash["tafk stop*"])'"'"' "$1" > "$2/o.json"; '"$(declare -f twins_ok)"'; ! twins_ok "$2/o.json"' _ "$ROOT/roles/worker.opencode.json" "${TMPDIR:-/tmp}"
 t "route and probe role files deny no tafk verb (they deny no fleet verb either)" bash -c '! grep -l "tafk " "$@"' _ "$ROOT"/roles/route.*.json "$ROOT"/roles/probe.*.json
@@ -535,10 +535,10 @@ old=$(jq -cS '{ORCHESTRATOR,DECISIONS}' "$AD/roster.json")
 ad "$FLEET" desks up --no-proof --dir "$T" > "$AD/up.out" 2>&1; rc=$?  # as the human runs it (FLEET_ROLE unset)
 t "beside: desks up exits 0" test "$rc" = 0
 t "beside: roster entries ORCHESTRATOR and DECISIONS unchanged" test "$(jq -cS '{ORCHESTRATOR,DECISIONS}' "$AD/roster.json")" = "$old"
-t "beside: roster now also has DECIDE ROUTE WATCH LEARN" jq -e 'keys==["DECIDE","DECISIONS","LEARN","ORCHESTRATOR","ROUTE","WATCH"]' "$AD/roster.json"
-# deskB has 3 panes: WATCH | LEARN plus the `fleet watch status` pane desks up splits under a WATCH it launched
+t "beside: roster now also has DECIDE ROUTE WATCH LEARN AUTH" jq -e 'keys==["AUTH","DECIDE","DECISIONS","LEARN","ORCHESTRATOR","ROUTE","WATCH"]' "$AD/roster.json"
+# deskA has 3 panes: ROUTE | DECIDE over AUTH. deskB has 3 panes: WATCH | LEARN plus the `fleet watch status` pane desks up splits under a WATCH it launched
 bw=$(tmux -L "beside-$$" list-windows -t =asess -F "#{window_name}:#{window_panes}" | LC_ALL=C sort | tr "\n" " ")
-t "beside: windows ORCHESTRATOR DECISIONS kept, deskA deskB added (got: $bw)" test "$bw" = "DECISIONS:1 ORCHESTRATOR:1 deskA:2 deskB:3 home:1 "
+t "beside: windows ORCHESTRATOR DECISIONS kept, deskA deskB added (got: $bw)" test "$bw" = "DECISIONS:1 ORCHESTRATOR:1 deskA:3 deskB:3 home:1 "
 t "beside: deskB's third pane is the WATCH status pane" bash -c 'test "$(tmux -L "$1" list-panes -t =asess:deskB -F "#{@fleet-watch-status}" | grep -cx 1)" = 1' _ "beside-$$"
 t "beside: control: the ORCHESTRATOR and DECISIONS windows hold only their own panes" bash -c 'test "$(tmux -L "$1" list-panes -t =asess:ORCHESTRATOR -F "#{pane_id}")" = "$2" && test "$(tmux -L "$1" list-panes -t =asess:DECISIONS -F "#{pane_id}")" = "$3"' _ "beside-$$" "$pO" "$pD"
 t "beside: ORCHESTRATOR and DECISIONS panes still alive on the same ids" bash -c 'tmux -L "$1" list-panes -a -F "#{pane_id} #{pane_dead}" | grep -qx "$2 0" && tmux -L "$1" list-panes -a -F "#{pane_id} #{pane_dead}" | grep -qx "$3 0"' _ "beside-$$" "$pO" "$pD"
