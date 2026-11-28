@@ -1055,6 +1055,103 @@ def decisions():
     return _parse_lines(_decisions_path())
 
 
+def _idnum(did):
+    m = re.match(r"^Q(\d+)$", str(did or ""))
+    return int(m.group(1)) if m else 0
+
+
+def next_decision_id(rows):
+    """1 + the highest numeric id over every row's id and aliases (issue #58: not the line count, so migrated desk ids
+    and old aliases are never reused)."""
+    hi = 0
+    for r in rows:
+        for i in [r.get("id")] + list(r.get("aliases") or []):
+            hi = max(hi, _idnum(i))
+    return "Q%d" % (hi + 1)
+
+
+def _locked_rows(f):
+    f.seek(0)
+    rows = []
+    for ln in f.read().split("\n"):
+        if ln.strip():
+            try:
+                rows.append(json.loads(ln))
+            except ValueError:
+                pass
+    return rows
+
+
+def _with_decisions(fn, write=True):
+    """Run fn(rows) under the decisions.jsonl lock; rewrite the file when write. Returns fn's result."""
+    path = _decisions_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "a+") as f:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        try:
+            rows = _locked_rows(f)
+            out = fn(rows)
+            if write:
+                f.seek(0)
+                f.truncate()
+                f.write("".join(json.dumps(r) + "\n" for r in rows))
+                f.flush()
+            return out
+        finally:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+
+def _find_row(rows, did):
+    hit = None
+    for r in rows:
+        if r.get("id") == did:
+            hit = r
+    if hit is None:
+        for r in rows:
+            if did in (r.get("aliases") or []):
+                hit = r
+    return hit
+
+
+def canonical_id(did, rows=None):
+    """The row id for `did`, resolving an alias (an old desk-only id of the same call). Unknown ids come back as is."""
+    r = _find_row(decisions() if rows is None else rows, did)
+    return r.get("id") if r else did
+
+
+def get_decision(did):
+    return _find_row(decisions(), did)
+
+
+def update_decision(did, fn):
+    """Run fn(row) under the decisions.jsonl lock and rewrite the file. fn mutates the row in place or raises
+    ValueError to refuse. Alias-aware. Returns the updated row."""
+    def go(rows):
+        r = _find_row(rows, did)
+        if r is None:
+            raise ValueError("no such decision: %s" % did)
+        fn(r)
+        return r
+    return _with_decisions(go)
+
+
+def append_decision(rec):
+    """Append a new row under the lock with the next id (rec["id"] kept when given and unused). Returns the row."""
+    def go(rows):
+        want = rec.get("id")
+        if want and _find_row(rows, want) is not None:
+            raise ValueError("%s is already a decision id" % want)
+        if not want:
+            rec["id"] = next_decision_id(rows)
+        out = {"id": rec["id"]}
+        out.update({k: v for k, v in rec.items() if k != "id"})
+        rows.append(out)
+        rec.clear()
+        rec.update(out)
+        return out
+    return _with_decisions(go)
+
+
 def _sender(args):
     s = args.get("from") or os.environ.get("FLEET_NAME")
     if not s:
@@ -1151,45 +1248,89 @@ def _clean_watch(w):
     return out or None
 
 
+def _open_fields(args, rec):
+    """Fill the optional fields of a new decisions.jsonl row; one cleaner per field, each raises ValueError to refuse.
+
+    Field owners (see INTERFACES.md "Decisions store"): options #59, claims #61, verified #62, recheckAfter #63."""
+    rec["options"] = _clean_options(args.get("options"))
+    for key, clean in (("claims", _clean_claims), ("verified", _clean_verified), ("recheckAfter", _clean_recheck)):
+        v = clean(args.get(key), rec)
+        if v:
+            rec[key] = v
+    return rec
+
+
+def _clean_options(opts):
+    """decision_open options -> [{letter, text, rec}], letters fixed in the asker's order (issue #59 refines)."""
+    if opts is None:
+        return []
+    if not isinstance(opts, list):
+        raise ValueError("`options` must be a list")
+    return option_list({"options": opts})
+
+
+def option_list(row):
+    """A row's options as [{letter, text, rec}]: stored letters kept; plain strings lettered a, b, c in order."""
+    out = []
+    for i, o in enumerate(row.get("options") or []):
+        if isinstance(o, dict):
+            letter = str(o.get("letter") or chr(ord("a") + i)).lower()
+            item = {"letter": letter, "text": str(o.get("text") or ""), "rec": bool(o.get("rec"))}
+            for k in ("downside",):
+                if o.get(k):
+                    item[k] = o[k]
+        else:
+            item = {"letter": chr(ord("a") + i), "text": str(o), "rec": False}
+        out.append(item)
+    return out
+
+
+def option_text(o):
+    """One option for a one-line render: '<letter>: <text>' (+ ' (rec)')."""
+    if not isinstance(o, dict):
+        return str(o)
+    return "%s: %s%s" % (o.get("letter"), o.get("text"), " (rec)" if o.get("rec") else "")
+
+
+def _clean_claims(claims, rec):
+    """Issue #61: claims [{id, text, source, options, refs}]. Accepted as given until #61 lands."""
+    return claims if isinstance(claims, list) and claims else None
+
+
+def _clean_verified(verified, rec):
+    """Issue #62: verified [{claim, how, result}]. Accepted as given until #62 lands."""
+    return verified if isinstance(verified, list) and verified else None
+
+
+def _clean_recheck(at, rec):
+    """Issue #63: recheckAfter (ISO UTC). Accepted as given until #63 lands."""
+    return at if isinstance(at, str) and at.strip() else None
+
+
 def t_decision_open(args):
     side_refuse("open")
     q = args.get("question")
     if not q:
         raise ValueError("`question` is required")
     asker = _sender(args)
-    opts = args.get("options") or []
-    if not isinstance(opts, list):
-        raise ValueError("`options` must be a list of strings")
     allow = args.get("allow")
     if allow is not None:
         if not isinstance(allow, list) or not set(allow) <= set(ALLOW_TYPES):
             raise ValueError("`allow` must be a list drawn from %s" % ", ".join(ALLOW_TYPES))
         allow = [str(a) for a in allow]
     watch = _clean_watch(args.get("watch"))
-    path = _decisions_path()
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "a+") as f:
-        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-        try:
-            f.seek(0)
-            n = len([ln for ln in f.read().split("\n") if ln.strip()]) + 1
-            rec = {"id": "Q%d" % n, "at": now(), "from": asker, "question": q,
-                   "options": [str(o) for o in opts], "status": "open",
-                   "answer": None, "answeredAt": None}
-            if allow is not None:
-                rec["allow"] = allow
-            if watch:
-                rec["watch"] = watch
-            f.seek(0, 2)
-            f.write(json.dumps(rec) + "\n")
-            f.flush()
-        finally:
-            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-    text = "[decision Q%d from %s] %s" % (n, asker, q)
-    if opts:
-        text += " options: " + " | ".join(str(o) for o in opts)
+    rec = {"at": now(), "from": asker, "question": q, "status": "open", "answer": None, "answeredAt": None}
+    _open_fields(args, rec)
+    if allow is not None:
+        rec["allow"] = allow
+    if watch:
+        rec["watch"] = watch
+    rec = append_decision(rec)
+    text = "[decision %s from %s] %s" % (rec["id"], asker, q)
+    if rec["options"]:
+        text += " options: " + " | ".join(option_text(o) for o in rec["options"])
     res = deliver(asker, desk_name(), text)
-    return "opened Q%d; %s" % (n, res)
+    return "opened %s; %s" % (rec["id"], res)
 
 
 def t_decision_list(args):
@@ -1201,7 +1342,7 @@ def t_decision_list(args):
     for d in rows:
         line = "%s [%s] from %s: %s" % (d.get("id"), d.get("status"), d.get("from"), d.get("question"))
         if d.get("options"):
-            line += " options: " + " | ".join(d["options"])
+            line += " options: " + " | ".join(option_text(o) for o in option_list(d))
         if d.get("answer"):
             line += " -> " + d["answer"]
         out.append(line)
@@ -1209,41 +1350,17 @@ def t_decision_list(args):
 
 
 def mark_decision(did, answer, extra=None, only_open=False):
-    """Mark decision `did` answered in decisions.jsonl under its file lock. Returns the updated record.
+    """Mark decision `did` (alias-aware) answered in decisions.jsonl under its file lock. Returns the updated record.
 
     only_open=True refuses an id that is no longer open (raises AlreadyAnswered), so two front ends racing on the
     same call relay once. `extra` fields (answerKind, via, ...) are merged into the record."""
-    path = _decisions_path()
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "a+") as f:
-        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-        try:
-            f.seek(0)
-            rows = []
-            for ln in f.read().split("\n"):
-                if ln.strip():
-                    try:
-                        rows.append(json.loads(ln))
-                    except ValueError:
-                        pass
-            target = None
-            for r in rows:
-                if r.get("id") == did:
-                    target = r
-            if target is None:
-                raise ValueError("no such decision: %s" % did)
-            if only_open and target.get("status") != "open":
-                raise AlreadyAnswered("%s is already %s" % (did, target.get("status")))
-            target.update({"status": "answered", "answer": answer, "answeredAt": now()})
-            if extra:
-                target.update(extra)
-            f.seek(0)
-            f.truncate()
-            f.write("".join(json.dumps(r) + "\n" for r in rows))
-            f.flush()
-        finally:
-            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-    return target
+    def fn(target):
+        if only_open and target.get("status") != "open":
+            raise AlreadyAnswered("%s is already %s" % (did, target.get("status")))
+        target.update({"status": "answered", "answer": answer, "answeredAt": now()})
+        if extra:
+            target.update(extra)
+    return update_decision(did, fn)
 
 
 class AlreadyAnswered(ValueError):
@@ -1264,6 +1381,7 @@ def t_decision_answer(args):
     if not did or not answer:
         raise ValueError("`id` and `answer` are required")
     target = mark_decision(did, answer)
+    did = target.get("id") or did  # issue #58: an alias answers the one row, logged under its id
     frm = os.environ.get("FLEET_NAME") or desk_name()
     asker = target.get("from")
     _append_line(decisions_log_path(), json.dumps(
