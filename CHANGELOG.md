@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.10.0 (2026-11-27)
 
 AUTH, a fifth standing desk, owns every login and auth problem for the fleet (#45).
 
@@ -10,6 +10,7 @@ AUTH, a fifth standing desk, owns every login and auth problem for the fleet (#4
 - An append-only auth log (`$FLEET_STATE/auth/auth-log.jsonl`) with `log`, `trace TIME` (who asked for the sign-in behind a prompt) and `status`. Secret-looking text is refused everywhere. A sign-in passes only on the human's confirmation that the prompts were the announced ones, never on a log flag. `freeze` / `thaw` (human, ROUTE, DECIDE). `helpers` lists the human's own sign-in scripts by reference; the kit ships none.
 - Role files for AUTH on every CLI (no Edit or Write, no git commit or push, no lifecycle verbs, no `/goal`), and hand-off lines in the worker, ROUTE, DECIDE, WATCH and LEARN roles. The fleet-rules block has a "Sign-ins and auth" section.
 - `fleet park` refuses every standing desk (route, decide, watch, learn, auth); `fleet tick` names a missing AUTH in `WARN desks down:`.
+- Issue first (#54): every kit change starts as a scrubbed issue on this repo and its commit references it (README "Contributing: issue first", root `AGENTS.md`). Changes that landed without one were backfilled as #46 to #53.
 - Tests: `test/test_auth.py` (33 tests), plus five-desk layout, four-desk upgrade, park refusal and role checks in `test/test_roles.sh`, `test/test_desks_default.sh` and `test/test_installs.sh`.
 
 ## v0.9.1 (2026-11-27)
