@@ -50,7 +50,7 @@
   .b-relayed { color:var(--rec); } .b-queued { color:var(--warn); } .b-reopened { color:var(--info); }
   .b-failed { color:var(--bad); } .b-acted { color:var(--rec); } .b-actfail { color:var(--bad); }
   .b-src { color:var(--info); text-transform:lowercase; } .b-task { color:var(--warn); }
-  .src a { color:var(--info); } .src { font-size:13px; }
+  .src a { color:var(--info); } .src { font-size:13px; } .unchecked { font-size:13px; color:var(--warn); }
   .empty { color:var(--dim); padding:20px 0; }
   .ab { display:grid; grid-template-columns: 1fr 1fr; gap:10px; }
   .ab .side { border:1px solid var(--line); border-radius:8px; padding:10px; }
@@ -162,6 +162,8 @@ function card(c) {
   if (c.watch && c.watch.ref) node.appendChild(el("div", { class: "src" }, srcLink(c.watch)));
   node.appendChild(el("div", { class: "q", text: c.question }));
   if (c.conflict) node.appendChild(el("div", { class: "err", text: c.conflict + "; answer it in the desk pane" }));
+  for (const u of c.unchecked || []) node.appendChild(el("div", { class: "unchecked",
+    title: "the asker's refute pass did not check this claim (issue #62)", text: "unchecked: " + u }));
   if (allow.has("pick")) for (const o of c.options) {
     const b = el("button", { class: "opt" + (o.rec ? " rec" : ""), onclick: () => send({ option: o.letter }, "relaying " + o.letter + "...") },
       el("span", { class: "l", text: o.letter }), el("span", { text: o.text }),

@@ -300,6 +300,14 @@ MCP tools: `peer_list {}`, `peer_send {to, text, from?}`, `peer_inbox {name?, al
 `decision_open {question, options?: [str], from?}` (appends decisions.jsonl and delivers to $FLEET_DECIDE),
 `decision_list {status?}`, `decision_answer {id, answer}` (marks answered, delivers to the asker only; see Messaging routing),
 `decision_report {id, ok, note?}`, `decision_find {text}` (see DECISIONS UI). `decision_open` also takes `allow?: [pick|edit|own|snooze|refuse]`.
+`decision_open` also takes `verified?: [{claim, how?, result: held|refuted|unchecked}]` (issue #62): the asking lane's own
+refute pass, run before opening. `claim` is a claim id (`c1`) or text from the call's `claims` (any text when the call has
+none; an unknown id is refused). `how`, the command or quote that checked it, is required unless `unchecked`. Any `refuted`
+row refuses the call (MCP `isError`: `refused: N claim(s) refuted by your own check, so this call goes back to you ...`, then
+`REFUTED <claim> '<text>' (how: ...)` per row) before anything is written, so nothing reaches decisions.jsonl or the desk.
+Kept rows are stored as the row's `verified`. `fleet_mesh.unchecked_claims(row)` lists the claim texts left unsettled
+(claims with no held/refuted row, plus `unchecked` rows); the DECISIONS card shows them as `card.unchecked`
+(`unchecked: <text>` lines). No `verified` (preference calls) changes nothing.
 Sender = `from` arg, else `$FLEET_NAME`, else error.
 Delivery (`deliver(frm, to, text)`): always append to inbox/<to>.jsonl, then wake by the target's roster `cli`:
 - codex: `$FLEET_CODEX_BIN queue --thread <to> --message "[fleet message from <frm>] <text>"` (PROVEN wakes an idle TUI)

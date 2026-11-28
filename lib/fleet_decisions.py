@@ -259,6 +259,12 @@ def all_calls():
 DEFAULT_ALLOW = ["pick", "edit", "own", "snooze", "refuse"]
 
 
+def card_unchecked(cid):
+    """Issue #62: claim texts on the call the asker's refute pass left unchecked, for the card. [] for none."""
+    row = mesh.get_decision(cid)
+    return mesh.unchecked_claims(row) if row else []
+
+
 def open_cards(include_snoozed=False):
     calls = all_calls()
     meta = calls_meta()
@@ -285,6 +291,7 @@ def open_cards(include_snoozed=False):
                 "conflict": prim.get("conflict"),
                 "askerOf": {d["id"]: _uniq([d["from"]] + d["relayTo"]) for d in [prim] + dups},
                 "watch": watch_of(prim["id"], prim, meta), "task": (meta.get(prim["id"]) or {}).get("kind")}
+        card["unchecked"] = card_unchecked(prim["id"])  # issue #62
         if prim["id"] in snoozed and not include_snoozed:
             n_snoozed += 1
             continue

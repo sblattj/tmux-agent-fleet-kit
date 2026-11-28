@@ -1297,9 +1297,107 @@ def _clean_claims(claims, rec):
     return claims if isinstance(claims, list) and claims else None
 
 
+VERIFIED_RESULTS = ("held", "refuted", "unchecked")
+
+
 def _clean_verified(verified, rec):
-    """Issue #62: verified [{claim, how, result}]. Accepted as given until #62 lands."""
-    return verified if isinstance(verified, list) and verified else None
+    """Issue #62: the asker's own refute pass, run before opening: verified [{claim, how, result}].
+
+    claim names one of the row's claims by id ("c1") or text; with no claims on the row any text is accepted. how is
+    the command or quote that checked it, required unless result is unchecked. Any refuted row refuses the call
+    (Refuted, a ValueError) before anything is written, so it goes back to the asker. None when absent or empty."""
+    if verified is None:
+        return None
+    if not isinstance(verified, list):
+        raise ValueError("`verified` must be a list of {claim, how, result}")
+    known = _claim_index(rec.get("claims"))
+    out = []
+    for i, row in enumerate(verified):
+        if not isinstance(row, dict):
+            raise ValueError("`verified[%d]` must be an object {claim, how, result}" % i)
+        claim, how, result = row.get("claim"), row.get("how"), row.get("result")
+        if not isinstance(claim, str) or not claim.strip():
+            raise ValueError("`verified[%d].claim` is required: a claim id (c1) or its text" % i)
+        claim = claim.strip()
+        if known and claim not in known:
+            raise ValueError("`verified[%d].claim` %r matches no claim on this call (ids: %s)"
+                             % (i, claim, ", ".join(_uniq_keep(known.values()))))
+        if result not in VERIFIED_RESULTS:
+            raise ValueError("`verified[%d].result` must be one of %s" % (i, "|".join(VERIFIED_RESULTS)))
+        if result != "unchecked" and (not isinstance(how, str) or not how.strip()):
+            raise ValueError("`verified[%d].how` is required for a %s claim: the command or quote that checked it"
+                             % (i, result))
+        r = {"claim": known.get(claim) or claim, "result": result}
+        if isinstance(how, str) and how.strip():
+            r["how"] = how.strip()
+        out.append(r)
+    _refuse_refuted(out, rec.get("claims"))
+    return out or None
+
+
+def _uniq_keep(xs):
+    seen, out = set(), []
+    for x in xs:
+        if x not in seen:
+            seen.add(x)
+            out.append(x)
+    return out
+
+
+def _claim_index(claims):
+    """{id or text: canonical key} over a row's claims; the key is the claim's id, else its text. {} for none."""
+    idx = {}
+    for c in claims if isinstance(claims, list) else []:
+        if isinstance(c, dict):
+            cid, text = c.get("id"), c.get("text")
+            key = cid if isinstance(cid, str) and cid.strip() else text
+            if not isinstance(key, str) or not key.strip():
+                continue
+            key = key.strip()
+            idx[key] = key
+            if isinstance(text, str) and text.strip():
+                idx.setdefault(text.strip(), key)
+        elif isinstance(c, str) and c.strip():
+            idx[c.strip()] = c.strip()
+    return idx
+
+
+def claim_text(claims, key):
+    """The text of the claim `key` (an id like c1) names on a row, else `key` itself."""
+    for c in claims if isinstance(claims, list) else []:
+        if isinstance(c, dict) and key in (c.get("id"), c.get("text")) and isinstance(c.get("text"), str):
+            return c["text"]
+    return key
+
+
+class Refuted(ValueError):
+    """decision_open refused a call whose own refute pass found a false claim (issue #62)."""
+
+
+def _refuse_refuted(verified, claims=None):
+    bad = [r for r in verified or [] if r.get("result") == "refuted"]
+    if bad:
+        raise Refuted("refused: %d claim(s) refuted by your own check, so this call goes back to you. Fix the question "
+                      "or options, drop or correct the claim, and open again. %s"
+                      % (len(bad), "; ".join("REFUTED %s %r (how: %s)" % (r["claim"], claim_text(claims, r["claim"]),
+                                                                           r.get("how", "-")) for r in bad)))
+
+
+def unchecked_claims(row):
+    """Claim texts on a row that its refute pass did not settle (issue #62): claims with no verified row, and verified
+    rows marked unchecked. Row ids/texts in the order the row lists them."""
+    claims, verified = row.get("claims"), row.get("verified") or []
+    settled = {r.get("claim") for r in verified if isinstance(r, dict) and r.get("result") in ("held", "refuted")}
+    out = []
+    for key in _uniq_keep(_claim_index(claims).values()):
+        if key not in settled:
+            out.append(claim_text(claims, key))
+    for r in verified:
+        if isinstance(r, dict) and r.get("result") == "unchecked":
+            t = claim_text(claims, r.get("claim"))
+            if t and t not in out:
+                out.append(t)
+    return out
 
 
 def _clean_recheck(at, rec):
@@ -1479,7 +1577,13 @@ TOOLS = [
               "allow": {"type": "array", "items": {"type": "string", "enum": list(ALLOW_TYPES)}},
               "watch": {"type": "object", "description": "WATCH source of the call: sourceKind, source, ref, url "
                         "(http/https only), eid. Other keys are dropped.",
-                        "properties": {k: _S for k in WATCH_KEYS}}}, ["question"]),
+                        "properties": {k: _S for k in WATCH_KEYS}},
+              "verified": {"type": "array", "description": "Your own refute pass over this call's claims, run before "
+                           "opening (issue #62): claim is a claim id (c1) or its text, how the command or quote that "
+                           "checked it. Any refuted claim makes decision_open refuse the call.",
+                           "items": {"type": "object", "properties": {
+                               "claim": _S, "how": _S, "result": {"type": "string", "enum": list(VERIFIED_RESULTS)}},
+                               "required": ["claim", "result"]}}}, ["question"]),
      t_decision_open),
     ("decision_list", "List decisions, optionally filtered by status (open|answered).",
      _schema({"status": {"type": "string", "enum": ["open", "answered"]}}), t_decision_list),
