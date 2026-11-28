@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """fleet auth: the AUTH desk's engine (docs/design/auth-desk.md). Python 3.8+ stdlib only.
 
-AUTH is the fifth standing desk, always open under DECIDE in window deskA. It owns every login and auth problem for
+AUTH is the fifth standing desk, always open in window deskA, top left beside DECIDE. It owns every login and auth problem for
 the fleet and is the only session that runs interactive sign-ins as the human. This module holds its state and verbs,
 the same snapshot()/verbs split as the other desks, so a page can sit on top later.
 

@@ -35,7 +35,7 @@ started by `fleet desks up`, never parked, no `/goal`, a role file and a role ho
    before it is written. `fleet auth trace <time>` lists the rows around a moment, so a surprise MFA prompt can be
    tied to the lane that asked for it.
 6. **Numbers, big and logged.** The moment a sign-in page shows a number to match, AUTH runs `fleet auth number NN`:
-   the number prints as a block banner in AUTH's pane, which sits right under DECIDE so the human reads it while
+   the number prints as a block banner in AUTH's pane, which sits right beside DECIDE so the human reads it while
    their phone asks for it, and a `number-shown` row (time, sign-in, who asked) goes in the log. Every number shown
    is logged, a second one too. When the page waits on a push, AUTH waits for the approval; it falls back to the
    stored TOTP code only after a timeout.
@@ -65,21 +65,27 @@ Who may run what (`FLEET_ROLE`; unset is the human's own shell):
 | `confirm` | the human; decide with `--quote` (the human's typed words) |
 | `freeze`, `thaw` | route, decide, the human |
 
-## Layout: AUTH sits in deskA, under DECIDE
-`deskA` = ROUTE (left, full height) | DECIDE (top right) over AUTH (bottom right, 40% of the column).
+## Layout: AUTH sits in deskA, top left over ROUTE
+`deskA` = AUTH (top left, 40% of the column) over ROUTE (bottom left) | DECIDE (the whole right column).
+Until v0.11.0 AUTH sat under DECIDE in the right column (#45). The human moved it (#56): "Let's put AUTH above
+ROUTE on deskA so DECIDE can have the whole vertical spot on the right".
 `deskB` stays WATCH | LEARN, with the WATCH status pane under WATCH.
 
 Why there:
-- The human asked for it: AUTH is always open right below DECIDE so they can read and type the numbers. They act in
+- The human asked for it: AUTH is always open beside DECIDE so they can read and type the numbers. They act in
   both panes during a sign-in: DECIDE shows the heads-up, AUTH shows the number big and is where they run a
-  hidden-prompt script when one is needed. Stacked in one column, both are in view at once.
+  hidden-prompt script when one is needed. Side by side, both are in view at once.
+- DECIDE is the desk the human reads most, so it keeps the full height. ROUTE reports to the human less, so it
+  gives up the top of its column.
 - deskB already holds three panes (WATCH, its status pane, LEARN); a fourth would make every pane there too small.
 - A third desk window would push the first lane off window index 2, which the kit and its users count on.
 
 `fleet desks up` adds AUTH to a fleet that has the four older desks without touching their panes: AUTH is split
-under DECIDE, then deskA is tidied (pane order ROUTE, DECIDE, AUTH; `main-vertical`; AUTH resized to 40%). The tidy
+above ROUTE, then deskA is tidied (pane order AUTH, ROUTE, DECIDE, then one custom tmux layout: AUTH 40% over ROUTE
+on the left, DECIDE the full height on the right). The tidy
 runs only when this run launched a deskA desk and the window holds exactly those three panes, so a deskA the human
-arranged by hand is left alone. A dead DECIDE comes back above a live AUTH, and a dead ROUTE on the left.
+arranged by hand is left alone. A dead DECIDE comes back as the right column, and a dead ROUTE under a live AUTH. A deskA already in this shape
+(the live fleet's, rearranged by hand) is left exactly as it is.
 
 ## Lifecycle
 `fleet tick` and `fleet cleanup` only ever park workers, so AUTH is never due to park. `fleet park` now refuses every

@@ -22,7 +22,7 @@
 #                                                       viewer can see it, block art otherwise (mosh), always a text line;
 #                                                       FLEET_GFX=auto|kitty|symbols|text; never sets a tmux option (bin/fleet-show)
 #   fleet desks up [--cli C] [--model M] [--dir D] [--handoff DIR] [--no-proof] [--dry-run]
-#                                                       the standing desks: windows deskA (ROUTE|DECIDE/AUTH), deskB (WATCH|LEARN) (bin/fleet-desks)
+#                                                       the standing desks: windows deskA (AUTH/ROUTE|DECIDE), deskB (WATCH|LEARN) (bin/fleet-desks)
 #   fleet tick|park|reopen|cleanup|handoff|forget ...   lifecycle, handled by bin/fleet-lifecycle
 #   fleet watch run|check|status|stats|serve|webhook ...  WATCH engine: poll sources, route events to DECIDE/LEARN (bin/fleet-watch)
 #   fleet ui serve|url [--port P] [--tab T]             one loopback page for every desk: /decide /learn /watch /route,

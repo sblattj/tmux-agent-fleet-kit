@@ -366,13 +366,24 @@ dlayout() { # socket session state
     while read -r _ w _ _ p; do [ "$(tmux -L "$s" display -p -t "$p" '#{@fleet-watch-status}')" = 1 ] && continue; n=$(jq -r --arg p "$p" 'to_entries[]|select(.value.pane==$p)|.key' "$st/roster.json" | head -1); printf '%s %s\n' "$w" "${n:-?}"; done |
     awk '{ if ($1!=last) { if (NR>1) printf " "; printf "%s:%s", $1, $2; last=$1 } else printf "|%s", $2 } END { print "" }'
 }
+# deskA geometry: AUTH and ROUTE share the left column with AUTH on top at ~40% of the height, DECIDE spans the full height on the right
+dgeom() { # socket route-pane decide-pane auth-pane
+  local s=$1 R D A H
+  R=$(tmux -L "$s" display -p -t "$2" '#{pane_left} #{pane_top} #{pane_height}'); D=$(tmux -L "$s" display -p -t "$3" '#{pane_left} #{pane_top} #{pane_height}')
+  A=$(tmux -L "$s" display -p -t "$4" '#{pane_left} #{pane_top} #{pane_height}'); H=$(tmux -L "$s" display -p -t "$2" '#{window_height}')
+  set -- $R $D $A
+  [ "$1" = 0 ] && [ "$7" = 0 ] && [ "$8" = 0 ] && [ "$2" -gt 0 ] && [ "$4" -gt 0 ] && [ "$5" = 0 ] && [ "$6" = "$H" ] &&
+    [ $(( $9 - (H - 1) * 40 / 100 )) -le 1 ] && [ $(( (H - 1) * 40 / 100 - $9 )) -le 1 ]
+}
+notdgeom() { ! dgeom "$@"; }
 dpanes() { tmux -L "$1" list-panes -s -t "=$2" -F '#{window_id}.#{pane_id}' 2>/dev/null | LC_ALL=C sort | tr '\n' ' '; }
 o1=$(dsk up --no-proof --dir "$T" 2>&1); rc1=$?
 lay1=$(dlayout desks-$$ dsess "$DS"); ids1=$(dpanes desks-$$ dsess)
 o2=$(dsk up --no-proof --dir "$T" 2>&1); rc2=$?
 lay2=$(dlayout desks-$$ dsess "$DS"); ids2=$(dpanes desks-$$ dsess)
+t "desks up: deskA geometry AUTH 40% over ROUTE on the left, DECIDE full height right" dgeom desks-$$ "$(jq -r .ROUTE.pane "$DS/roster.json")" "$(jq -r .DECIDE.pane "$DS/roster.json")" "$(jq -r .AUTH.pane "$DS/roster.json")"
 t "desks up exits 0 twice" bash -c 'test "$1" = 0 && test "$2" = 0' _ "$rc1" "$rc2"
-t "desks up: exactly windows deskA (ROUTE left | DECIDE top right | AUTH under it) then deskB (WATCH left | LEARN right)" test "$lay1" = "deskA:ROUTE|DECIDE|AUTH deskB:WATCH|LEARN"
+t "desks up: exactly windows deskA (AUTH top left over ROUTE | DECIDE right) then deskB (WATCH left | LEARN right)" test "$lay1" = "deskA:AUTH|ROUTE|DECIDE deskB:WATCH|LEARN"
 t "desks up: no separate WATCH, LEARN or desks window" bash -c '! tmux -L "$1" list-windows -t =dsess -F "#{window_name}" | grep -qxE "WATCH|LEARN|desks|DECIDE|ROUTE|home"' _ "desks-$$"
 t "desks up second run: same layout" test "$lay2" = "$lay1"
 t "desks up second run: same window and pane ids" test "$ids2" = "$ids1"
@@ -400,7 +411,7 @@ tmux -L desks-$$ kill-pane -t "$kp"
 o3=$(dsk up --no-proof --dir "$T" 2>&1); rc3=$?
 t "half-dead deskB: desks up exits 0" test "$rc3" = 0
 t "half-dead deskB: LEARN already live, WATCH relaunched" bash -c 'printf "%s" "$1" | grep -q "^LEARN already live" && ! printf "%s" "$1" | grep -q "^WATCH already live"' _ "$o3"
-t "half-dead deskB: back to deskA ROUTE|DECIDE|AUTH, deskB WATCH|LEARN" test "$(dlayout desks-$$ dsess "$DS")" = "deskA:ROUTE|DECIDE|AUTH deskB:WATCH|LEARN"
+t "half-dead deskB: back to deskA AUTH|ROUTE|DECIDE, deskB WATCH|LEARN" test "$(dlayout desks-$$ dsess "$DS")" = "deskA:AUTH|ROUTE|DECIDE deskB:WATCH|LEARN"
 t "half-dead deskB: LEARN kept its pane id" test "$(jq -r .LEARN.pane "$DS/roster.json")" = "$lp"
 t "half-dead deskB: WATCH relaunched, its status pane reused (still exactly one)" bash -c 'printf "%s" "$1" | grep -q "^WATCH status pane already live" && test "$(printf "%s\n" "$2" | grep -c .)" = 1' _ "$o3" "$(wsp desks-$$ dsess)"
 t "half-dead deskB: WATCH has a new live pane" bash -c 'p=$(jq -r .WATCH.pane "$1"); test "$p" != "$2" && tmux -L "$3" list-panes -a -F "#{pane_id} #{pane_dead}" | grep -qx "$p 0"' _ "$DS/roster.json" "$kp" "desks-$$"
@@ -414,7 +425,8 @@ hb() { env FLEET_STATE=$HB FLEET_TMUX_SOCKET=byhand-$$ FLEET_TMUX_SESSION=hsess 
 tmux -L byhand-$$ new-session -d -s hsess -n deskA "sleep 300"
 hR=$(tmux -L byhand-$$ display -p -t =hsess:deskA '#{pane_id}')
 hD=$(tmux -L byhand-$$ split-window -d -h -P -F '#{pane_id}' -t "$hR" "sleep 300")
-hA=$(tmux -L byhand-$$ split-window -d -v -P -F '#{pane_id}' -t "$hD" "sleep 300")
+hA=$(tmux -L byhand-$$ split-window -d -v -b -l 40% -P -F '#{pane_id}' -t "$hR" "sleep 300")   # the live shape: AUTH over ROUTE | DECIDE
+hlay=$(tmux -L byhand-$$ display -p -t "$hR" '#{window_layout}')
 hW=$(tmux -L byhand-$$ new-window -d -P -F '#{pane_id}' -t =hsess: -n deskB "sleep 300")
 hL=$(tmux -L byhand-$$ split-window -d -h -P -F '#{pane_id}' -t "$hW" "sleep 300")
 jq -n --arg r "$hR" --arg d "$hD" --arg a "$hA" --arg w "$hW" --arg l "$hL" '{ROUTE:{name:"ROUTE",cli:"claude",mode:"desk",role:"route",pane:$r},DECIDE:{name:"DECIDE",cli:"claude",mode:"desk",role:"decide",pane:$d},AUTH:{name:"AUTH",cli:"claude",mode:"desk",role:"auth",pane:$a},WATCH:{name:"WATCH",cli:"claude",mode:"desk",role:"watch",pane:$w},LEARN:{name:"LEARN",cli:"claude",mode:"desk",role:"learn",pane:$l}}' > "$HB/roster.json"
@@ -424,16 +436,18 @@ ho=$(hb "$FLEET" desks up --no-proof --dir "$T" 2>&1); hrc=$?
 t "by hand: desks up exits 0" test "$hrc" = 0
 t "by hand: all five already live" bash -c 'for d in ROUTE DECIDE AUTH WATCH LEARN; do printf "%s" "$1" | grep -q "^$d already live" || exit 1; done' _ "$ho"
 t "by hand: window and pane ids unchanged" test "$(dpanes byhand-$$ hsess)" = "$hids"
+t "by hand: the live AUTH over ROUTE | DECIDE layout is left exactly as it was" test "$(tmux -L byhand-$$ display -p -t "$hR" "#{window_layout}")" = "$hlay"
 t "by hand: roster unchanged" test "$(jq -cS . "$HB/roster.json")" = "$hros"
 t "by hand: pane tags unchanged" test "$(tmux -L byhand-$$ list-panes -s -t =hsess -F '#{pane_id}=#{@fleet-desk}' | tr '\n' ' ')" = "$hopts"
 t "control: by hand (WATCH already live, not launched): no WATCH status pane" bash -c '! tmux -L "$1" list-panes -s -t =hsess -F "#{@fleet-watch-status}" | grep -qx 1 && printf "%s" "$2" | grep -q "no WATCH status pane"' _ "byhand-$$" "$ho"
 t "by hand: window names still deskA deskB" test "$(tmux -L byhand-$$ list-windows -t =hsess -F '#{window_name}' | tr '\n' ' ')" = "deskA deskB "
 tmux -L byhand-$$ swap-pane -d -s "$hR" -t "$hD"
 sw=$(dlayout byhand-$$ hsess "$HB")
-t "control: dlayout reports a swapped deskA as DECIDE|ROUTE|AUTH" test "$sw" = "deskA:DECIDE|ROUTE|AUTH deskB:WATCH|LEARN"
+t "control: dlayout reports a swapped deskA as AUTH|DECIDE|ROUTE" test "$sw" = "deskA:AUTH|DECIDE|ROUTE deskB:WATCH|LEARN"
+t "control: dgeom fails on the swapped deskA" notdgeom byhand-$$ "$hR" "$hD" "$hA"
 tmux -L byhand-$$ kill-server >/dev/null 2>&1
 
-# ---- a four-desk fleet from before AUTH: desks up adds only AUTH, under DECIDE, and every other pane keeps its id
+# ---- a four-desk fleet from before AUTH: desks up adds only AUTH, above ROUTE, tidies deskA, and every other pane keeps its id
 UA=$T/upauth; mkdir -p "$UA"
 ua() { env FLEET_STATE=$UA FLEET_TMUX_SOCKET=upauth-$$ FLEET_TMUX_SESSION=usess "$@"; }
 utm() { tmux -L upauth-$$ "$@"; }
@@ -447,23 +461,24 @@ uo=$(ua "$FLEET" desks up --no-proof --dir "$T" 2>&1); urc=$?
 t "four-desk fleet: desks up exits 0" test "$urc" = 0
 t "four-desk fleet: ROUTE DECIDE WATCH LEARN already live, AUTH launched" bash -c 'for d in ROUTE DECIDE WATCH LEARN; do printf "%s" "$1" | grep -q "^$d already live" || exit 1; done; ! printf "%s" "$1" | grep -q "^AUTH already live"' _ "$uo"
 t "four-desk fleet: the four desks keep their panes" bash -c 'test "$(jq -r "[.ROUTE.pane,.DECIDE.pane,.WATCH.pane,.LEARN.pane]|join(\" \")" "$1")" = "$2"' _ "$UA/roster.json" "$uR $uD $uW $uL"
-t "four-desk fleet: layout now deskA ROUTE|DECIDE|AUTH (got: $(dlayout upauth-$$ usess "$UA"))" test "$(dlayout upauth-$$ usess "$UA")" = "deskA:ROUTE|DECIDE|AUTH deskB:WATCH|LEARN"
+t "four-desk fleet: layout now deskA AUTH|ROUTE|DECIDE (got: $(dlayout upauth-$$ usess "$UA"))" test "$(dlayout upauth-$$ usess "$UA")" = "deskA:AUTH|ROUTE|DECIDE deskB:WATCH|LEARN"
 uap=$(jq -r .AUTH.pane "$UA/roster.json")
-t "four-desk fleet: AUTH sits under DECIDE in the same column (same left, lower top)" bash -c 'a=$(tmux -L "$1" display -p -t "$2" "#{pane_left} #{pane_top}"); d=$(tmux -L "$1" display -p -t "$3" "#{pane_left} #{pane_top}"); test "${a% *}" = "${d% *}" && test "${a#* }" -gt "${d#* }"' _ "upauth-$$" "$uap" "$uD"
-t "four-desk fleet: ROUTE spans the full window height" bash -c 'test "$(tmux -L "$1" display -p -t "$2" "#{pane_height}")" = "$(tmux -L "$1" display -p -t "$2" "#{window_height}")"' _ "upauth-$$" "$uR"
+t "four-desk fleet: AUTH 40% over ROUTE on the left, DECIDE full height right" dgeom "upauth-$$" "$uR" "$uD" "$uap"
 t "four-desk fleet: AUTH pane tagged @fleet-desk auth, roster role auth mode desk" bash -c 'test "$(tmux -L "$1" display -p -t "$2" "#{@fleet-desk}")" = auth && jq -e ".AUTH.role==\"auth\" and .AUTH.mode==\"desk\"" "$3"' _ "upauth-$$" "$uap" "$UA/roster.json"
-t "four-desk fleet: said it tidied deskA" has "$uo" "OK deskA layout: ROUTE | DECIDE over AUTH"
+t "four-desk fleet: said it tidied deskA" has "$uo" "OK deskA layout: AUTH over ROUTE | DECIDE"
 uo2=$(ua "$FLEET" desks up --no-proof --dir "$T" 2>&1)
 t "four-desk fleet rerun: all five live, nothing launched, layout not touched again" bash -c 'printf "%s" "$1" | grep -q "^AUTH already live" && ! printf "%s" "$1" | grep -q "OK launched\|OK deskA layout"' _ "$uo2"
-# DECIDE dies with AUTH live: DECIDE comes back above AUTH, not as a fourth column
+# DECIDE dies with AUTH live: DECIDE comes back as the whole right column
 utm kill-pane -t "$uD"
 uo3=$(ua "$FLEET" desks up --no-proof --dir "$T" 2>&1)
-t "dead DECIDE beside a live AUTH: relaunched above AUTH (got: $(dlayout upauth-$$ usess "$UA"))" test "$(dlayout upauth-$$ usess "$UA")" = "deskA:ROUTE|DECIDE|AUTH deskB:WATCH|LEARN"
+t "dead DECIDE beside a live AUTH: relaunched as the right column (got: $(dlayout upauth-$$ usess "$UA"))" test "$(dlayout upauth-$$ usess "$UA")" = "deskA:AUTH|ROUTE|DECIDE deskB:WATCH|LEARN"
 t "dead DECIDE: AUTH kept its pane" test "$(jq -r .AUTH.pane "$UA/roster.json")" = "$uap"
-# ROUTE dies too: ROUTE comes back on the left
+t "dead DECIDE: geometry restored" dgeom "upauth-$$" "$uR" "$(jq -r .DECIDE.pane "$UA/roster.json")" "$uap"
+# ROUTE dies too: ROUTE comes back under AUTH
 utm kill-pane -t "$uR"
 ua "$FLEET" desks up --no-proof --dir "$T" >/dev/null 2>&1
-t "dead ROUTE: relaunched on the left (got: $(dlayout upauth-$$ usess "$UA"))" test "$(dlayout upauth-$$ usess "$UA")" = "deskA:ROUTE|DECIDE|AUTH deskB:WATCH|LEARN"
+t "dead ROUTE: geometry restored" dgeom "upauth-$$" "$(jq -r .ROUTE.pane "$UA/roster.json")" "$(jq -r .DECIDE.pane "$UA/roster.json")" "$uap"
+t "dead ROUTE: relaunched under AUTH (got: $(dlayout upauth-$$ usess "$UA"))" test "$(dlayout upauth-$$ usess "$UA")" = "deskA:AUTH|ROUTE|DECIDE deskB:WATCH|LEARN"
 utm kill-server >/dev/null 2>&1
 
 # ---- desk slots (issue #9): deskA at index 0, deskB at 1, lanes at 2+, no pane or window id changes, focus kept
@@ -518,7 +533,7 @@ dro=$(env FLEET_STATE=$DR FLEET_TMUX_SOCKET=dry-$$ FLEET_TMUX_SESSION=drsess "$F
 t "dry run: exits 0" test "$drc" = 0
 t "dry run: names window deskA ROUTE left | DECIDE right" has "$dro" "window deskA: ROUTE (left) | DECIDE (right)"
 t "dry run: names window deskB WATCH left | LEARN right" has "$dro" "window deskB: WATCH (left) | LEARN (right)"
-t "dry run: AUTH split under DECIDE at 40%" bash -c 'printf "%s" "$1" | grep -q "window deskA: AUTH (under DECIDE)" && printf "%s" "$1" | grep -q "would run:.*--role auth --split below --of DECIDE --size 40 AUTH desk"' _ "$dro"
+t "dry run: AUTH split above ROUTE at 40%" bash -c 'printf "%s" "$1" | grep -q "window deskA: AUTH (above ROUTE)" && printf "%s" "$1" | grep -q "would run:.*--role auth --split above --of ROUTE --size 40 AUTH desk"' _ "$dro"
 t "dry run: DECIDE splits right of ROUTE, LEARN right of WATCH" bash -c 'printf "%s" "$1" | grep -q "would run:.*--split-right-of ROUTE DECIDE desk" && printf "%s" "$1" | grep -q "would run:.*--split-right-of WATCH LEARN desk"' _ "$dro"
 t "dry run: shows the WATCH status pane under WATCH running fleet watch status" bash -c 'printf "%s" "$1" | grep -q "WATCH status pane under WATCH" && printf "%s" "$1" | grep -q "would run: tmux split-window.*watch\\\\ status"' _ "$dro"
 t "dry run: shows deskA placed at index 0 and deskB at 1" bash -c 'printf "%s" "$1" | grep -q "^window deskA: placed at index 0" && printf "%s" "$1" | grep -q "^window deskB: placed at index 1"' _ "$dro"
@@ -536,7 +551,7 @@ ad "$FLEET" desks up --no-proof --dir "$T" > "$AD/up.out" 2>&1; rc=$?  # as the 
 t "beside: desks up exits 0" test "$rc" = 0
 t "beside: roster entries ORCHESTRATOR and DECISIONS unchanged" test "$(jq -cS '{ORCHESTRATOR,DECISIONS}' "$AD/roster.json")" = "$old"
 t "beside: roster now also has DECIDE ROUTE WATCH LEARN AUTH" jq -e 'keys==["AUTH","DECIDE","DECISIONS","LEARN","ORCHESTRATOR","ROUTE","WATCH"]' "$AD/roster.json"
-# deskA has 3 panes: ROUTE | DECIDE over AUTH. deskB has 3 panes: WATCH | LEARN plus the `fleet watch status` pane desks up splits under a WATCH it launched
+# deskA has 3 panes: AUTH over ROUTE | DECIDE. deskB has 3 panes: WATCH | LEARN plus the `fleet watch status` pane desks up splits under a WATCH it launched
 bw=$(tmux -L "beside-$$" list-windows -t =asess -F "#{window_name}:#{window_panes}" | LC_ALL=C sort | tr "\n" " ")
 t "beside: windows ORCHESTRATOR DECISIONS kept, deskA deskB added (got: $bw)" test "$bw" = "DECISIONS:1 ORCHESTRATOR:1 deskA:3 deskB:3 home:1 "
 t "beside: deskB's third pane is the WATCH status pane" bash -c 'test "$(tmux -L "$1" list-panes -t =asess:deskB -F "#{@fleet-watch-status}" | grep -cx 1)" = 1' _ "beside-$$"

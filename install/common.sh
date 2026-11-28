@@ -360,7 +360,7 @@ fc_install_agy_roles() {
   if [ "$found" = 0 ]; then fc_say "no role agents found in $FC_ROLES_DIR (roles/*.agy.md); skipping"; fi
 }
 
-# Last step of every installer (issue #9): bring the five desks up, windows deskA (ROUTE | DECIDE over AUTH) and deskB
+# Last step of every installer (issue #9): bring the five desks up, windows deskA (AUTH over ROUTE | DECIDE) and deskB
 # (WATCH | LEARN), with this CLI. Idempotent (live desks are left alone). --no-desks or FLEET_NO_DESKS=1 skips it;
 # --dry-run prints the command. Uses this repo's bin/fleet (FLEET_BIN overrides), not whatever `fleet` is on PATH.
 fc_desks_up() { # cli

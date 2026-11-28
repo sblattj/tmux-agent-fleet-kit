@@ -52,7 +52,7 @@ Common first steps: clone the repo, then run the installer for your CLI. Every i
 ```bash
 install/claude.sh --trust ~/work/project          # skills, one @ import of the fleet rules in ~/.claude/CLAUDE.md, bin symlinks, then fleet desks up
 install/claude.sh --mesh                          # optional: registers fleet-mesh user-wide; fleet launch already passes it per lane (--mcp-config)
-fleet desks up --dir ~/work/project              # the five desks (the installer already ran it; rerun for another --dir): deskA (ROUTE | DECIDE over AUTH), deskB (WATCH | LEARN)
+fleet desks up --dir ~/work/project              # the five desks (the installer already ran it; rerun for another --dir): deskA (AUTH over ROUTE | DECIDE), deskB (WATCH | LEARN)
 fleet-goal new /tmp/lane-a.goal.json --goal "..." --report-to ROUTE
 fleet-goal condition /tmp/lane-a.goal.json --report-to ROUTE > /tmp/lane-a.cond.txt
 fleet launch --cli claude lane-a goal /tmp/lane-a.cond.txt

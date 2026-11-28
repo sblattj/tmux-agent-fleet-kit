@@ -589,7 +589,7 @@ def print_chrome_tabs():
 
 
 def desks_line(r):
-    """'WARN desks down: ...' when window deskA (ROUTE|DECIDE over AUTH) or deskB (WATCH|LEARN) has a dead or missing desk pane
+    """'WARN desks down: ...' when window deskA (AUTH over ROUTE | DECIDE) or deskB (WATCH|LEARN) has a dead or missing desk pane
     (issue #9: lanes report to ROUTE and ask DECIDE, so a fleet without them runs unanswered), else ''."""
     rc, out = tm("list-panes", "-a", "-F", "#{pane_id} #{pane_dead}")
     live = set(ln.split()[0] for ln in (out.splitlines() if rc == 0 else []) if ln.endswith(" 0"))

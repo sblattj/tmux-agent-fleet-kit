@@ -513,21 +513,22 @@ fleet remote attach-line [--read-only] [--ip ADDR]               exactly one lin
 
 ### fleet desks up (bin/fleet-desks)
 - `fleet desks up [--cli C] [--model M] [--dir D] [--no-proof] [--dry-run]`, role-guarded like launch.
-  Builds two split windows, all five desks in desk mode: `deskA` = ROUTE (role route, left) | DECIDE (role decide,
-  split right of ROUTE) over AUTH (role auth, split below DECIDE at 40% of the column; docs/design/auth-desk.md), `deskB` = WATCH (role watch, left) | LEARN (role learn, split right of WATCH). No separate
+  Builds two split windows, all five desks in desk mode: `deskA` = AUTH (role auth, top left, split above ROUTE at
+  40% of the column; docs/design/auth-desk.md) over ROUTE (role route, bottom left) | DECIDE (role decide, split right of ROUTE, the whole right column), `deskB` = WATCH (role watch, left) | LEARN (role learn, split right of WATCH). No separate
   WATCH or LEARN window. Every desk pane is tagged `@fleet-desk <role>`. WATCH and LEARN get a read-only "look for
   work" first prompt. Drops the `home` window when it created the session. `--dry-run` prints
   `window deskA: ROUTE (left) | DECIDE (right)` and `window deskB: WATCH (left) | LEARN (right)` before the launches it
-  would run, plus `window deskA: AUTH (under DECIDE)`. Last line:
-  `OK desks up: deskA ROUTE=%N | DECIDE=%N / AUTH=%N, deskB WATCH=%N | LEARN=%N`.
+  would run, plus `window deskA: AUTH (above ROUTE)`. Last line:
+  `OK desks up: deskA AUTH=%N / ROUTE=%N | DECIDE=%N, deskB WATCH=%N | LEARN=%N`.
 - Idempotent: a desk whose roster pane is live is left alone (`<NAME> already live (pane %N)`); when all five are live
   nothing changes (no launch, rename or tag). A dead right desk is relaunched split right of the live left one; a dead
   left desk is split beside the live right one and swapped to the left. The window is renamed `deskA`/`deskB` only
   when something in it was launched.
-- AUTH on a four-desk fleet: AUTH is split under the live DECIDE and the other panes keep their ids. A dead DECIDE
-  beside a live AUTH comes back above AUTH; a dead ROUTE with only AUTH live comes back left of it. After any deskA
-  launch, when deskA holds exactly ROUTE, DECIDE and AUTH, it is tidied once (`OK deskA layout: ROUTE | DECIDE over
-  AUTH`): pane order ROUTE, DECIDE, AUTH, `main-vertical` at 50%, AUTH 40% of the right column. Otherwise the layout
+- AUTH on a four-desk fleet: AUTH is split above the live ROUTE and the other panes keep their ids. A dead DECIDE
+  comes back as the right column; a dead ROUTE beside a live AUTH comes back under AUTH. After any deskA launch, when
+  deskA holds exactly ROUTE, DECIDE and AUTH, it is tidied once (`OK deskA layout: AUTH over ROUTE | DECIDE`): pane
+  order AUTH, ROUTE, DECIDE, then one custom `select-layout` (left column half the width, AUTH 40% of its height,
+  DECIDE the full height; checksum computed like tmux's layout_checksum, so any tmux with custom layouts works). Otherwise the layout
   is left alone with a WARN.
 - Window slots: every run, live desks included, ends with window `deskA` at tmux index 0 and `deskB` at 1. A desk
   window elsewhere is moved there with `move-window`, or `swap-window` with the window at that index (which takes the

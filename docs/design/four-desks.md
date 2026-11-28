@@ -491,6 +491,7 @@ call the TMUX VIews deskA and deskB, deskA is ROUTE/DECIDE deskB is WATCH/LEARN"
 ```
 tmux session "fleet"
   window 0 "deskA":  ROUTE (left)  |  DECIDE (right)
+                     (since v0.11.0: AUTH top left over ROUTE | DECIDE, docs/design/auth-desk.md)
   window 1 "deskB":  WATCH (left)  |  LEARN (right)
   windows 2..:       goal lanes
 ```
