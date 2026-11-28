@@ -3,6 +3,7 @@
 # an empty dir (so no project instructions load), to quote words that appear only in AGENTS.fleet.md. PASS means
 # that CLI's own loading chain (Claude @ import, OpenCode instructions, Codex AGENTS.md, Kiro steering) reached the
 # rules. It reads your real HOME and spends a few model calls, so it runs only with FLEET_LIVE_RULES=1.
+# OpenCode runs with --standalone so it reads the config files now, not a background service started before the install.
 # A CLI that isn't on PATH is a SKIP. agy has no headless one-shot mode the kit relies on, so it's a SKIP too.
 # Env: FLEET_LIVE_CLIS (comma list, default claude,codex,opencode,kiro)  FLEET_LIVE_TIMEOUT (seconds, default 180)
 set -u
@@ -21,7 +22,7 @@ probe() {
 }
 case ",$CLIS," in *,claude,*) probe claude claude -p "$Q" --model claude-haiku-5-5 --tools "" ;; esac
 case ",$CLIS," in *,codex,*) probe codex codex exec --skip-git-repo-check "$Q" ;; esac
-case ",$CLIS," in *,opencode,*) probe opencode opencode run "$Q" ;; esac
+case ",$CLIS," in *,opencode,*) probe opencode opencode run --standalone "$Q" ;; esac
 case ",$CLIS," in *,kiro,*) probe kiro kiro-cli chat --no-interactive "$Q" ;; esac
 echo "SKIP agy: no headless probe (its global rules/*.md loading is covered by the install tests)"
 echo "---"

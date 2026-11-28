@@ -44,6 +44,16 @@ Install renders `rules/AGENTS.fleet.md` once, with your desk names filled in, to
 
 Running install again, or `fleet update`, re-renders the file and changes nothing else, so the import line is added exactly once. An older inline rules block is swapped for the import in place, and your text around it is kept. `fleet rules refresh` re-renders by hand. `fleet uninstall [--dry-run] [--cli LIST]` takes the layer out again: the import and the merged blocks with their markers, the OpenCode entry, the Kiro and Antigravity copies, and (when no `--cli` is given) the rendered file and `rules.env`. Your own text, skills, roles and MCP entries stay. `FLEET_LIVE_RULES=1 test/test_rules_live.sh` asks each installed CLI whether it can see the rules.
 
+**A second machine that shares your dotfiles.** The import line (and the OpenCode `instructions` entry) can come over in a dotfiles pull, but `~/.config/fleet/AGENTS.fleet.md` is written only by the installer. Until it runs there, the import points at a file that isn't there yet. On that machine, after the pull, run each CLI's installer once:
+
+```bash
+bash install/<cli>.sh --no-desks   # claude, codex, opencode, kiro or agy; --no-desks leaves the desks alone
+```
+
+`fleet update` is enough only where the layer was installed before (v0.11.0 or later): it re-renders what's there and prints `no fleet rules layer installed` otherwise. On a machine that last installed an older kit, run the installers.
+
+If a script outside the kit regenerates a CLI's home rules file (for example a dotfiles step that rebuilds `~/.codex/AGENTS.md` from your own AGENTS.md), the merged Codex block goes with it. Rerun `bash install/codex.sh --no-desks`, or have that script carry the `<!-- fleet-rules:begin/end -->` block over. The live probe catches this: Codex fails it until the block is back.
+
 ## Quick start
 
 Common first steps: clone the repo, then run the installer for your CLI. Every installer is idempotent, retires the v0.1.x role names (desk, orchestrator, listener) on upgrade, takes `--dry-run` (prints every change, writes nothing), `--prefix DIR` (default `$HOME/.local`; symlinks `bin/fleet`, `bin/fleet-goal` and `bin/tafk` into `DIR/bin`, so put that on PATH) and `--trust DIR` where the CLI needs it. Placeholders in the rules come from `FLEET_HUMAN`, `FLEET_DECIDE` (default `DECIDE`) and `FLEET_ROUTE` (default `ROUTE`).

@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- README: what a second machine needs after a dotfiles pull brings the rules import over (run `install/<cli>.sh --no-desks`; `fleet update` only re-renders a layer that's already installed), and what happens when a script outside the kit regenerates `~/.codex/AGENTS.md` (#57).
+- `test/test_rules_live.sh`: OpenCode runs `--standalone`, so the probe reads the config files as they are now rather than a background service started earlier (#57). Claude's prompt now comes before `--tools` (#55).
+
 ## v0.11.0 (2026-11-27)
 
 The fleet rules are now a layer on top of your home instructions (#55), the way a subclass extends a base class.
