@@ -19,7 +19,7 @@ probe() {
   if printf '%s' "$out" | grep -qi 'overrides home'; then echo "PASS $name: the rules layer is loaded (quoted 'Overrides home')"
   else echo "FAIL $name: rc=$rc, got: $(printf '%s' "$out" | tail -3 | tr '\n' ' ' | cut -c1-200)"; fails=$((fails + 1)); fi
 }
-case ",$CLIS," in *,claude,*) probe claude claude -p --model claude-haiku-5-5 --tools "" "$Q" ;; esac
+case ",$CLIS," in *,claude,*) probe claude claude -p "$Q" --model claude-haiku-5-5 --tools "" ;; esac
 case ",$CLIS," in *,codex,*) probe codex codex exec --skip-git-repo-check "$Q" ;; esac
 case ",$CLIS," in *,opencode,*) probe opencode opencode run "$Q" ;; esac
 case ",$CLIS," in *,kiro,*) probe kiro kiro-cli chat --no-interactive "$Q" ;; esac
