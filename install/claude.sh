@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # install/claude.sh: install the fleet kit for Claude Code.
 #   - copies skills/* to ~/.claude/skills/
-#   - replaces or appends the fleet rules block in ~/.claude/CLAUDE.md (between the fleet-rules markers)
+#   - renders rules/AGENTS.fleet.md to ~/.config/fleet/AGENTS.fleet.md and puts one @ import of it in
+#     ~/.claude/CLAUDE.md (between the fleet-rules markers; an old inline block is replaced in place)
 #   - installs no role files: roles are passed per launch (--settings and --append-system-prompt-file
 #     point at roles/<role>.claude.json and roles/<role>.md in this repo)
 #   - symlinks bin/fleet, bin/fleet-goal and bin/tafk into <prefix>/bin
@@ -36,7 +37,7 @@ fi
 
 fc_link_bins
 fc_copy_skills "$HOME/.claude/skills"
-fc_upsert_rules "$HOME/.claude/CLAUDE.md"
+fc_upsert_import "$HOME/.claude/CLAUDE.md"
 
 if [ "$MESH" = 1 ]; then
   mesh_cmd="$CLAUDE_BIN mcp add --scope user fleet -- python3 $FC_REPO/lib/fleet_mesh.py serve"

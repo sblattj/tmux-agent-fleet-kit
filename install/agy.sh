@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # install/agy.sh: install the fleet kit for the Antigravity CLI (agy). Needs jq; calls `agy mcp add` when agy is on PATH.
 # Everything lands under ${FLEET_AGY_HOME:-$HOME/.gemini}/config:
-#   - rules/fleet-rules.md       the fleet rules (agy loads global rules/*.md with trigger: always_on)
+#   - rules/fleet-rules.md       the fleet rules, rendered from the kit's rules/AGENTS.fleet.md (agy loads global rules/*.md with trigger: always_on)
 #   - mcp_config.json            .mcpServers.fleet = python3 <repo>/lib/fleet_mesh.py serve (via agy mcp add, else jq)
 #   - agents/fleet-<role>.md     roles/<role>.agy.md frontmatter + roles/<role>.md as the system prompt
 #   - skills/<name>/             a copy of each skills/<name>/ (SKILL.md with name/description frontmatter)

@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+The fleet rules are now a layer on top of your home instructions (#55), the way a subclass extends a base class.
+
+- `rules/fleet-rules.md` is now `rules/AGENTS.fleet.md`. It opens by saying the home rules load first and stay in force, and that a fleet rule overrides one only where it says **Overrides home** (today that's just where questions go: to DECIDE).
+- Install renders it once to `~/.config/fleet/AGENTS.fleet.md` (desk names saved in `rules.env`). Claude Code imports it with a single `@` line, OpenCode lists it in `opencode.json` `instructions`, Codex keeps the merged block (it has no include), and Kiro gets `steering/AGENTS.fleet.md`. An old inline block is replaced in place, with your text around it kept, and running install again adds nothing.
+- `fleet uninstall [--dry-run] [--cli LIST]` and `fleet rules refresh|path`; `fleet update` refreshes the rendered file. `fleet install <cli>` runs that CLI's installer.
+- Tests: migrate, merge, per-CLI chain resolution, refresh and uninstall in `test/test_installs.sh`, plus the opt-in live probe `test/test_rules_live.sh` (`FLEET_LIVE_RULES=1`).
+
 ## v0.10.0 (2026-11-27)
 
 AUTH, a fifth standing desk, owns every login and auth problem for the fleet (#45).

@@ -4,7 +4,8 @@
 #   - clones the compact plugin (public project) at a pinned tag and lists it in opencode.json "plugin" (server
 #     plugin, not in tui.json); it compacts a session when its context reaches a token limit (default 200k)
 #   - adds the fleet-mesh MCP server under "mcp" in opencode.json
-#   - replaces or appends the fleet rules block in ~/.config/opencode/AGENTS.md
+#   - lists the rendered ~/.config/fleet/AGENTS.fleet.md in opencode.json instructions (an old inline block in
+#     ~/.config/opencode/AGENTS.md is removed)
 #   - merges roles/<role>.opencode.json into .agent["fleet-<role>"] of opencode.json (the
 #     "{file:./roles/<role>.md}" prompt path is rewritten to the absolute repo path; FLEET_ROLES_DIR overrides)
 #   - symlinks bin/fleet, bin/fleet-goal and bin/tafk into <prefix>/bin
@@ -103,7 +104,7 @@ fc_jq_edit "$CONF/opencode.json" "goal + compact plugins + fleet MCP in opencode
 
 fc_install_opencode_roles "$CONF/opencode.json"
 
-fc_upsert_rules "$CONF/AGENTS.md"
+fc_opencode_rules "$CONF"
 
 fc_desks_up opencode
 fc_say "done: OpenCode install (config in $CONF)"

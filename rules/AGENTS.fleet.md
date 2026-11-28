@@ -1,5 +1,6 @@
-<!-- fleet-rules:begin -->
 ## Fleet operating rules
+
+These rules extend your home instructions (your AGENTS.md and whatever it imports) the way a subclass extends a base class. The home rules load first and stay in force. A rule here overrides a home rule only where it says **Overrides home**; everywhere else both apply, and on a real conflict the home rule wins.
 
 Placeholders: {{HUMAN}} is the person who answers calls, {{DECIDE}} is the decisions desk session, {{ROUTE}} is the routing desk session. Lanes are the other sessions in the tmux fleet (`fleet ls` lists them).
 
@@ -10,6 +11,7 @@ Placeholders: {{HUMAN}} is the person who answers calls, {{DECIDE}} is the decis
 - **WATCH** only watches and reports, to {{DECIDE}}; **LEARN** keeps the ledger of what the fleet decided and did; **AUTH** owns every login and auth problem and is the only session that runs interactive sign-ins as {{HUMAN}}; **workers** run a goal. The standing desks ({{ROUTE}}, {{DECIDE}}, WATCH, LEARN, AUTH) are never parked.
 
 ### No blocking questions
+- **Overrides home** on where questions go: in a fleet, every question for {{HUMAN}} goes to {{DECIDE}}, never straight to {{HUMAN}}.
 - Interactive ask-the-user tools are off for every session (the launcher disallows them). Ask in plain text through {{DECIDE}}: one numbered "your calls" list, recommended option first, each item standing alone. Then keep working on everything that does not depend on the answer.
 - Outside {{DECIDE}}, nothing is ever "waiting on {{HUMAN}}" or "left for {{HUMAN}}". Anything that needs {{HUMAN}} is already a {{DECIDE}} item, so reports never say "nothing left for you" or "waiting on {{HUMAN}}".
 
@@ -41,4 +43,3 @@ Placeholders: {{HUMAN}} is the person who answers calls, {{DECIDE}} is the decis
 ### Reporting
 - Send {{ROUTE}} a short status at each phase exit, with the deliverable paths and the gate lines.
 - Before relaying a go-ahead, check that the work is not already done (`checking-a-peer-before-relaying` skill).
-<!-- fleet-rules:end -->

@@ -99,6 +99,14 @@ relink() {
   [ "$found" = 1 ] || echo "note: no symlink in $PREFIX_BIN points into $ROOT/bin; nothing relinked (run an installer to add them)"
 }
 
+# After a move, re-render the rules layer (AGENTS.fleet.md) from the new tree, so imports load the new rules.
+# Only a re-render of what is already installed (install/rules.sh refresh), never an installer.
+refresh_rules() {
+  if [ "$1" = 1 ]; then echo "would refresh: the fleet rules layer (install/rules.sh refresh)"; return 0; fi
+  [ -f "$ROOT/install/rules.sh" ] || return 0
+  bash "$ROOT/install/rules.sh" refresh || echo "WARN: fleet rules refresh failed; rerun: fleet rules refresh" >&2
+}
+
 update_git() {
   local check=$1 dry=$2 cur latest sha out branch
   cur=$(git -C "$ROOT" describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' --exclude '*-*' 2>/dev/null || true)
@@ -126,6 +134,7 @@ update_git() {
     echo "would fetch: tag $latest from origin ($sha)"
     echo "would fast-forward: ${branch:-detached HEAD} $(git -C "$ROOT" rev-parse --short HEAD) -> $latest (refused if HEAD is not an ancestor)"
     relink 1
+    refresh_rules 1
     echo "dry run: $cur -> $latest, nothing changed"
     return 0
   fi
@@ -140,6 +149,7 @@ update_git() {
     git -C "$ROOT" -c advice.detachedHead=false checkout -q --detach "$latest^{commit}" || refuse "git checkout --detach $latest failed"
   fi
   relink 0
+  refresh_rules 0
   echo "updated: $cur -> $latest ($ROOT)"
 }
 
@@ -165,6 +175,7 @@ update_tree() {
     echo "would download: $tarball"
     echo "would swap: $ROOT -> $prev (kept), new $latest tree -> $ROOT"
     relink 1
+    refresh_rules 1
     echo "dry run: $cur -> $latest, nothing changed"
     return 0
   fi
@@ -181,6 +192,7 @@ update_tree() {
   mv "$ROOT" "$prev" || refuse "can't move $ROOT aside"
   if ! mv "$dir" "$ROOT"; then mv "$prev" "$ROOT"; refuse "can't move the new tree into $ROOT (rolled back)"; fi
   relink 0
+  refresh_rules 0
   echo "updated: $cur -> $latest ($ROOT; the old tree is kept at $prev)"
 }
 

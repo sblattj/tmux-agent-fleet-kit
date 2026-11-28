@@ -63,6 +63,7 @@ eq "dry-run: exit 0" "$rc" 0
 t "dry-run: would fetch v0.9.0" has "$out" "would fetch: tag v0.9.0"
 t "dry-run: would fast-forward main" has "$out" "would fast-forward: main"
 t "dry-run: would link tafk beside fleet" has "$out" "would link: $PFX/bin/tafk -> $inst/bin/tafk"
+t "dry-run: would refresh the fleet rules layer" has "$out" "would refresh: the fleet rules layer"
 t "dry-run: ends 'dry run: v0.8.1 -> v0.9.0, nothing changed'" has "$out" "dry run: v0.8.1 -> v0.9.0, nothing changed"
 eq "dry-run: install unchanged" "$(state "$inst")" "$before"
 
@@ -101,8 +102,10 @@ eq "diverged: tree clean, still on main" "$(g "$div" status --porcelain)|$(g "$d
 out=$("$div/bin/fleet" update --dry-run 2>&1); rc=$?
 eq "diverged --dry-run: refused too once the tag is local (exit 1)" "$rc" 1
 
+mkdir -p "$HOME/.config/fleet"; printf "STALE\n" > "$HOME/.config/fleet/AGENTS.fleet.md"   # an installed rules layer, out of date
 # ---- newer: fast-forward to v0.9.0, tafk linked, foreign link left alone
 out=$("$F" update 2>&1); rc=$?
+t "newer: re-renders the installed AGENTS.fleet.md from the new kit" bash -c '! grep -q STALE "$1" && grep -q "extend your home instructions" "$1"' _ "$HOME/.config/fleet/AGENTS.fleet.md"
 eq "newer: exit 0" "$rc" 0
 t "newer: prints updated: v0.8.1 -> v0.9.0" has "$out" "updated: v0.8.1 -> v0.9.0"
 eq "newer: HEAD is the v0.9.0 commit" "$(g "$inst" rev-parse HEAD)" "$(g "$src" rev-parse 'v0.9.0^{commit}')"

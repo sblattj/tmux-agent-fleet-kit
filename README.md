@@ -25,8 +25,24 @@ The desks are the default (issue #9): every installer ends with `fleet desks up 
 - `bin/fleet-update` moves the kit to the latest release (`fleet update`, `tafk update`).
 - `bin/fleet-goal` creates, validates and turns a living goal file into a `/goal` condition.
 - `lib/fleet_mesh.py` is a stdlib-only stdio MCP server (`peer_list`, `peer_send`, `peer_inbox`, `decision_open`, `decision_list`, `decision_answer`) for CLIs without native messaging.
-- `rules/fleet-rules.md` is the operating rules block the installers put into each CLI's global instructions file.
+- `rules/AGENTS.fleet.md` holds the fleet operating rules. They're a layer on top of your home instructions, the way a subclass extends a base class (see [The rules layer](#the-rules-layer-agentsfleetmd)).
 - `skills/` has four Claude Code skills: running the decisions desk, launching a goal lane, checking a peer before relaying, retiring the fleet into handoffs.
+
+## The rules layer (AGENTS.fleet.md)
+
+The fleet rules sit on top of your own instructions and never replace them. Your home AGENTS.md (and whatever it imports) loads first and stays in force. A fleet rule overrides a home rule only where it says **Overrides home**, and on any other real conflict the home rule wins.
+
+Install renders `rules/AGENTS.fleet.md` once, with your desk names filled in, to `~/.config/fleet/AGENTS.fleet.md` (`$FLEET_CONFIG_DIR`, else `$XDG_CONFIG_HOME/fleet`). The names are saved in `rules.env` next to it. Each CLI then picks up that one file in its own way:
+
+| CLI | How it loads the rules |
+|---|---|
+| Claude Code | one line in `~/.claude/CLAUDE.md`, `@~/.config/fleet/AGENTS.fleet.md`, inside `<!-- fleet-rules:begin/end -->` markers placed after your own imports |
+| OpenCode | the file's path in `opencode.json` `instructions` (your own entries stay first) |
+| Codex | no include exists, so the rendered text is merged into `$CODEX_HOME/AGENTS.md` between the markers |
+| Kiro | a copy at `steering/AGENTS.fleet.md` (Kiro loads every global steering `*.md`) |
+| Antigravity | a copy at `config/rules/fleet-rules.md` with `trigger: always_on` |
+
+Running install again, or `fleet update`, re-renders the file and changes nothing else, so the import line is added exactly once. An older inline rules block is swapped for the import in place, and your text around it is kept. `fleet rules refresh` re-renders by hand. `fleet uninstall [--dry-run] [--cli LIST]` takes the layer out again: the import and the merged blocks with their markers, the OpenCode entry, the Kiro and Antigravity copies, and (when no `--cli` is given) the rendered file and `rules.env`. Your own text, skills, roles and MCP entries stay. `FLEET_LIVE_RULES=1 test/test_rules_live.sh` asks each installed CLI whether it can see the rules.
 
 ## Quick start
 
@@ -34,7 +50,7 @@ Common first steps: clone the repo, then run the installer for your CLI. Every i
 
 ### Claude Code
 ```bash
-install/claude.sh --trust ~/work/project          # skills, rules in ~/.claude/CLAUDE.md, bin symlinks, then fleet desks up
+install/claude.sh --trust ~/work/project          # skills, one @ import of the fleet rules in ~/.claude/CLAUDE.md, bin symlinks, then fleet desks up
 install/claude.sh --mesh                          # optional: registers fleet-mesh user-wide; fleet launch already passes it per lane (--mcp-config)
 fleet desks up --dir ~/work/project              # the five desks (the installer already ran it; rerun for another --dir): deskA (ROUTE | DECIDE over AUTH), deskB (WATCH | LEARN)
 fleet-goal new /tmp/lane-a.goal.json --goal "..." --report-to ROUTE
@@ -62,7 +78,7 @@ OpenCode v1 has no auto-compact of its own for a model that reports `limit.conte
 install/kiro.sh                                   # rules, fleet MCP, role agents, trust-all confirmation off, all under ${KIRO_HOME:-~/.kiro}
 fleet launch --cli kiro lane-d goal /tmp/lane-d.cond.txt
 ```
-The installer always sets `chat.disableTrustAllConfirmation` to `true` (lanes always run trust-all) and writes: `steering/fleet-rules.md`, `settings/mcp.json` (`mcpServers.fleet` = `python3 <repo>/lib/fleet_mesh.py serve`), `settings/cli.json`, `agents/fleet-<role>.json` (all under `${KIRO_HOME:-~/.kiro}`). The setting is not in the vendor docs, but it is PROVEN to clear the trust-all warning on a fresh `KIRO_HOME`; without it that warning defaults to "No, exit" and the launcher fails loud.
+The installer always sets `chat.disableTrustAllConfirmation` to `true` (lanes always run trust-all) and writes: `steering/AGENTS.fleet.md`, `settings/mcp.json` (`mcpServers.fleet` = `python3 <repo>/lib/fleet_mesh.py serve`), `settings/cli.json`, `agents/fleet-<role>.json` (all under `${KIRO_HOME:-~/.kiro}`). The setting is not in the vendor docs, but it is PROVEN to clear the trust-all warning on a fresh `KIRO_HOME`; without it that warning defaults to "No, exit" and the launcher fails loud.
 
 ### Antigravity CLI (agy)
 ```bash
@@ -199,7 +215,7 @@ Tags: **PROVEN** = run locally on 2026-11-18 (see Proven on below); **DOC** = cu
 | Wake when idle | PROVEN pointer line as one bracketed paste (`tmux paste-buffer -p`, so vim NORMAL mode can't eat it, #38); the native socket holds it on bypass lanes, see INTERFACES.md Messaging model | `codex queue` (PROVEN) | PROVEN `POST localhost:P/session/ID/prompt_async` returns 204 and the lane did the work | PROVEN `tmux send-keys` typed pointer line plus a separate Enter (`wake=tmux send-keys ok=True`) started a turn on the idle lane | `tmux send-keys -l` pointer line, then a separate Enter (PROVEN typed text plus Enter starts a turn on an idle agy TUI) |
 | Bypass | `--dangerously-skip-permissions` + the skip env var | `--dangerously-bypass-approvals-and-sandbox` | `"permission":"allow"` in its config (installer: `--bypass`) | `--trust-all-tools` per launch (PROVEN pane showed "Trust All Tools active, confirmations are off"); DOC deny rules still apply | `--dangerously-skip-permissions` per launch plus `--settings` with `toolPermission` always-proceed (PROVEN no prompts); DOC/PROVEN deny rules still apply |
 | Trust step | needed for `/goal`; installer pre-trusts the dir (UNVERIFIED key name `hasTrustDialogAccepted`), else accept once | PROVEN the prompt appears in an untrusted dir; a `-c projects...trust_level` override did NOT skip it; installer writes `[projects."DIR"] trust_level = "trusted"` | none seen | PROVEN none beyond `--trust-workspace` per launch (skips "Trust this workspace?"; DOC it does not save trust); a fresh machine shows a trust-all warning defaulting to "No, exit" unless `chat.disableTrustAllConfirmation` is `true` (PROVEN under a scratch `KIRO_HOME`); the launcher fails loud if it appears | PROVEN `trustedWorkspaces` in the per-lane `--settings` skips the trust dialog (agy never saves it); `install/agy.sh --trust DIR` also writes it to `settings.json`; the launcher fails loud on the dialog |
-| Install adds | rules + skills; fleet-mesh comes per launch (`--mesh` optionally registers it user-wide) | `codex mcp add fleet -- python3 .../fleet_mesh.py` + AGENTS.md rules | `opencode.json` `"mcp":{"fleet":{...}}` + goal plugin clone (public repo, pinned tag `v1.5.3`) + compact plugin clone (public repo, pinned tag `v0.1.2`) + rules | `steering/fleet-rules.md` (Kiro loads global steering `*.md`; PROVEN only that a probe saw global steering under the default agent, for the installed role agents UNVERIFIED), `settings/mcp.json` fleet server, `settings/cli.json`, `agents/fleet-<role>.json` | `config/rules/fleet-rules.md` (PROVEN agy loads global `rules/*.md` with `trigger: always_on`), `config/mcp_config.json` fleet server, `config/agents/fleet-<role>.md`, `config/skills/<name>/` (whether agy loads these skills is UNVERIFIED) |
+| Install adds | rules + skills; fleet-mesh comes per launch (`--mesh` optionally registers it user-wide) | `codex mcp add fleet -- python3 .../fleet_mesh.py` + AGENTS.md rules | `opencode.json` `"mcp":{"fleet":{...}}` + goal plugin clone (public repo, pinned tag `v1.5.3`) + compact plugin clone (public repo, pinned tag `v0.1.2`) + rules | `steering/AGENTS.fleet.md` (Kiro loads global steering `*.md`; PROVEN only that a probe saw global steering under the default agent, for the installed role agents UNVERIFIED), `settings/mcp.json` fleet server, `settings/cli.json`, `agents/fleet-<role>.json` | `config/rules/fleet-rules.md` (PROVEN agy loads global `rules/*.md` with `trigger: always_on`), `config/mcp_config.json` fleet server, `config/agents/fleet-<role>.md`, `config/skills/<name>/` (whether agy loads these skills is UNVERIFIED) |
 | Auto-compact | the CLI's own (not tested here) | the CLI's own (not tested here) | PROVEN compact plugin: a kit-launched lane with limit 10,000 crossed at 14,979 tokens and wrote one completed `summary` message on its own (no `/compact` typed); the same launch without the plugin wrote none | the CLI's own (not tested here) | the CLI's own (not tested here) |
 
 **Proven on:** Claude Code 2.1.327, codex-cli 0.166.0, OpenCode 1.19.0, kiro-cli 3.5.0 (v3 engine), agy 1.5.13 (single-feature probes, plus one full live proof run of install, launch, wake, park and reopen, all under an isolated `HOME`), tmux 3.6b, macOS. Linux: all test suites pass on Ubuntu (bash 5.3, tmux 3.6); live lanes there are UNVERIFIED (the Linux paths use `/proc/<pid>/environ`).

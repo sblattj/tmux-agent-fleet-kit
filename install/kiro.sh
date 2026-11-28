@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # install/kiro.sh: install the fleet kit for Kiro CLI (v3 engine). Uses jq only, never calls kiro-cli.
 # Everything lands under ${KIRO_HOME:-$HOME/.kiro}:
-#   - steering/fleet-rules.md      the fleet rules (Kiro loads global steering *.md)
+#   - steering/AGENTS.fleet.md     the fleet rules (Kiro loads global steering *.md)
 #   - settings/mcp.json            .mcpServers.fleet = python3 <repo>/lib/fleet_mesh.py serve
 #   - agents/fleet-<role>.json     from roles/<role>.kiro.json, prompt = inline text of roles/<role>.md
 #   - settings/cli.json            "chat.disableTrustAllConfirmation": true (lanes always run trust-all)
@@ -34,7 +34,12 @@ fc_jq_edit "$KH/settings/mcp.json" "fleet MCP in kiro mcp.json" --arg m "$mesh_p
 
 fc_install_kiro_roles "$KH/agents"
 
-fc_upsert_rules "$KH/steering/fleet-rules.md"
+fc_write_fleet_md
+fc_render_rules
+fc_commit "$FC_TMP" "$KH/steering/AGENTS.fleet.md" "fleet rules (Kiro steering)"
+if [ -f "$KH/steering/fleet-rules.md" ] && grep -q 'fleet-rules:begin' "$KH/steering/fleet-rules.md"; then
+  fc_rm "$KH/steering/fleet-rules.md" "old fleet rules steering file"
+fi
 
 fc_desks_up kiro
 fc_say "done: Kiro install (config in $KH)"

@@ -44,7 +44,11 @@
 #                                                       to a script for the human (never sudo); --verify checks them (bootstrap.sh)
 #   fleet update [--check] [--dry-run]                  move this kit to the latest release tag: a git checkout fast-forwards
 #                                                       (refused when dirty, diverged or offline), a copied tree swaps in the
-#                                                       release tarball; then refreshes the bin links (bin/fleet-update)
+#                                                       release tarball; then refreshes the bin links and re-renders
+#                                                       the rules layer (bin/fleet-update)
+#   fleet install CLI [flags]                           run install/CLI.sh (claude|codex|opencode|kiro|agy)
+#   fleet rules refresh|uninstall|path [--dry-run] [--cli LIST]  the AGENTS.fleet.md rules layer (install/rules.sh)
+#   fleet uninstall [--dry-run] [--cli LIST]            same as fleet rules uninstall
 #   fleet version                                       this kit's version (git describe, else the VERSION file)
 #
 # launch opts:
@@ -1106,6 +1110,12 @@ case $sub in
     if [ -x "$BINDIR/fleet-lifecycle" ]; then exec "$BINDIR/fleet-lifecycle" "$sub" "$@"; fi
     exec bash "$BINDIR/fleet-lifecycle" "$sub" "$@" ;;
   update) exec bash "$BINDIR/fleet-update" "$@" ;;  # latest release tag: ff a git checkout, swap a copied tree, relink
+  install) # fleet install <claude|codex|opencode|kiro|agy> [installer flags]: run that CLI's installer
+    c=${1:-}
+    case $c in claude|codex|opencode|kiro|agy) ;; *) die "usage: fleet install claude|codex|opencode|kiro|agy [--dry-run] [--no-desks] ..." ;; esac
+    shift; exec bash "$ROOT/install/$c.sh" "$@" ;;
+  uninstall) exec bash "$ROOT/install/rules.sh" uninstall "$@" ;;  # take the rules layer out (AGENTS.fleet.md, issue #55)
+  rules) exec bash "$ROOT/install/rules.sh" "$@" ;;  # refresh|uninstall|path
   version|--version)
     v=$(git -C "$ROOT" describe --tags --match 'v[0-9]*' 2>/dev/null || true)
     [ -n "$v" ] || { [ -f "$ROOT/VERSION" ] && v=v$(tr -d ' \n' < "$ROOT/VERSION"); }

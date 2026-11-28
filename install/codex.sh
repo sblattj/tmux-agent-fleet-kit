@@ -26,7 +26,8 @@ CFG=$CXH/config.toml
 STATE=${FLEET_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet}
 
 fc_link_bins
-fc_upsert_rules "$CXH/AGENTS.md"
+fc_write_fleet_md
+fc_upsert_rules "$CXH/AGENTS.md"  # Codex has no include: the rendered rules are merged into the block
 fc_install_codex_roles
 
 add_cmd="$CODEX_BIN mcp add fleet --env FLEET_STATE=$STATE -- python3 $FC_REPO/lib/fleet_mesh.py serve"

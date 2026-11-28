@@ -593,10 +593,16 @@ fleet remote attach-line [--read-only] [--ip ADDR]               exactly one lin
   (goal as `[ref, {"compactAtTokens": 0}]`, compact as `[ref, {"limit": N}]`, N from `FLEET_OC_COMPACT_LIMIT`, default
   200000: one compactor per lane, and the option beats `OPENCODE_COMPACT_AT_TOKENS`; tui.json gets only the goal plugin); kiro.sh writes
   `$KIRO_HOME/agents/fleet-<role>.json` from roles/*.kiro.json, `settings/mcp.json`, `settings/cli.json`
-  (`chat.disableTrustAllConfirmation` true) and `steering/fleet-rules.md`; agy.sh writes `$FLEET_AGY_HOME/config/agents/fleet-<role>.md`
+  (`chat.disableTrustAllConfirmation` true) and `steering/AGENTS.fleet.md`; agy.sh writes `$FLEET_AGY_HOME/config/agents/fleet-<role>.md`
   from roles/*.agy.md + roles/<role>.md, `config/rules/fleet-rules.md` (`trigger: always_on`), `config/mcp_config.json`
   (`agy mcp add fleet python3 <repo>/lib/fleet_mesh.py serve`, or jq when `FLEET_AGY_HOME` is not `$HOME/.gemini` or agy is missing),
   `config/skills/<name>/`, and with `--trust DIR` the `antigravity-cli/settings.json` `trustedWorkspaces`; claude.sh needs nothing (roles are passed per launch).
+- Rules layer (#55): `rules/AGENTS.fleet.md` is rendered to `$FLEET_CONFIG_DIR/AGENTS.fleet.md` (default
+  `~/.config/fleet`), with the placeholder values in `rules.env` (shell, `printf %q`). Claude gets the block
+  `<!-- fleet-rules:begin -->` / `@~/.config/fleet/AGENTS.fleet.md` / `<!-- fleet-rules:end -->` in `~/.claude/CLAUDE.md`,
+  OpenCode an `instructions` entry with the absolute path, Codex the rendered text between the same markers in
+  `$CODEX_HOME/AGENTS.md`, Kiro `steering/AGENTS.fleet.md`, agy `config/rules/fleet-rules.md`. `install/rules.sh
+  refresh|uninstall|path [--dry-run] [--cli LIST]` (`fleet rules ...`, `fleet uninstall`); `fleet update` runs refresh.
 
 ## Messaging model
 

@@ -76,13 +76,20 @@ export FLEET_HUMAN=Pat FLEET_DECIDE=DESKX FLEET_ROUTE=ORCHX
 out=$(inst "$h" claude.sh --mesh --trust "$proj" --prefix "$h/.local" 2>&1); rc=$?
 eq "claude.sh first run exits 0" "$rc" 0
 md=$h/.claude/CLAUDE.md
+fmd=$h/.config/fleet/AGENTS.fleet.md
+blockof() { sed -n '/fleet-rules:begin/,/fleet-rules:end/p' "$1" | sed '1d;$d'; }
+eq "claude: the block is one @ import of the rendered AGENTS.fleet.md" "$(blockof "$md")" "@~/.config/fleet/AGENTS.fleet.md"
+check "claude: AGENTS.fleet.md rendered outside the repo" test -f "$fmd"
+check "claude: AGENTS.fleet.md says it extends the home rules" grep -q 'extend your home instructions' "$fmd"
+check "claude: AGENTS.fleet.md names AUTH" grep -q 'AUTH' "$fmd"
+check "claude: rules.env keeps the names for a refresh" grep -q '^FLEET_DECIDE=DESKX$' "$h/.config/fleet/rules.env"
 eq "claude: begin marker once" "$(count 'fleet-rules:begin' "$md")" 1
 eq "claude: end marker once" "$(count 'fleet-rules:end' "$md")" 1
 check "claude: existing user text preserved" grep -q 'keep this line' "$md"
-check "claude: placeholder HUMAN substituted" grep -q 'Pat' "$md"
-check "claude: placeholder DESK substituted" grep -q 'DESKX' "$md"
-check "claude: placeholder ORCHESTRATOR substituted" grep -q 'ORCHX' "$md"
-eq "claude: no unreplaced {{ placeholders" "$(count '{{' "$md")" 0
+check "claude: placeholder HUMAN substituted" grep -q 'Pat' "$fmd"
+check "claude: placeholder DESK substituted" grep -q 'DESKX' "$fmd"
+check "claude: placeholder ORCHESTRATOR substituted" grep -q 'ORCHX' "$fmd"
+eq "claude: no unreplaced {{ placeholders" "$(cat "$md" "$fmd" | grep -c '{{')" 0
 for s in running-the-decisions-desk launching-a-goal-lane checking-a-peer-before-relaying retiring-the-fleet-into-handoffs; do
   check "claude: skill $s/SKILL.md copied" test -f "$h/.claude/skills/$s/SKILL.md"
 done
@@ -95,18 +102,20 @@ check "claude: --mesh ran mcp add with the exact argv" grep -qF "claude mcp add 
 check "claude: --trust wrote hasTrustDialogAccepted" jq -e --arg d "$projreal" '.projects[$d].hasTrustDialogAccepted == true' "$h/.claude.json"
 bk=$(find "$h/.claude" -name 'CLAUDE.md.fleet-bak.*' | wc -l | tr -d ' ')
 eq "claude: one backup of the pre-existing CLAUDE.md" "$bk" 1
-before=$(cksum < "$md")
+before=$(cksum < "$md"); fbefore=$(cksum < "$fmd")
 out=$(inst "$h" claude.sh --mesh --trust "$proj" --prefix "$h/.local" 2>&1); rc=$?
 eq "claude.sh second run exits 0" "$rc" 0
 eq "claude: second run leaves CLAUDE.md byte-identical" "$(cksum < "$md")" "$before"
+eq "claude: second run leaves AGENTS.fleet.md byte-identical" "$(cksum < "$fmd")" "$fbefore"
 eq "claude: markers still once after second run" "$(count 'fleet-rules:begin' "$md")" 1
 eq "claude: mcp add ran exactly once across two runs" "$(count 'claude mcp add' "$STUB_LOG")" 1
 eq "claude: no extra backup on second run" "$(find "$h/.claude" -name 'CLAUDE.md.fleet-bak.*' | wc -l | tr -d ' ')" 1
 check "claude: second run reports unchanged" bash -c "printf '%s' \"\$1\" | grep -q unchanged" _ "$out"
 FLEET_DECIDE=DESKY inst "$h" claude.sh --prefix "$h/.local" >/dev/null 2>&1
 eq "claude: changed placeholder replaces the block (markers still once)" "$(count 'fleet-rules:begin' "$md")" 1
-check "claude: replaced block carries the new value" grep -q 'DESKY' "$md"
-eq "claude: replaced block dropped the old value" "$(count 'DESKX' "$md")" 0
+check "claude: re-rendered rules carry the new value" grep -q 'DESKY' "$fmd"
+eq "claude: re-rendered rules dropped the old value" "$(count 'DESKX' "$fmd")" 0
+eq "claude: the import line is unchanged by a new name" "$(blockof "$md")" "@~/.config/fleet/AGENTS.fleet.md"
 check "claude: user text still preserved after replace" grep -q 'keep this line' "$md"
 
 h=$(newhome claude-dry); : > "$STUB_STATE/claude_mcp"
@@ -180,8 +189,9 @@ check "opencode: every fleet agent but fleet-probe denies fleet-probe_* itself" 
 check "opencode: built-in build, plan and general deny fleet-probe_*" jq -e '[.agent.build, .agent.plan, .agent.general | .permission["fleet-probe_*"]] == ["deny","deny","deny"]' "$cdir/opencode.json"
 check "opencode: control: agent fleet-probe does not deny its own verbs" jq -e '.agent["fleet-probe"].permission | has("fleet-probe_*") | not' "$cdir/opencode.json"
 check "opencode: the worker keeps its bash deny map next to the probe deny" jq -e '.agent["fleet-worker"].permission.bash["fleet park*"] == "deny"' "$cdir/opencode.json"
-eq "opencode: AGENTS.md begin marker once" "$(count 'fleet-rules:begin' "$cdir/AGENTS.md")" 1
-eq "opencode: AGENTS.md end marker once" "$(count 'fleet-rules:end' "$cdir/AGENTS.md")" 1
+check "opencode: instructions lists the rendered AGENTS.fleet.md once" jq -e --arg f "$h/.config/fleet/AGENTS.fleet.md" '[.instructions[] | select(. == $f)] | length == 1' "$cdir/opencode.json"
+check "opencode: the listed AGENTS.fleet.md exists and names AUTH" grep -q AUTH "$h/.config/fleet/AGENTS.fleet.md"
+eq "opencode: no inline rules block in AGENTS.md" "$(count 'fleet-rules:begin' "$cdir/AGENTS.md")" 0
 eq "opencode: bin/fleet-goal symlink" "$(readlink "$h/.local/bin/fleet-goal")" "$ROOT/bin/fleet-goal"
 eq "opencode: bin/tafk symlink (fleet under a second name)" "$(readlink "$h/.local/bin/tafk")" "$ROOT/bin/tafk"
 before=$(cksum < "$cdir/opencode.json")
@@ -192,7 +202,7 @@ check "opencode: plugin array still has two entries" jq -e '.plugin | length == 
 eq "opencode: git clone ran exactly twice (goal + compact) across two runs" "$(count 'git clone' "$STUB_LOG")" 2
 out=$(inst "$h" opencode.sh --bypass --prefix "$h/.local" 2>&1)
 check "opencode: a rerun says the compact plugin is unchanged" bash -c "printf '%s' \"\$1\" | grep -q 'unchanged: compact plugin already cloned'" _ "$out"
-eq "opencode: AGENTS.md markers once after second run" "$(count 'fleet-rules:begin' "$cdir/AGENTS.md")" 1
+check "opencode: instructions entry still once after second run" jq -e --arg f "$h/.config/fleet/AGENTS.fleet.md" '[.instructions[] | select(. == $f)] | length == 1' "$cdir/opencode.json"
 
 h=$(newhome opencode-nobypass)
 printf '{"theme":"x","plugin":["other"]}\n' > /dev/null
@@ -414,9 +424,10 @@ check "kiro: cli.json disables the trust-all confirmation, keeps other keys" jq 
 check "kiro: the install prints the trust-all note" bash -c "printf '%s' \"\$1\" | grep -q 'chat.disableTrustAllConfirmation=true'" _ "$out"
 check "kiro: mcp.json fleet server is python3 <repo>/lib/fleet_mesh.py serve" jq -e --arg m "$ROOT/lib/fleet_mesh.py" '.mcpServers.fleet == {"command":"python3","args":[$m,"serve"]}' "$kh/settings/mcp.json"
 check "kiro: existing mcp server preserved" jq -e '.mcpServers.other.url == "http://127.0.0.1:1/mcp"' "$kh/settings/mcp.json"
-eq "kiro: steering begin marker once" "$(count 'fleet-rules:begin' "$kh/steering/fleet-rules.md")" 1
-eq "kiro: steering has no unreplaced placeholders" "$(count '{{' "$kh/steering/fleet-rules.md")" 0
-check "kiro: steering placeholder substituted" grep -q 'DESKY\|DESKX' "$kh/steering/fleet-rules.md"
+check "kiro: steering AGENTS.fleet.md says it extends the home rules" grep -q 'extend your home instructions' "$kh/steering/AGENTS.fleet.md"
+eq "kiro: steering has no unreplaced placeholders" "$(count '{{' "$kh/steering/AGENTS.fleet.md")" 0
+check "kiro: steering placeholder substituted" grep -q 'DESKY\|DESKX' "$kh/steering/AGENTS.fleet.md"
+check "kiro: no old fleet-rules.md steering file" test ! -e "$kh/steering/fleet-rules.md"
 for r in route decide watch auth worker; do
   af=$kh/agents/fleet-$r.json
   check "kiro: agent fleet-$r valid JSON named fleet-$r" jq -e --arg n "fleet-$r" '.name == $n and .tools == ["*"] and .includeMcpJson == true' "$af"
@@ -443,13 +454,13 @@ eq "kiro: bin/tafk symlink (fleet under a second name)" "$(readlink "$h/.local/b
 # CONTROL: the deny assertion must fail on an agent whose deny rule was stripped
 jq '.permissions.rules |= map(select((.match // []) | index("fleet park*") | not))' "$kh/agents/fleet-worker.json" > "$tmp/stripped-agent.json"
 if jq -e '[.permissions.rules[] | select(.capability=="shell" and .effect=="deny" and (.match | index("fleet park*")))] | length == 1' "$tmp/stripped-agent.json" >/dev/null 2>&1; then fail "control: kiro deny assertion catches an agent missing the fleet park rule"; else pass "control: kiro deny assertion catches an agent missing the fleet park rule"; fi
-sumbefore=$(cat "$kh/settings/cli.json" "$kh/settings/mcp.json" "$kh"/agents/fleet-*.json "$kh/steering/fleet-rules.md" | cksum)
+sumbefore=$(cat "$kh/settings/cli.json" "$kh/settings/mcp.json" "$kh"/agents/fleet-*.json "$kh/steering/AGENTS.fleet.md" | cksum)
 nbak=$(find "$kh" -name '*.fleet-bak.*' | wc -l | tr -d ' ')
 eq "kiro: backups made for the two pre-existing settings files" "$nbak" 2
 check "kiro: cli.json backup holds the original content" bash -c "grep -q 'keep-me' \"\$1\"/settings/cli.json.fleet-bak.* && ! grep -q disableTrust \"\$1\"/settings/cli.json.fleet-bak.*" _ "$kh"
 out=$(inst "$h" kiro.sh --prefix "$h/.local" 2>&1); rc=$?
 eq "kiro.sh second run exits 0" "$rc" 0
-eq "kiro: second run leaves every file byte-identical" "$(cat "$kh/settings/cli.json" "$kh/settings/mcp.json" "$kh"/agents/fleet-*.json "$kh/steering/fleet-rules.md" | cksum)" "$sumbefore"
+eq "kiro: second run leaves every file byte-identical" "$(cat "$kh/settings/cli.json" "$kh/settings/mcp.json" "$kh"/agents/fleet-*.json "$kh/steering/AGENTS.fleet.md" | cksum)" "$sumbefore"
 eq "kiro: second run makes no extra backup" "$(find "$kh" -name '*.fleet-bak.*' | wc -l | tr -d ' ')" "$nbak"
 check "kiro: second run reports no 'wrote:' lines" bash -c "! printf '%s' \"\$1\" | grep -q '^wrote:'" _ "$out"
 eq "kiro: fleet server entry still once after second run" "$(jq '.mcpServers | keys | map(select(. == "fleet")) | length' "$kh/settings/mcp.json")" 1
@@ -463,7 +474,7 @@ check "kiro --dry-run prints would-write lines for agents and mcp" bash -c "prin
 h=$(newhome kiro-home); mkdir -p "$tmp/khome"
 INST_KIRO_HOME=$tmp/khome inst "$h" kiro.sh --prefix "$h/.local" >/dev/null 2>&1; rc=$?
 eq "kiro (KIRO_HOME set) exits 0" "$rc" 0
-check "kiro: KIRO_HOME is honored for agents, mcp, cli.json and steering" bash -c "test -f \"\$1\"/agents/fleet-worker.json && test -f \"\$1\"/settings/mcp.json && test -f \"\$1\"/settings/cli.json && test -f \"\$1\"/steering/fleet-rules.md" _ "$tmp/khome"
+check "kiro: KIRO_HOME is honored for agents, mcp, cli.json and steering" bash -c "test -f \"\$1\"/agents/fleet-worker.json && test -f \"\$1\"/settings/mcp.json && test -f \"\$1\"/settings/cli.json && test -f \"\$1\"/steering/AGENTS.fleet.md" _ "$tmp/khome"
 check "kiro: KIRO_HOME set, nothing written to HOME/.kiro" test ! -e "$h/.kiro"
 
 h=$(newhome kiro-jsonc); mkdir -p "$h/.kiro/settings"
@@ -549,6 +560,51 @@ printf 'x\n<!-- fleet-rules:begin -->\nno end marker\n' > "$h/.codex/AGENTS.md"
 before=$(cksum < "$h/.codex/AGENTS.md")
 if inst "$h" codex.sh --prefix "$h/.local" >/dev/null 2>&1; then fail "control: unbalanced markers make the installer fail"; else pass "control: unbalanced markers make the installer fail"; fi
 eq "control: unbalanced AGENTS.md left untouched" "$(cksum < "$h/.codex/AGENTS.md")" "$before"
+
+# =========================================================== AGENTS.fleet.md layer (issue #55): migrate, merge, refresh, uninstall
+h=$(newhome layer); mkdir -p "$h/.claude" "$h/.codex" "$h/.config/opencode"
+old='<!-- fleet-rules:begin -->
+## Fleet operating rules
+old inline rules OLDTEXT
+<!-- fleet-rules:end -->'
+printf '@~/AGENTS.md\n@~/AGENTS.extra.md\n%s\n\n# after\nkeep after\n' "$old" > "$h/.claude/CLAUDE.md"
+printf 'my opencode notes\n\n%s\n' "$old" > "$h/.config/opencode/AGENTS.md"
+printf '{"instructions":["/elsewhere/mine.md"]}\n' > "$h/.config/opencode/opencode.json"
+printf 'my codex notes\n' > "$h/.codex/AGENTS.md"
+inst "$h" claude.sh --prefix "$h/.local" >/dev/null 2>&1; eq "layer: claude install over an old inline block exits 0" "$?" 0
+inst "$h" codex.sh --prefix "$h/.local" >/dev/null 2>&1; eq "layer: codex install exits 0" "$?" 0
+inst "$h" opencode.sh --prefix "$h/.local" >/dev/null 2>&1; eq "layer: opencode install over an old inline block exits 0" "$?" 0
+md=$h/.claude/CLAUDE.md; fmd=$h/.config/fleet/AGENTS.fleet.md
+eq "layer: claude old inline text is gone" "$(count OLDTEXT "$md")" 0
+eq "layer: claude import sits where the block was, after the home imports" "$(grep -n . "$md" | sed -n 1,5p | tr '\n' '|')" "1:@~/AGENTS.md|2:@~/AGENTS.extra.md|3:<!-- fleet-rules:begin -->|4:@~/.config/fleet/AGENTS.fleet.md|5:<!-- fleet-rules:end -->|"
+check "layer: claude text after the block kept" grep -q 'keep after' "$md"
+eq "layer: codex block is the rendered AGENTS.fleet.md (merge, no include in Codex)" "$(blockof "$h/.codex/AGENTS.md")" "$(cat "$fmd")"
+check "layer: codex user text kept above the block" bash -c 'head -1 "$1" | grep -q "my codex notes"' _ "$h/.codex/AGENTS.md"
+eq "layer: opencode old inline block removed" "$(count 'fleet-rules:' "$h/.config/opencode/AGENTS.md")" 0
+eq "layer: opencode user text kept, no stray blank line" "$(cat "$h/.config/opencode/AGENTS.md")" "my opencode notes"
+check "layer: opencode instructions keep the user's entry and add ours last" jq -e --arg f "$fmd" '.instructions == ["/elsewhere/mine.md", $f]' "$h/.config/opencode/opencode.json"
+# rules resolve per CLI: follow each CLI's own chain and find the rules text
+claude_chain() { local f l p; f=$1; while IFS= read -r l; do case $l in @*) p=${l#@}; p=${p/#\~/$h}; [ -f "$p" ] && cat "$p" ;; esac; done < "$f"; }
+check "layer: claude chain (CLAUDE.md @ imports) resolves to the fleet rules" bash -c 'printf "%s" "$1" | grep -q "extend your home instructions"' _ "$(claude_chain "$md")"
+check "layer: opencode chain (opencode.json instructions) resolves to the fleet rules" bash -c 'for f in $(jq -r ".instructions[]" "$1"); do [ -f "$f" ] && cat "$f"; done | grep -q "extend your home instructions"' _ "$h/.config/opencode/opencode.json"
+check "layer: codex chain (AGENTS.md) carries the fleet rules" grep -q 'extend your home instructions' "$h/.codex/AGENTS.md"
+# refresh: a new rules source re-renders with the saved names, and refreshes the codex merge
+( unset XDG_CONFIG_HOME CODEX_HOME; export HOME="$h"; FLEET_DECIDE= bash "$ROOT/install/rules.sh" refresh >/dev/null 2>&1 ); eq "layer: fleet rules refresh exits 0" "$?" 0
+check "layer: refresh keeps the saved names (rules.env)" grep -q 'DESKX\|DESKY' "$fmd"
+eq "layer: refresh leaves the codex block equal to the rendered file" "$(blockof "$h/.codex/AGENTS.md")" "$(cat "$fmd")"
+# uninstall
+before=$(cat "$md")
+out=$( unset XDG_CONFIG_HOME CODEX_HOME; export HOME="$h"; bash "$ROOT/bin/fleet" uninstall --dry-run 2>&1 ); eq "layer: uninstall --dry-run exits 0" "$?" 0
+eq "layer: uninstall --dry-run changes nothing" "$(cat "$md")" "$before"
+( unset XDG_CONFIG_HOME CODEX_HOME; export HOME="$h"; bash "$ROOT/bin/fleet" uninstall >/dev/null 2>&1 ); eq "layer: fleet uninstall exits 0" "$?" 0
+eq "layer: claude block gone" "$(count 'fleet-rules:' "$md")" 0
+eq "layer: claude home imports and own text kept" "$(cat "$md")" "$(printf '@~/AGENTS.md\n@~/AGENTS.extra.md\n\n# after\nkeep after')"
+eq "layer: codex block gone, user text kept" "$(cat "$h/.codex/AGENTS.md")" "my codex notes"
+check "layer: opencode instructions keep only the user's entry" jq -e '.instructions == ["/elsewhere/mine.md"]' "$h/.config/opencode/opencode.json"
+check "layer: rendered AGENTS.fleet.md and rules.env removed" bash -c 'test ! -e "$1/AGENTS.fleet.md" && test ! -e "$1/rules.env"' _ "$h/.config/fleet"
+( unset XDG_CONFIG_HOME CODEX_HOME; export HOME="$h"; bash "$ROOT/bin/fleet" uninstall >/dev/null 2>&1 ); eq "layer: a second uninstall is a no-op, exit 0" "$?" 0
+inst "$h" claude.sh --prefix "$h/.local" >/dev/null 2>&1
+eq "layer: reinstall after uninstall adds the import once" "$(count '@~/.config/fleet/AGENTS.fleet.md' "$md")" 1
 
 echo "---"
 if [ $fails -gt 0 ]; then echo "FAIL test_installs.sh: $fails failing assertion(s)"; exit 1; fi
