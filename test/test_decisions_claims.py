@@ -4,15 +4,21 @@ Pure-function tests load lib/fleet_mesh.py directly; nothing touches a live flee
 Run: python3 -m unittest test/test_decisions_claims.py
 """
 import importlib.util
+import json
 import os
+import shutil
+import tempfile
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MESH = os.path.join(ROOT, "lib", "fleet_mesh.py")
+DECISIONS = os.path.join(ROOT, "lib", "fleet_decisions.py")
+UI = os.path.join(ROOT, "lib", "decisions-ui.html")
 
-spec = importlib.util.spec_from_file_location("fleet_mesh_claims", MESH)
-mesh = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(mesh)
+spec = importlib.util.spec_from_file_location("fleet_decisions_claims", DECISIONS)
+dec = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(dec)
+mesh = dec.mesh  # the fleet_mesh the decisions module itself uses
+FAKE = "#!/bin/sh\nexit 0\n"
 
 
 def opts(*texts):
@@ -26,12 +32,12 @@ class TestCleanClaims(unittest.TestCase):
 
     def test_shape_ids_and_unsourced(self):
         got = mesh._clean_claims([
-            {"text": "  the tag   exists ", "source": "git tag -l 'v1*'", "options": ["A", "(b)"], "refs": ["#12", "#12", " "]},
+            {"text": "  the tag   exists ", "source": "git tag -l 'v1*'", "options": ["A", "(b)"], "refs": ["acme/widget#12", "acme/widget#12", " "]},
             "the job runs nightly",
             {"id": "mine", "text": "docs say so", "source": "", "options": "a"},
         ], ["a", "b"])
         self.assertEqual(got, [
-            {"id": "c1", "text": "the tag exists", "source": "git tag -l 'v1*'", "options": ["a", "b"], "refs": ["#12"]},
+            {"id": "c1", "text": "the tag exists", "source": "git tag -l 'v1*'", "options": ["a", "b"], "refs": ["acme/widget#12"]},
             {"id": "c2", "text": "the job runs nightly", "source": None, "options": [], "refs": []},
             {"id": "c3", "text": "docs say so", "source": None, "options": ["a"], "refs": []},
         ])
@@ -56,8 +62,14 @@ class TestCleanClaims(unittest.TestCase):
                 self.assertIn(msg, str(cm.exception))
 
     def test_refs_with_spaces_are_not_machine_ids(self):
-        got = mesh._clean_claims([{"text": "t", "refs": ["#7", "some words", "https://example.com/x/1"]}], [])
-        self.assertEqual(got[0]["refs"], ["#7", "https://example.com/x/1"])
+        got = mesh._clean_claims([{"text": "t", "refs": ["PROJ-7", "some words", "https://example.com/x/1"]}], [])
+        self.assertEqual(got[0]["refs"], ["PROJ-7", "https://example.com/x/1"])
+
+    def test_letters_come_from_the_rows_stored_options(self):
+        rec = {"options": [{"letter": "a", "text": "x"}, {"letter": "c", "text": "y"}]}
+        self.assertEqual(mesh._clean_claims([{"text": "t", "options": ["c"]}], rec)[0]["options"], ["c"])
+        with self.assertRaises(ValueError):
+            mesh._clean_claims([{"text": "t", "options": ["b"]}], rec)
 
 
 class TestLint(unittest.TestCase):
@@ -106,6 +118,118 @@ class TestLint(unittest.TestCase):
         lint = mesh.claims_lint(opts("only this"), None)
         self.assertEqual(mesh.claims_note(None, lint),
                          "lint: option a says only with no claim; add claims [{text, source, options: [a]}]")
+
+
+class TestOpenAndCard(unittest.TestCase):
+    """decision_open stores claims, refuses bad ones, reports the lint; the card, TUI and page show them."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="claimtest-")
+        self.state = os.path.join(self.tmp, "state")
+        self.bin = os.path.join(self.tmp, "bin")
+        os.makedirs(self.state)
+        os.makedirs(self.bin)
+        for b in ("tmux", "codex"):
+            with open(os.path.join(self.bin, b), "w") as f:
+                f.write(FAKE)
+            os.chmod(os.path.join(self.bin, b), 0o755)
+        self.env = {"FLEET_STATE": self.state, "FLEET_DESK_GOAL": os.path.join(self.state, "desk.goal.json"),
+                    "FLEET_TMUX_SOCKET": "claimtest-none", "FLEET_CODEX_BIN": os.path.join(self.bin, "codex"),
+                    "FLEET_DECIDE": "DECISIONS", "FLEET_ROUTE": "ROUTE", "FLEET_WAKE_SPAWN": "0",
+                    "FLEET_WAKE_QUIET": "0", "CLAUDECODE": "",
+                    "PATH": self.bin + os.pathsep + os.environ.get("PATH", "")}
+        self._saved = {k: os.environ.get(k) for k in list(self.env) + ["FLEET_NAME", "FLEET_ROLE", "FLEET_SIDE"]}
+        os.environ.update(self.env)
+        for k in ("FLEET_NAME", "FLEET_ROLE", "FLEET_SIDE"):
+            os.environ.pop(k, None)
+        with open(os.path.join(self.state, "roster.json"), "w") as f:
+            json.dump({"lane-a": {"name": "lane-a", "cli": "claude", "mode": "goal", "pane": "%3"},
+                       "DECISIONS": {"name": "DECISIONS", "cli": "claude", "mode": "desk", "pane": "%9"}}, f)
+
+    def tearDown(self):
+        for k, v in self._saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def rows(self):
+        with open(os.path.join(self.state, "decisions.jsonl")) as f:
+            return [json.loads(x) for x in f if x.strip()]
+
+    def desk_inbox(self):
+        with open(os.path.join(self.state, "inbox", "DECISIONS.jsonl")) as f:
+            return [json.loads(x)["text"] for x in f if x.strip()]
+
+    def open_call(self, **kw):
+        args = {"from": "lane-a", "question": "Cut the docs release tonight?",
+                "options": ["yes, the docs are the only change", "wait for the next train"]}
+        args.update(kw)
+        r = mesh.call_tool("decision_open", args)
+        return r, r["content"][0]["text"]
+
+    def test_claims_are_stored_and_delivered_after_the_options(self):
+        r, out = self.open_call(claims=[
+            {"text": "the diff touches docs/ only", "source": "git diff --stat main...HEAD", "options": ["a"],
+             "refs": ["acme/widget#12"]},
+            {"text": "the next train leaves Friday"}])
+        self.assertFalse(r["isError"], out)
+        row = self.rows()[-1]
+        self.assertEqual(row["claims"], [
+            {"id": "c1", "text": "the diff touches docs/ only", "source": "git diff --stat main...HEAD",
+             "options": ["a"], "refs": ["acme/widget#12"]},
+            {"id": "c2", "text": "the next train leaves Friday", "source": None, "options": [], "refs": []}])
+        text = self.desk_inbox()[-1]
+        self.assertIn(" options: a: yes, the docs are the only change | b: wait for the next train claims: "
+                      "c1 (a) the diff touches docs/ only [source: git diff --stat main...HEAD] | "
+                      "c2 the next train leaves Friday [unsourced]", text)
+        self.assertIn("unsourced claims: c2", out)
+        self.assertNotIn("lint:", out, "a claim citing no letter backs the whole call")
+
+    def test_lint_is_reported_but_never_refuses(self):
+        r, out = self.open_call()
+        self.assertFalse(r["isError"], out)
+        self.assertIn("lint: option a says only with no claim", out)
+        self.assertIn("lint: option a says only", self.desk_inbox()[-1])
+        self.assertNotIn("claims", self.rows()[-1], "no claims, no field")
+
+    def test_a_preference_call_stays_quiet(self):
+        r, out = self.open_call(question="Blue or green for the badge?", options=["blue", "green"])
+        self.assertFalse(r["isError"], out)
+        self.assertNotIn("lint", out)
+        self.assertNotIn("unsourced", out)
+        self.assertNotIn("claims:", self.desk_inbox()[-1])
+
+    def test_a_claim_on_an_unknown_letter_refuses_the_call(self):
+        r, out = self.open_call(claims=[{"text": "t", "source": "s", "options": ["d"]}])
+        self.assertTrue(r["isError"])
+        self.assertIn("cites option", out)
+        self.assertFalse(os.path.exists(os.path.join(self.state, "decisions.jsonl")) and self.rows(),
+                         "a refused call writes no row")
+
+    def test_schema_offers_claims(self):
+        tool = [t for t in mesh.TOOLS if t[0] == "decision_open"][0]
+        props = tool[2]["properties"]
+        self.assertEqual(props["claims"]["items"]["required"], ["text"])
+        self.assertEqual(set(props["claims"]["items"]["properties"]), {"text", "source", "options", "refs"})
+
+    def test_card_tui_and_page_show_claims_and_lint(self):
+        self.open_call(claims=[{"text": "the diff touches docs/ only", "source": "git diff --stat", "options": ["a"]}])
+        self.open_call(question="Close the stale branch?", options=["yes, there is no open PR on it", "keep it"])
+        cards = {c["question"]: c for c in dec.open_cards()[0]}
+        c1, c2 = cards["Cut the docs release tonight?"], cards["Close the stale branch?"]
+        self.assertEqual([(k["id"], k["unsourced"]) for k in c1["claims"]], [("c1", False)])
+        self.assertEqual(c1["lint"], [])
+        self.assertEqual(c2["claims"], [])
+        self.assertEqual([(x["letter"], x["why"]) for x in c2["lint"]], [("a", "asserts absence")])
+        tui = dec.Tui(None)
+        self.assertIn("    c1 (a) the diff touches docs/ only  [source: git diff --stat]", tui.render_card(c1, False))
+        self.assertIn("    ? option a asserts absence, no claim behind it", tui.render_card(c2, False))
+        with open(UI) as f:
+            page = f.read()
+        self.assertIn("for (const n of claimsBlock(c)) node.appendChild(n);", page)
+        self.assertIn('"unsourced"', page)
 
 
 if __name__ == "__main__":

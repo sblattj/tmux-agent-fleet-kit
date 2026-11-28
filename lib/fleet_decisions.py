@@ -285,6 +285,7 @@ def open_cards(include_snoozed=False):
                 "conflict": prim.get("conflict"),
                 "askerOf": {d["id"]: _uniq([d["from"]] + d["relayTo"]) for d in [prim] + dups},
                 "watch": watch_of(prim["id"], prim, meta), "task": (meta.get(prim["id"]) or {}).get("kind")}
+        card.update(card_claims(prim["id"], card["options"]))
         if prim["id"] in snoozed and not include_snoozed:
             n_snoozed += 1
             continue
@@ -292,6 +293,13 @@ def open_cards(include_snoozed=False):
         cards.append(card)
     cards.sort(key=lambda c: (c.get("at") or "", _idnum(c["id"])), reverse=True)
     return cards, n_snoozed
+
+
+def card_claims(cid, options):
+    """Card fields for #61: `claims` (stored claims, each with `unsourced`) and `lint` (fleet_mesh.claims_lint)."""
+    row = mesh.get_decision(cid) or {}
+    claims = [dict(c, unsourced=not c.get("source")) for c in row.get("claims") or [] if isinstance(c, dict)]
+    return {"claims": claims, "lint": mesh.claims_lint(options, claims)}
 
 
 def classify(result):
@@ -1432,6 +1440,11 @@ class Tui:
                                           ("   also asked by: " + ", ".join(c["alsoAskedBy"])) if c["alsoAskedBy"]
                                           else "")]
         lines.append("    " + c["question"])
+        for k in c.get("claims") or []:
+            lines.append("    %s%s %s  [%s]" % (k["id"], (" (%s)" % ", ".join(k["options"])) if k.get("options") else "",
+                                              k["text"], ("source: " + k["source"]) if k.get("source") else "unsourced"))
+        for x in c.get("lint") or []:
+            lines.append("    ? option %s %s, no claim behind it" % (x["letter"], x["why"]))
         w = c.get("watch")
         if w:
             lines.append("    [%s] %s%s" % (w.get("sourceKind") or "watch", w.get("ref") or "",

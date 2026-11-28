@@ -57,6 +57,8 @@
   .ab .side.sel { border-color:var(--info); }
   .quote { font-style:italic; white-space:pre-wrap; }
   .err { color:var(--bad); }
+  .claims { margin:0 0 10px; padding-left:18px; font-size:13px; } .claims .cid { color:var(--dim); }
+  .claims .unsrc { color:var(--warn); } .claims .csrc { color:var(--dim); } .lint { color:var(--warn); font-size:13px; margin:0 0 8px; }
   nav a { color:var(--info); margin-right:14px; cursor:pointer; text-decoration:none; }
   nav a.on { color:var(--fg); font-weight:700; }
 </style>
@@ -134,6 +136,22 @@ function srcLink(w) {
            : el("span", { text: w.ref });
 }
 
+// Claims a call rests on (#61): each with its source, or "unsourced"; lint lines name options that assert a fact
+// with no claim behind them. Claim text and sources are data: text nodes only.
+function claimsBlock(c) {
+  const out = [];
+  if (c.claims && c.claims.length) {
+    const ul = el("ul", { class: "claims" });
+    for (const k of c.claims) ul.appendChild(el("li", {}, el("span", { class: "cid", text: k.id + (k.options.length ? " (" + k.options.join(", ") + ") " : " ") }),
+      el("span", { text: k.text }), document.createTextNode("  "),
+      k.source ? el("span", { class: "csrc", text: "source: " + k.source }) : el("span", { class: "badge unsrc", text: "unsourced" }),
+      k.refs && k.refs.length ? el("span", { class: "csrc", text: "  refs: " + k.refs.join(" ") }) : null));
+    out.push(ul);
+  }
+  for (const x of c.lint || []) out.push(el("div", { class: "lint", text: "option " + x.letter + " " + x.why + ", no claim behind it" }));
+  return out;
+}
+
 function card(c) {
   const allow = new Set(c.conflict ? ["snooze"] : (c.allow || []));  // an id that names two calls: desk pane only
   const node = el("div", { class: "card", id: c.id });
@@ -161,6 +179,7 @@ function card(c) {
     c.dupIds.length ? el("span", { text: "(dups: " + c.dupIds.join(", ") + ")" }) : null));
   if (c.watch && c.watch.ref) node.appendChild(el("div", { class: "src" }, srcLink(c.watch)));
   node.appendChild(el("div", { class: "q", text: c.question }));
+  for (const n of claimsBlock(c)) node.appendChild(n);
   if (c.conflict) node.appendChild(el("div", { class: "err", text: c.conflict + "; answer it in the desk pane" }));
   if (allow.has("pick")) for (const o of c.options) {
     const b = el("button", { class: "opt" + (o.rec ? " rec" : ""), onclick: () => send({ option: o.letter }, "relaying " + o.letter + "...") },

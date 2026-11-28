@@ -200,6 +200,20 @@ fleet decisions learn [<id>]             one LEARN row with the human's verbatim
   offers no answer buttons, and `pick` refuses it (exit 1, "ambiguous"); answer it in the desk pane.
 - Options come from `decision_open.options` or, for goal-file items, inline `(a, rec) x (b) y` markers. `(rec)` / `(a, rec)` /
   `[rec]` marks rec; `(downside: ...)` is split off. Rec options sort first; letters are assigned after sorting.
+- Claims (#61): `decision_open` takes optional `claims: [{text, source?, options?: [letter], refs?: [id]}]` (a bare
+  string = its text), stored on the row as `[{id: "c1"..., text, source|null, options, refs}]` by
+  `fleet_mesh._clean_claims` (ids by position; at most 30 claims, 500-char one-line text and source, 20 refs). `source`
+  is a command, file:line, URL or quote id; empty = stored as null and shown "unsourced". `options` must be letters of
+  the row's stored options (else the call is refused); none = the claim backs the whole call. `refs` are exact ids in
+  WATCH's ref form (`owner/repo#12`, `PROJ-1`, a URL); blanks, ids with spaces and repeats are dropped. The delivered
+  `[decision ...]` text adds ` claims: c1 (a) <text> [source: <s>] | c2 <text> [unsourced]` right after the options.
+- Claims lint (#61): `fleet_mesh.claims_lint(options, claims) -> [{letter, text, why}]` lists options that assert a
+  checkable fact with no claim behind them; `why` is one of `asserts absence` ("no X", "there is no", "doesn't
+  exist", "missing"), `says only`, `says one step` ("one step", "one ask", "a single change"), `says already`,
+  `names a count` (a number or number word before a noun; `#12`, versions and dates are not counts). Non-blocking:
+  the call still opens; the open result and the desk delivery add `(unsourced claims: c2; lint: option a says only
+  with no claim; add claims [...])` via `claims_note`. Cards carry `claims` (each with `unsourced: bool`) and `lint`;
+  the TUI lists them under the question (`? option a ... no claim behind it`) and the page shows an "unsourced" badge.
 - `pick`, under `$FLEET_STATE/.decisions-pick.lock`: `fleet_mesh.mark_decision(id, verbatim, only_open=True)` for every
   mesh id of the card (the commit point; raises `AlreadyAnswered`), then `deliver()` "[answer <id>] <verbatim>" to each
   asker, plus "[DECISIONS UI copy] ..." to `$FLEET_ROUTE` when `copyOrchestrator` and it is not an asker, then the

@@ -31,6 +31,7 @@ One session (the desk, `$FLEET_DECIDE`, default DECIDE) is the only place the hu
 - Duplicates: ROUTE may forward a call the asker already sent. Match on content and say "already item N"; do not add a second id.
 - "Do what they decided on the call": relay the call's decisions with timestamped quotes and your mapping marked as your reading.
 - A lane's "it is staged / unstaged / merged" claim can be stale: check the real state before repeating it.
+- Claims: a call's `claims:` segment lists what it rests on. Show each claim with its source when you put the call to the human, and say "unsourced" for one without. A call that arrives with `lint: option X ...` (an option says "no X", "only", "one step", "already" or a count, with no claim behind it) is still a call: show it with the lint line and ask the asker (peer_send) for a sourced claim.
 - Ambiguous ids (numbers that repeat across directories, PR vs ticket ids) go out with full paths in a follow-up note.
 - When the asker is not reachable (session closed, not on the roster), send the answer plus item text to ROUTE, ask it to reopen the lane, and `relayto set ROUTE` on that lane's other open items. A parked asker needs nothing special: `fleet send` / `peer_send` reopens it.
 - If the desk vanished from the roster: a fresh desk with `fleet desks up` (it relaunches only the dead desk, into the right half of `deskA`), or the same session with `fleet launch --role decide --split-right-of ROUTE DECIDE resume <session-id>` (ids are in `fleet ls` and `$FLEET_STATE/roster.json`). Never a `/goal`.
